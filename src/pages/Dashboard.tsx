@@ -522,12 +522,15 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Banner when app/API is not running */}
+      {/* Banner when app/API is not running or errors */}
       {apiError && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <p className="text-amber-200 font-medium">Cannot load data – app not running</p>
+          <p className="text-amber-200 font-medium">Cannot load data – {typeof window !== 'undefined' && !window.location.hostname.includes('localhost') ? 'API error on deployment' : 'app not running'}</p>
           <p className="text-amber-200/80 text-sm mt-1">
-            Open a terminal and run <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> (single server at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5173</code>), then refresh. Your data (scan-results.json, fundamentals.json) is in the <code className="bg-amber-900/50 px-1 rounded">data/</code> folder.
+            {typeof window !== 'undefined' && !window.location.hostname.includes('localhost')
+              ? <>On Vercel: check Function logs for <code className="bg-amber-900/50 px-1 rounded">api/[[...path]]</code>. To get data, add a <code className="bg-amber-900/50 px-1 rounded">data/</code> snapshot to the repo or set <code className="bg-amber-900/50 px-1 rounded">VITE_API_URL</code> to an external API.</>
+              : <>Open a terminal and run <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5173</code>, then refresh. Data is in the <code className="bg-amber-900/50 px-1 rounded">data/</code> folder.</>
+            }
           </p>
         </div>
       )}
