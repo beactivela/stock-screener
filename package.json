@@ -4,6 +4,10 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "test": "node --test server/fundamentals.test.js",
+    "verify-fundamentals": "node scripts/verify-fundamentals.js",
+    "verify-industry-fetch": "node scripts/verify-industry-fetch.js",
+    "populate-industry-1y": "node scripts/populate-industry-1y.js",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
@@ -15,6 +19,7 @@
     "populate-tickers": "node server/populate-tickers.js"
   },
   "dependencies": {
+    "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",

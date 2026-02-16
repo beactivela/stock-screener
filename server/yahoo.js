@@ -37,7 +37,7 @@ async function getBars(ticker, from, to, interval = '1d') {
  */
 async function getFundamentals(ticker) {
   const result = await yahooFinance.quoteSummary(ticker, {
-    modules: ['majorHoldersBreakdown', 'defaultKeyStatistics', 'earningsTrend', 'financialData'],
+    modules: ['majorHoldersBreakdown', 'defaultKeyStatistics', 'earningsTrend', 'financialData', 'assetProfile', 'price'],
   });
   let pctHeldByInst = null;
   let qtrEarningsYoY = null;
@@ -77,7 +77,16 @@ async function getFundamentals(ticker) {
     operatingMargin = Math.round(fd.operatingMargins * 100 * 10) / 10;
   }
 
-  return { ticker, pctHeldByInst, qtrEarningsYoY, profitMargin, operatingMargin };
+  // Industry and sector from assetProfile (e.g. "Consumer Electronics", "Technology")
+  const ap = result?.assetProfile;
+  const industry = (ap?.industry && String(ap.industry).trim()) ? ap.industry : (ap?.sector && String(ap.sector).trim()) ? ap.sector : null;
+  const sector = (ap?.sector && String(ap.sector).trim()) ? ap.sector : null;
+
+  // Company name from price module (same call, no extra Yahoo request)
+  const price = result?.price;
+  const companyName = (price?.displayName && String(price.displayName).trim()) || (price?.shortName && String(price.shortName).trim()) || (price?.longName && String(price.longName).trim()) || null;
+
+  return { ticker, pctHeldByInst, qtrEarningsYoY, profitMargin, operatingMargin, industry, sector, companyName };
 }
 
 /** Company name for display. Prefer displayName (e.g. "The Home Depot"), else shortName, else longName. */
@@ -86,7 +95,24 @@ async function getQuoteName(ticker) {
   return q?.displayName ?? q?.shortName ?? q?.longName ?? null;
 }
 
-export { getBars, getFundamentals, getQuoteName };
+/** Maps Yahoo exchange code to TradingView exchange prefix (NYSE, NASDAQ, AMEX). */
+function mapExchange(ex) {
+  const u = (ex ?? '').toUpperCase();
+  if (u.includes('NYSE') || u === 'NYQ' || u === 'NYS') return 'NYSE';
+  if (u.includes('NASDAQ') || u === 'NMS' || u === 'NGM' || u === 'NCM') return 'NASDAQ';
+  if (u.includes('AMEX') || u === 'ASE') return 'AMEX';
+  return null;
+}
+
+/** Quote info: name and exchange (for TradingView symbol). Single fetch. */
+async function getQuoteInfo(ticker) {
+  const q = await yahooFinance.quote(ticker);
+  const name = q?.displayName ?? q?.shortName ?? q?.longName ?? null;
+  const exchange = mapExchange(q?.exchange ?? q?.fullExchangeName);
+  return { name, exchange };
+}
+
+export { getBars, getFundamentals, getQuoteName, getQuoteInfo };
 // Backward compat
 const getDailyBars = (ticker, from, to) => getBars(ticker, from, to, '1d');
 export { getDailyBars };

@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import { createChart, ColorType } from 'lightweight-charts'
-import { sma, rsi, findPullbacks, vcpContraction } from '../utils/chartIndicators'
+import { sma, rsi, findPullbacks, vcpContraction, findIdealPullbackBarTimes } from '../utils/chartIndicators'
 
 interface Bar {
   t: number
@@ -35,6 +35,8 @@ interface VCPInfo {
   pullbackPcts?: string[]
   volumeDryUp?: boolean
   volumeRatio?: number | null
+  idealPullbackSetup?: boolean
+  idealPullbackBarTimes?: number[]
   barCount?: number
   score?: number
   recommendation?: 'buy' | 'hold' | 'avoid'
@@ -76,6 +78,7 @@ function getScoreBreakdown(vcp: VCPInfo | null): ScoreCriterion[] {
   const above50 = vcp.lastClose != null && vcp.sma50 != null && vcp.lastClose >= vcp.sma50
   b.push({ criterion: 'Price above 50 SMA', matched: above50, points: above50 ? 10 : 0 })
   b.push({ criterion: 'Volume drying up on pullbacks (<85% of 20d avg)', matched: !!vcp.volumeDryUp, points: vcp.volumeDryUp ? 10 : 0 })
+  b.push({ criterion: 'Ideal setup: 5-10d pullback, vol high at last high, vol push from higher low', matched: !!vcp.idealPullbackSetup, points: vcp.idealPullbackSetup ? 15 : 0 })
   return b
 }
 
@@ -93,12 +96,15 @@ export default function StockDetail() {
   const [bars, setBars] = useState<Bar[]>([])
   const [vcp, setVcp] = useState<VCPInfo | null>(null)
   const [companyName, setCompanyName] = useState<string | null>(null)
+  const [exchange, setExchange] = useState<string | null>(null)
+  const [fundamentals, setFundamentals] = useState<{ profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null } | null>(null)
+  const [industry3M, setIndustry3M] = useState<number | null>(null)
+  const [industry1Y, setIndustry1Y] = useState<number | null>(null)
+  const [industryYtd, setIndustryYtd] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [timeframe, setTimeframe] = useState<(typeof TIMEFRAMES)[number]>(TIMEFRAMES[1])
   const [interval, setInterval] = useState<(typeof INTERVALS)[number]['value']>('1d')
-  const [chartView, setChartView] = useState<'tradingview' | 'custom'>('tradingview')
   const chartWrapperRef = useRef<HTMLDivElement>(null)
-  const tradingViewContainerRef = useRef<HTMLDivElement>(null)
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const rsiChartRef = useRef<HTMLDivElement>(null)
   const vcpChartRef = useRef<HTMLDivElement>(null)
@@ -107,21 +113,19 @@ export default function StockDetail() {
   const vcpChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
 
   // Fetch bars and VCP separately so a VCP failure doesn't block chart update (fixes daily/weekly showing same)
-  // Only fetch bars when using custom chart; TradingView fetches its own data
+  // ALWAYS fetch 12 months of data so all timeframes have full bar history
   useEffect(() => {
     if (!ticker) return
-    if (chartView === 'tradingview') {
-      setLoading(false)
-      return
-    }
     setLoading(true)
-    const barsUrl = `/api/bars/${ticker}?days=${timeframe.days}&interval=${interval}`
+    // Always fetch 365 days regardless of timeframe selection (timeframe only controls chart zoom)
+    const barsUrl = `/api/bars/${ticker}?days=365&interval=${interval}`
     // cache: 'no-store' prevents browser from returning cached daily when switching to weekly
     fetch(barsUrl, { cache: 'no-store' })
       .then((r) => r.json())
       .then((barsRes) => {
         if (barsRes.error) throw new Error(barsRes.error)
-        setBars(barsRes.results || [])
+        const raw = barsRes.results || []
+        setBars([...raw].sort((a: Bar, b: Bar) => a.t - b.t))
       })
       .catch((e) => {
         console.error('Bars fetch failed:', e)
@@ -136,95 +140,132 @@ export default function StockDetail() {
         setVcp(hasValidVcp ? vcpRes : (scanResult && !scanResult.error ? scanResult : vcpRes))
       })
       .catch(() => {})
-  }, [ticker, timeframe, interval, chartView])
+  }, [ticker, interval])
 
-  // TradingView embed: inject widget when chartView is tradingview (has built-in Daily/Weekly/Monthly)
-  useEffect(() => {
-    if (!ticker || chartView !== 'tradingview' || !tradingViewContainerRef.current) return
-    const container = tradingViewContainerRef.current
-    container.innerHTML = ''
-    const script = document.createElement('script')
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js'
-    script.async = true
-    // TradingView symbol: NASDAQ for most, NYSE for tickers with dot (e.g. BRK.B)
-    const symbol = ticker.includes('.') ? `NYSE:${ticker}` : `NASDAQ:${ticker}`
-    script.innerHTML = JSON.stringify({
-      autosize: true,
-      symbol,
-      interval: 'D',
-      timezone: 'America/New_York',
-      theme: 'dark',
-      style: '1',
-      locale: 'en',
-      enable_publishing: false,
-      hide_top_toolbar: false,
-      hide_legend: false,
-      save_image: false,
-      calendar: false,
-      studies: ['RSI@tv-basicstudies'],
-      support_host: 'https://www.tradingview.com',
-    })
-    container.appendChild(script)
-    return () => {
-      container.innerHTML = ''
-    }
-  }, [ticker, chartView])
-
-  // Fetch company name separately so it doesn't block chart load; failures are non-fatal
+  // Fetch company name and exchange (for TradingView symbol); failures are non-fatal
   useEffect(() => {
     if (!ticker) return
     fetch(`/api/quote/${encodeURIComponent(ticker)}`)
-      .then((r) => (r.ok ? r.json() : { name: null }))
-      .then((data) => setCompanyName(data?.name ?? null))
-      .catch(() => setCompanyName(null))
+      .then((r) => (r.ok ? r.json() : { name: null, exchange: null }))
+      .then((data) => {
+        setCompanyName(data?.name ?? null)
+        setExchange(data?.exchange ?? null)
+      })
+      .catch(() => {
+        setCompanyName(null)
+        setExchange(null)
+      })
   }, [ticker])
 
-  const { candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, pullbacks } = useMemo(() => {
-    if (bars.length === 0) return { candleData: [], ma10Data: [], ma20Data: [], ma50Data: [], ma150Data: [], volumeData: [], ma20VolumeData: [], rsiData: [], vcpContractionData: [], pullbacks: [] }
-    const closes = bars.map((b) => b.c)
-    const volumes = bars.map((b) => b.v)
-    const sma10 = sma(closes, 10)
-    const sma20 = sma(closes, 20)
-    const sma50 = sma(closes, 50)
-    const sma150 = sma(closes, 150)
-    const sma20Vol = sma(volumes, 20)
-    const rsi14 = rsi(closes, 14)
-    const vcpContr = vcpContraction(bars, 6)
-    // Use UTCTimestamp (seconds) for all intervals – avoids business-day issues with weekly/monthly
-    const toTime = (t: number) => Math.floor(t / 1000) as any
-    const vcpPullbacks = findPullbacks(bars, 80)
-    return {
-      candleData: bars.map((b) => ({ time: toTime(b.t), open: b.o, high: b.h, low: b.l, close: b.c })),
-      ma10Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma10[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
-      volumeData: bars.map((b) => ({
-        time: toTime(b.t),
-        value: b.v,
-        color: b.c >= b.o ? '#22c55e' : '#ef4444',
-      })),
-      ma20VolumeData: bars
-        .map((b, i) => ({ time: toTime(b.t), value: sma20Vol[i] }))
-        .filter((d) => d.value != null) as { time: string; value: number }[],
-      ma20Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma20[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
-      ma50Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma50[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
-      ma150Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma150[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
-      // Pad RSI with first 14 bars (same value as first RSI) so time range matches price chart
-      rsiData: (() => {
-        const filtered = bars.map((b, i) => ({ time: toTime(b.t), value: rsi14[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
-        if (filtered.length === 0) return []
-        const firstVal = filtered[0].value
-        const padCount = bars.length - filtered.length
-        const pad = bars.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
-        return [...pad, ...filtered]
-      })(),
-      vcpContractionData: (() => {
-        const filtered = bars.map((b, i) => ({ time: toTime(b.t), value: vcpContr[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
-        if (filtered.length === 0) return []
-        const firstVal = filtered[0].value
-        const padCount = bars.length - filtered.length
-        const pad = bars.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
-        return [...pad, ...filtered]
-      })(),
-      pullbacks: vcpPullbacks.slice(-6), // last 6 pullbacks for VCP setup lines
+  // Fetch fundamentals (Profit Margin, Operating Margin, Industry) from cache
+  useEffect(() => {
+    if (!ticker) return
+    fetch(`/api/fundamentals/${encodeURIComponent(ticker)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.ticker) setFundamentals({ profitMargin: data.profitMargin ?? null, operatingMargin: data.operatingMargin ?? null, industry: data.industry ?? null })
+        else setFundamentals(null)
+      })
+      .catch(() => setFundamentals(null))
+  }, [ticker])
+
+  // Fetch industry 3M and 1Y trend (lookup by industry from fundamentals)
+  useEffect(() => {
+    if (!fundamentals?.industry) {
+      setIndustry3M(null)
+      setIndustry1Y(null)
+      setIndustryYtd(null)
+      return
+    }
+    fetch('/api/industry-trend', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => {
+        const g = (d?.industries ?? []).find((x: { industry: string }) => x.industry === fundamentals?.industry)
+        let trend3m = g?.industryAvg3Mo
+        let trend1y = g?.industryAvg1Y
+        let trendYtd = g?.industryYtd
+        if (trend3m == null && g?.tickers?.length) {
+          const withChange = (g.tickers as { change3mo?: number | null }[]).filter((t) => t.change3mo != null)
+          if (withChange.length) trend3m = withChange.reduce((s, t) => s + (t.change3mo ?? 0), 0) / withChange.length
+        }
+        if (trend1y == null && g?.tickers?.length) {
+          const withChange = (g.tickers as { change1y?: number | null }[]).filter((t) => t.change1y != null)
+          if (withChange.length) trend1y = withChange.reduce((s, t) => s + (t.change1y ?? 0), 0) / withChange.length
+        }
+        if (trendYtd == null && g?.tickers?.length) {
+          const withChange = (g.tickers as { ytd?: number | null }[]).filter((t) => t.ytd != null)
+          if (withChange.length) trendYtd = withChange.reduce((s, t) => s + (t.ytd ?? 0), 0) / withChange.length
+        }
+        setIndustry3M(trend3m != null ? trend3m : null)
+        setIndustry1Y(trend1y != null ? trend1y : null)
+        setIndustryYtd(trendYtd != null ? trendYtd : null)
+      })
+      .catch(() => {
+        setIndustry3M(null)
+        setIndustry1Y(null)
+        setIndustryYtd(null)
+      })
+  }, [fundamentals?.industry])
+
+  const { candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, pullbacks, idealPullbackBarTimes } = useMemo(() => {
+    const empty = { candleData: [], ma10Data: [], ma20Data: [], ma50Data: [], ma150Data: [], volumeData: [], ma20VolumeData: [], rsiData: [], vcpContractionData: [], pullbacks: [], idealPullbackBarTimes: [] }
+    if (bars.length === 0) return empty
+    try {
+      // lightweight-charts requires data asc by time; Yahoo can return unsorted bars
+      const sorted = [...bars].sort((a, b) => a.t - b.t)
+      const closes = sorted.map((b) => Number(b.c) || 0)
+      const volumes = sorted.map((b) => Number(b.v) ?? 0)
+      const sma10 = sma(closes, 10)
+      const sma20 = sma(closes, 20)
+      const sma50 = sma(closes, 50)
+      const sma150 = sma(closes, 150)
+      const sma20Vol = sma(volumes, 20)
+      const rsi14 = rsi(closes, 14)
+      const vcpContr = vcpContraction(sorted, 6)
+      const toTime = (t: number) => Math.floor(t / 1000) as any
+      const vcpPullbacks = findPullbacks(sorted, 80)
+      return {
+        candleData: sorted.map((b) => ({ time: toTime(b.t), open: b.o, high: b.h, low: b.l, close: b.c })),
+        ma10Data: sorted.map((b, i) => ({ time: toTime(b.t), value: sma10[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
+        volumeData: sorted.map((b) => ({
+          time: toTime(b.t),
+          value: b.v,
+          color: b.c >= b.o ? '#22c55e' : '#ef4444',
+        })),
+        ma20VolumeData: sorted
+          .map((b, i) => ({ time: toTime(b.t), value: sma20Vol[i] }))
+          .filter((d) => d.value != null) as { time: string; value: number }[],
+        ma20Data: sorted.map((b, i) => ({ time: toTime(b.t), value: sma20[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
+        ma50Data: sorted.map((b, i) => ({ time: toTime(b.t), value: sma50[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
+        ma150Data: sorted.map((b, i) => ({ time: toTime(b.t), value: sma150[i] })).filter((d) => d.value != null) as { time: string; value: number }[],
+        rsiData: (() => {
+          const filtered = sorted.map((b, i) => ({ time: toTime(b.t), value: rsi14[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
+          if (filtered.length === 0) return []
+          const firstVal = filtered[0].value
+          const padCount = sorted.length - filtered.length
+          const pad = sorted.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
+          return [...pad, ...filtered]
+        })(),
+        vcpContractionData: (() => {
+          const filtered = sorted.map((b, i) => ({ time: toTime(b.t), value: vcpContr[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
+          if (filtered.length === 0) return []
+          const firstVal = filtered[0].value
+          const padCount = sorted.length - filtered.length
+          const pad = sorted.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
+          return [...pad, ...filtered]
+        })(),
+        pullbacks: vcpPullbacks.slice(-6),
+        idealPullbackBarTimes: (() => {
+          try {
+            return findIdealPullbackBarTimes(sorted, 80)
+          } catch {
+            return []
+          }
+        })(),
+      }
+    } catch (e) {
+      console.error('Chart indicators error:', e)
+      return empty
     }
   }, [bars])
 
@@ -270,15 +311,27 @@ export default function StockDetail() {
       },
     })
 
+    const sortByTime = <T extends { time: string | number }>(arr: T[]) =>
+      [...arr].sort((a, b) => (a.time as number) - (b.time as number))
+    // lightweight-charts requires asc + unique times; dedupe by keeping last per time
+    const dedupeByTime = <T extends { time: string | number }>(arr: T[]) => {
+      const sorted = sortByTime(arr)
+      return sorted.reduce<T[]>((acc, d) => {
+        const t = d.time as number
+        if (acc.length === 0 || (acc[acc.length - 1].time as number) < t) acc.push(d)
+        else if ((acc[acc.length - 1].time as number) === t) acc[acc.length - 1] = d
+        return acc
+      }, [])
+    }
     const candle = mainChart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false })
-    candle.setData(candleData)
+    const candleSorted = dedupeByTime(candleData)
+    candle.setData(candleSorted)
 
-    // Buy arrows: VCP returned to tight (1–2.5) after recent spike (≥2.5), price above 50 MA
-    // Matches Dec 1–3, Jan 9–12, Jan 28–29, Feb 5: spike → drop = setup complete
+    // Buy arrows: (1) Blue: VCP tight after spike, price above 50 MA; (2) Yellow: ideal pullback setup
     const sma50AtTime = (t: string | number) => ma50Data.find((d) => d.time === t)?.value ?? 0
-    const closeAtTime = (t: string | number) => candleData.find((d) => d.time === t)?.close ?? 0
+    const closeAtTime = (t: string | number) => candleSorted.find((d) => d.time === t)?.close ?? 0
     const lookbackBars = 30
-    const buyMarkers = vcpContractionData
+    const blueMarkers = vcpContractionData
       .filter((d, i) => {
         const close = closeAtTime(d.time)
         const ma50 = sma50AtTime(d.time)
@@ -290,13 +343,19 @@ export default function StockDetail() {
         return hadRecentSpike
       })
       .map((d) => ({ time: d.time, position: 'belowBar' as const, shape: 'arrowUp' as const, color: '#3b82f6' }))
-    candle.setMarkers(buyMarkers)
+    const toTimeSec = (t: number) => Math.floor(t / 1000) as any
+    const yellowMarkers = idealPullbackBarTimes
+      .map(toTimeSec)
+      .filter((t) => candleSorted.some((d) => d.time === t))
+      .map((t) => ({ time: t as any, position: 'belowBar' as const, shape: 'arrowUp' as const, color: '#facc15' }))
+    const allMarkers = [...blueMarkers, ...yellowMarkers].sort((a, b) => (a.time as number) - (b.time as number))
+    candle.setMarkers(allMarkers)
 
     const ma10Series = mainChart.addLineSeries({ color: '#f59e0b', lineWidth: 2, lastValueVisible: false, priceLineVisible: false })
     const ma20Series = mainChart.addLineSeries({ color: '#3b82f6', lineWidth: 2, lastValueVisible: false, priceLineVisible: false })
     const ma50Series = mainChart.addLineSeries({ color: '#8b5cf6', lineWidth: 2, lastValueVisible: false, priceLineVisible: false })
     const ma150Series = mainChart.addLineSeries({ color: '#ec4899', lineWidth: 2, lastValueVisible: false, priceLineVisible: false })
-    ma10Series.setData(ma10Data)
+    ma10Series.setData(dedupeByTime(ma10Data))
 
     // Volume histogram (overlay at bottom) + 20 MA volume line
     const volumeSeries = mainChart.addHistogramSeries({
@@ -307,7 +366,7 @@ export default function StockDetail() {
       scaleMargins: { top: 0.8, bottom: 0 },
       borderVisible: false,
     })
-    volumeSeries.setData(volumeData)
+    volumeSeries.setData(dedupeByTime(volumeData))
     const ma20VolSeries = mainChart.addLineSeries({
       color: '#f59e0b',
       lineWidth: 2,
@@ -319,12 +378,12 @@ export default function StockDetail() {
       scaleMargins: { top: 0.8, bottom: 0 },
       borderVisible: false,
     })
-    ma20VolSeries.setData(ma20VolumeData)
+    ma20VolSeries.setData(dedupeByTime(ma20VolumeData))
 
-    ma10Series.setData(ma10Data)
-    ma20Series.setData(ma20Data)
-    ma50Series.setData(ma50Data)
-    ma150Series.setData(ma150Data)
+    ma10Series.setData(dedupeByTime(ma10Data))
+    ma20Series.setData(dedupeByTime(ma20Data))
+    ma50Series.setData(dedupeByTime(ma50Data))
+    ma150Series.setData(dedupeByTime(ma150Data))
 
     const VCP_COLORS = ['#22c55e', '#16a34a', '#15803d', '#166534', '#14532d', '#052e16']
     pullbacks.forEach((pb, i) => {
@@ -348,10 +407,10 @@ export default function StockDetail() {
     }
 
     const rsiSeries = rsiChart.addLineSeries({ color: '#06b6d4', lineWidth: 2 })
-    rsiSeries.setData(rsiData)
+    rsiSeries.setData(dedupeByTime(rsiData))
 
     const vcpSeries = vcpChart.addLineSeries({ color: '#a855f7', lineWidth: 2 })
-    vcpSeries.setData(vcpContractionData)
+    vcpSeries.setData(dedupeByTime(vcpContractionData))
 
     // Sync crosshair across all panes: when hovering any chart, show vertical line on all
     const findValAtTime = (data: { time: string | number; value?: number; close?: number }[], time: string | number | undefined) => {
@@ -448,7 +507,30 @@ export default function StockDetail() {
       rsiChartInstance.current = null
       vcpChartInstance.current = null
     }
-  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, pullbacks])
+  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, pullbacks, idealPullbackBarTimes])
+
+  // Adjust visible range when timeframe changes (zoom in/out while keeping all 12 months of data loaded)
+  useEffect(() => {
+    if (!chartInstance.current || bars.length === 0) return
+    
+    // Calculate how many bars to show based on timeframe selection
+    const now = Date.now() / 1000
+    const targetFromTime = now - (timeframe.days * 24 * 60 * 60)
+    
+    // Find the bar index closest to our target start time
+    const sorted = [...bars].sort((a, b) => a.t - b.t)
+    const targetIndex = sorted.findIndex(b => (b.t / 1000) >= targetFromTime)
+    const fromIndex = targetIndex >= 0 ? targetIndex : 0
+    const toIndex = sorted.length - 1
+    
+    // Set the logical range to show only the selected timeframe
+    if (fromIndex < toIndex) {
+      const logicalRange = { from: fromIndex, to: toIndex }
+      chartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
+      if (rsiChartInstance.current) rsiChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
+      if (vcpChartInstance.current) vcpChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
+    }
+  }, [timeframe, bars])
 
   // Use scan result for display when API failed but we have it from dashboard navigation
   const displayVcp = vcp ?? (scanResult && !scanResult.error ? scanResult : null)
@@ -514,7 +596,7 @@ export default function StockDetail() {
             </ul>
           </div>
         )}
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9 gap-4">
           <div>
             <div className="text-slate-500 text-xs">Close</div>
             <div className="text-slate-200 font-mono">{displayVcp.lastClose?.toFixed(2) ?? '–'}</div>
@@ -541,110 +623,119 @@ export default function StockDetail() {
             <div className="text-slate-500 text-xs">Vol ratio (5d/20d)</div>
             <div className="text-slate-200 font-mono">{displayVcp.volumeRatio != null ? displayVcp.volumeRatio.toFixed(2) : '–'}</div>
           </div>
+          <div>
+            <div className="text-slate-500 text-xs">Profit Margin</div>
+            <div className="text-slate-200 font-mono">{fundamentals?.profitMargin != null ? `${fundamentals.profitMargin}%` : '–'}</div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-xs">Operating Margin</div>
+            <div className="text-slate-200 font-mono">{fundamentals?.operatingMargin != null ? `${fundamentals.operatingMargin}%` : '–'}</div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-xs">Industry</div>
+            <div className="text-slate-200">{fundamentals?.industry ?? '–'}</div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-xs">Industry 3M Return</div>
+            <div className="text-slate-200">
+              {industry3M != null ? (
+                <span className={industry3M >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                  {industry3M >= 0 ? '+' : ''}{industry3M.toFixed(1)}%
+                </span>
+              ) : (
+                '–'
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-xs">Industry 1Y Return</div>
+            <div className="text-slate-200">
+              {industry1Y != null ? (
+                <span className={industry1Y >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                  {industry1Y >= 0 ? '+' : ''}{industry1Y.toFixed(1)}%
+                </span>
+              ) : (
+                '–'
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-500 text-xs">Industry YTD</div>
+            <div className="text-slate-200">
+              {industryYtd != null ? (
+                <span className={industryYtd >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                  {industryYtd >= 0 ? '+' : ''}{industryYtd.toFixed(1)}%
+                </span>
+              ) : (
+                '–'
+              )}
+            </div>
+          </div>
         </div>
         </>
       )}
 
       <div>
-        {chartView === 'custom' && bars.length === 0 && displayVcp && (
+        {bars.length === 0 && displayVcp && (
           <p className="mb-4 text-amber-400/90 text-sm">
             Chart data unavailable (API may be rate limited). Score and breakdown above are from the last scan.
           </p>
         )}
         <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
           <h2 className="text-lg font-medium text-slate-200">
-            {chartView === 'tradingview'
-              ? 'TradingView chart (use 1D/1W/1M in toolbar)'
-              : `${INTERVALS.find((i) => i.value === interval)?.label ?? 'Daily'} chart`}
+            {`${INTERVALS.find((i) => i.value === interval)?.label ?? 'Daily'} chart`}
           </h2>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={() => setChartView('tradingview')}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                  chartView === 'tradingview'
-                    ? 'bg-sky-600 text-white'
-                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                }`}
-              >
-                TradingView
-              </button>
-              <button
-                type="button"
-                onClick={() => setChartView('custom')}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                  chartView === 'custom'
-                    ? 'bg-sky-600 text-white'
-                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                }`}
-              >
-                Custom
-              </button>
+              {INTERVALS.map((i) => (
+                <button
+                  key={i.value}
+                  type="button"
+                  onClick={() => setInterval(i.value)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+                    interval === i.value
+                      ? 'bg-sky-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                  }`}
+                >
+                  {i.label}
+                </button>
+              ))}
             </div>
-            {chartView === 'custom' && (
-              <>
-                <span className="text-slate-500 text-sm">|</span>
-                <div className="flex gap-1">
-                  {INTERVALS.map((i) => (
-                    <button
-                      key={i.value}
-                      type="button"
-                      onClick={() => setInterval(i.value)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                        interval === i.value
-                          ? 'bg-sky-600 text-white'
-                          : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                      }`}
-                    >
-                      {i.label}
-                    </button>
-                  ))}
-                </div>
-                <span className="text-slate-500 text-sm">|</span>
-                <div className="flex gap-1">
-                  {TIMEFRAMES.map((tf) => (
-                    <button
-                      key={tf.label}
-                      type="button"
-                      onClick={() => setTimeframe(tf)}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                        timeframe.label === tf.label
-                          ? 'bg-sky-600 text-white'
-                          : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                      }`}
-                    >
-                      {tf.label}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
+            <span className="text-slate-500 text-sm">|</span>
+            <div className="flex gap-1">
+              {TIMEFRAMES.map((tf) => (
+                <button
+                  key={tf.label}
+                  type="button"
+                  onClick={() => setTimeframe(tf)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+                    timeframe.label === tf.label
+                      ? 'bg-sky-600 text-white'
+                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                  }`}
+                >
+                  {tf.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-        {chartView === 'tradingview' ? (
-          <div
-            ref={tradingViewContainerRef}
-            className="tradingview-widget-container rounded-xl border border-slate-800 overflow-hidden"
-            style={{ height: 500 }}
-          />
-        ) : (
-          <div ref={chartWrapperRef} className="rounded-xl border border-slate-800 overflow-hidden">
-            <div ref={chartContainerRef} style={{ height: 380 }} />
-            <div className="border-t border-slate-800">
-              <div className="px-3 py-1.5 text-xs text-slate-500 bg-slate-900/50">RSI (14)</div>
-              <div ref={rsiChartRef} style={{ height: 140 }} />
-            </div>
-            <div className="border-t border-slate-800">
-              <div className="px-3 py-1.5 text-xs text-slate-500 bg-slate-900/50">VCP Contraction (consecutive smaller pullbacks)</div>
-              <div ref={vcpChartRef} style={{ height: 100 }} />
-            </div>
+        <div ref={chartWrapperRef} className="rounded-xl border border-slate-800 overflow-hidden">
+          <div ref={chartContainerRef} style={{ height: 380 }} />
+          <div className="border-t border-slate-800">
+            <div className="px-3 py-1.5 text-xs text-slate-500 bg-slate-900/50">RSI (14)</div>
+            <div ref={rsiChartRef} style={{ height: 140 }} />
           </div>
-        )}
+          <div className="border-t border-slate-800">
+            <div className="px-3 py-1.5 text-xs text-slate-500 bg-slate-900/50">VCP Contraction (consecutive smaller pullbacks)</div>
+            <div ref={vcpChartRef} style={{ height: 100 }} />
+          </div>
+        </div>
       </div>
 
       <p className="text-slate-500 text-sm">
-        <strong>TradingView:</strong> Built-in 1D/1W/1M in toolbar. <strong>Custom:</strong> MAs 10/20/50/150, volume, VCP pullbacks, RSI 14. Data: Yahoo Finance.
+        <strong>Chart includes:</strong> Moving Averages 10 (orange), 20 (blue), 50 (purple), 150 (pink) + RSI 14 + Volume with 20d MA + VCP pullback analysis. Data: Yahoo Finance. Switch between Daily/Weekly/Monthly intervals and 3M/6M/12M timeframes above.
       </p>
     </div>
   )

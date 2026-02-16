@@ -17,11 +17,15 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 import { getDailyBars } from './yahoo.js';
 import { getEtfConstituents } from './massive.js';
 import { checkVCP } from './vcp.js';
+import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
+import { saveScanSnapshot } from './backtest.js';
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
 const TICKERS_FILE = path.join(DATA_DIR, 'tickers.txt');
 const RESULTS_FILE = path.join(DATA_DIR, 'scan-results.json');
+const FUNDAMENTALS_FILE = path.join(DATA_DIR, 'fundamentals.json');
+const INDUSTRY_YAHOO_RETURNS_FILE = path.join(DATA_DIR, 'industry-yahoo-returns.json');
 
 // Max tickers to scan (from file). Default 500 for full S&P 500.
 const TICKER_LIMIT = Number(process.env.SCAN_LIMIT) || 500;
@@ -119,11 +123,48 @@ async function getTickers() {
   return list;
 }
 
+/** Load fundamentals from cache. */
+function loadFundamentals() {
+  if (!fs.existsSync(FUNDAMENTALS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(FUNDAMENTALS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** Load Yahoo industry returns (1Y, 6M, 3M, YTD) keyed by industry name. */
+function loadIndustryYahooReturns() {
+  if (!fs.existsSync(INDUSTRY_YAHOO_RETURNS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(INDUSTRY_YAHOO_RETURNS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
 async function runScan() {
   ensureDataDir();
-  const { from, to } = dateRange(90);
+  const { from, to } = dateRange(180); // Changed from 90 to 180 to ensure 120+ trading days for RS calculation
   const tickers = await getTickers();
+  
+  // Load fundamentals and industry data for enhanced scoring
+  const fundamentals = loadFundamentals();
+  const industryReturns = loadIndustryYahooReturns();
+  const industryRanks = rankIndustries(industryReturns);
+  
+  // Fetch SPY bars once for RS calculations (NEW)
+  console.log(`Fetching SPY bars for Relative Strength calculations...`);
+  let spyBars = null;
+  try {
+    spyBars = await getBarsForScan('SPY', from, to);
+    console.log(`Loaded SPY bars: ${spyBars.length} days`);
+  } catch (e) {
+    console.warn(`Could not fetch SPY bars: ${e.message}. RS will be null for all stocks.`);
+  }
+  
   console.log(`Scanning ${tickers.length} tickers from ${TICKERS_FILE} (${from} to ${to})`);
+  console.log(`Loaded ${Object.keys(fundamentals).length} fundamentals, ${Object.keys(industryRanks).length} ranked industries`);
 
   const results = [];
   // Sequential queue: 1 ticker at a time with delay to avoid Yahoo throttling
@@ -134,22 +175,32 @@ async function runScan() {
     try {
       const bars = await getBarsForScan(ticker, from, to);
       if (!bars.length) {
-        results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars' });
+        results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F' });
       } else {
-        const vcp = checkVCP(bars);
-        results.push({ ticker, ...vcp });
+        const vcp = checkVCP(bars, spyBars); // Pass SPY bars for RS calculation
+        const fund = fundamentals[ticker] || null;
+        const industryData = fund?.industry ? industryRanks[fund.industry] : null;
+        
+        // Pass industryRanks to apply multiplier
+        const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
+        results.push({ ticker, ...vcp, ...enhanced });
       }
     } catch (e) {
       console.warn(ticker, e.message);
-      results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message });
+      results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F' });
     }
     if ((i + 1) % 25 === 0 || i + 1 === tickers.length) {
       console.log(`  ${i + 1} / ${tickers.length}`);
     }
   }
 
-  // Sort by score descending (highest first)
-  results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  // Sort by enhanced score first (when available), then by original VCP score
+  results.sort((a, b) => {
+    const aEnhanced = a.enhancedScore ?? a.score ?? 0;
+    const bEnhanced = b.enhancedScore ?? b.score ?? 0;
+    if (bEnhanced !== aEnhanced) return bEnhanced - aEnhanced;
+    return (b.score ?? 0) - (a.score ?? 0);
+  });
   const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
 
   const payload = {
@@ -162,6 +213,14 @@ async function runScan() {
   };
 
   fs.writeFileSync(RESULTS_FILE, JSON.stringify(payload, null, 2));
+  
+  // Save backtest snapshot for future analysis (NEW)
+  try {
+    saveScanSnapshot(results, new Date());
+  } catch (e) {
+    console.warn('Could not save backtest snapshot:', e.message);
+  }
+  
   console.log(`Done. Scored ${results.length} tickers (${vcpBullishCount} VCP bullish). Written to ${RESULTS_FILE}`);
   return payload;
 }
@@ -170,12 +229,27 @@ async function runScan() {
  * Streaming scan: yields each ticker result as it completes.
  * Used by POST /api/scan for live UI updates.
  * Throttling: 1 ticker at a time, SCAN_DELAY_MS between (default 150ms).
+ * 
+ * IMPROVEMENT: Now uses industry ranks with multiplier
  */
 async function* runScanStream() {
   ensureDataDir();
-  const { from, to } = dateRange(90);
+  const { from, to } = dateRange(180); // Changed from 90 to 180 to ensure 120+ trading days for RS calculation
   const tickers = await getTickers();
   const delayMs = Number(process.env.SCAN_DELAY_MS) || 150;
+  
+  // Load fundamentals and industry data
+  const fundamentals = loadFundamentals();
+  const industryReturns = loadIndustryYahooReturns();
+  const industryRanks = rankIndustries(industryReturns);
+  
+  // Fetch SPY bars once for RS calculations (NEW)
+  let spyBars = null;
+  try {
+    spyBars = await getBarsForScan('SPY', from, to);
+  } catch (e) {
+    console.warn(`Could not fetch SPY bars: ${e.message}`);
+  }
 
   for (let i = 0; i < tickers.length; i++) {
     if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
@@ -184,13 +258,19 @@ async function* runScanStream() {
     try {
       const bars = await getBarsForScan(ticker, from, to);
       if (!bars.length) {
-        result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars' };
+        result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F' };
       } else {
-        result = { ticker, ...checkVCP(bars) };
+        const vcp = checkVCP(bars, spyBars); // Pass SPY bars for RS
+        const fund = fundamentals[ticker] || null;
+        const industryData = fund?.industry ? industryRanks[fund.industry] : null;
+        
+        // Pass industryRanks to apply multiplier
+        const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
+        result = { ticker, ...vcp, ...enhanced };
       }
     } catch (e) {
       console.warn(ticker, e.message);
-      result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message };
+      result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F' };
     }
     yield { result, index: i + 1, total: tickers.length };
   }

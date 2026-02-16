@@ -1,7 +1,12 @@
 /**
  * VCP (Volatility Contraction Pattern) detection – Minervini-style.
  * Uses daily bars; we compute 10/20/50 SMA from closes, volume analysis from v.
+ * 
+ * IMPROVEMENT: Added Relative Strength calculation vs SPY
+ * IMPROVEMENT: Added pattern detection (VCP, Flat Base, Cup-with-Handle)
  */
+
+import { identifyPattern } from './patternDetection.js';
 
 function sma(closes, period) {
   const out = [];
@@ -92,14 +97,69 @@ function nearMA(price, ma, tolerancePct = 2) {
 }
 
 /**
+ * Calculate relative strength vs SPY (6-month performance)
+ * RS = (Stock % Change / SPY % Change) * 100
+ * RS > 100 = outperforming SPY, RS < 100 = underperforming
+ * 
+ * @param {Array} stockBars - Stock's OHLC bars (at least 120 days)
+ * @param {Array} spyBars - SPY's OHLC bars (at least 120 days)
+ * @returns {Object|null} { rs, stockChange, spyChange, outperforming } or null
+ */
+function calculateRelativeStrength(stockBars, spyBars) {
+  if (!stockBars || stockBars.length < 120 || !spyBars || spyBars.length < 120) {
+    return null;
+  }
+  
+  try {
+    // Get prices from 6 months ago (120 trading days)
+    const stockClose_6mo = stockBars[stockBars.length - 120].c;
+    const stockClose_now = stockBars[stockBars.length - 1].c;
+    const stockChange = ((stockClose_now - stockClose_6mo) / stockClose_6mo) * 100;
+    
+    const spyClose_6mo = spyBars[spyBars.length - 120].c;
+    const spyClose_now = spyBars[spyBars.length - 1].c;
+    const spyChange = ((spyClose_now - spyClose_6mo) / spyClose_6mo) * 100;
+    
+    // Avoid division by zero or very small numbers
+    if (Math.abs(spyChange) < 0.01) return null;
+    
+    const rs = (stockChange / spyChange) * 100;
+    
+    return {
+      rs: Math.round(rs * 10) / 10, // Round to 1 decimal
+      stockChange: Math.round(stockChange * 100) / 100,
+      spyChange: Math.round(spyChange * 100) / 100,
+      outperforming: rs > 100
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * Run VCP check on one ticker's bar series.
  * bars: array of { o, h, l, c, v, t } (ascending by t).
- * Returns { vcpBullish, contractions, atMa10, atMa20, atMa50, lastClose, sma10, sma20, sma50 }.
+ * spyBars: optional SPY bars for RS calculation (NEW)
+ * Returns { vcpBullish, contractions, atMa10, atMa20, atMa50, lastClose, sma10, sma20, sma50, relativeStrength, pattern, patternConfidence }.
  */
-function checkVCP(bars) {
+function checkVCP(bars, spyBars = null) {
   if (!bars || bars.length < 60) {
     const { scoreBreakdown } = computeBuyScore({ reason: 'not_enough_bars' });
-    return { vcpBullish: false, reason: 'not_enough_bars', score: 0, recommendation: 'avoid', volumeDryUp: false, volumeRatio: null, scoreBreakdown };
+    return { 
+      vcpBullish: false, 
+      reason: 'not_enough_bars', 
+      score: 0, 
+      recommendation: 'avoid', 
+      volumeDryUp: false, 
+      volumeRatio: null, 
+      idealPullbackSetup: false, 
+      idealPullbackBarTimes: [], 
+      scoreBreakdown, 
+      relativeStrength: null, 
+      rsData: null,
+      pattern: 'None',
+      patternConfidence: 0
+    };
   }
 
   const closes = bars.map((b) => b.c);
@@ -112,10 +172,33 @@ function checkVCP(bars) {
   const last10 = sma10[lastIdx];
   const last20 = sma20[lastIdx];
   const last50 = sma50[lastIdx];
+  
+  // Calculate Relative Strength vs SPY (NEW)
+  const rsData = spyBars ? calculateRelativeStrength(bars, spyBars) : null;
+  const relativeStrength = rsData?.rs ?? null;
 
   // Stage 2: price above 50 SMA
   if (last50 != null && lastClose < last50) {
-    const raw = { vcpBullish: false, reason: 'below_50_ma', lastClose, sma10: last10, sma20: last20, sma50: last50, contractions: 0, atMa10: false, atMa20: false, atMa50: false, volumeDryUp: false, volumeRatio: null };
+    const raw = { 
+      vcpBullish: false, 
+      reason: 'below_50_ma', 
+      lastClose, 
+      sma10: last10, 
+      sma20: last20, 
+      sma50: last50, 
+      contractions: 0, 
+      atMa10: false, 
+      atMa20: false, 
+      atMa50: false, 
+      volumeDryUp: false, 
+      volumeRatio: null, 
+      idealPullbackSetup: false, 
+      idealPullbackBarTimes: [], 
+      relativeStrength, 
+      rsData,
+      pattern: 'None',
+      patternConfidence: 0
+    };
     const { score, recommendation, scoreBreakdown } = computeBuyScore(raw);
     return { ...raw, score, recommendation, scoreBreakdown };
   }
@@ -145,7 +228,41 @@ function checkVCP(bars) {
   const recentVol = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
   const volumeRatio = avgVol20 > 0 ? recentVol / avgVol20 : null;
 
+  // Ideal setup: 5-10 day pullback, volume high above 20 MA at last high, increased volume on push from higher low to higher high
+  const lookback = 80;
+  const recent = bars.slice(-lookback);
+  const recentStartIdx = bars.length - recent.length;
+  let idealPullbackSetup = false;
+  const idealPullbackBarTimes = [];
+  if (lastPullback && recent.length > 0) {
+    const { highIdx, lowIdx, highPrice, lowPrice } = lastPullback;
+    const pullbackDays = lowIdx - highIdx + 1;
+    const is5to10Days = pullbackDays >= 4 && pullbackDays <= 12;
+    const highBarIdx = recentStartIdx + highIdx;
+    const volAtHigh = volumes[highBarIdx] ?? 0;
+    const volSmaAtHigh = volSma20[highBarIdx];
+    const volHighAtLastHigh = volSmaAtHigh != null && volSmaAtHigh > 0 && volAtHigh > volSmaAtHigh;
+    const prevPullback = pullbacks.length >= 2 ? pullbacks[pullbacks.length - 2] : null;
+    const isHigherLow = !prevPullback || lowPrice > prevPullback.lowPrice;
+    let hasVolumePush = false;
+    for (let k = lowIdx + 1; k < Math.min(lowIdx + 11, recent.length) && idealPullbackBarTimes.length < 3; k++) {
+      const barIdx = recentStartIdx + k;
+      const v = volumes[barIdx] ?? 0;
+      const vSma = volSma20[barIdx];
+      const bar = recent[k];
+      const close = bar?.c ?? 0;
+      if (vSma != null && vSma > 0 && v > vSma && close > lowPrice) {
+        hasVolumePush = true;
+        idealPullbackBarTimes.push(bars[barIdx]?.t ?? 0);
+      }
+    }
+    idealPullbackSetup = is5to10Days && volHighAtLastHigh && isHigherLow && hasVolumePush;
+  }
+
   const vcpBullish = contractions >= 1 && atAnyMA && lastClose >= (last50 ?? 0);
+
+  // NEW: Identify which Minervini pattern has formed
+  const patternResult = identifyPattern(bars, contractions, volumeDryUp);
 
   const raw = {
     vcpBullish,
@@ -161,10 +278,19 @@ function checkVCP(bars) {
     volumeDryUp,
     volumeRatio: volumeRatio != null ? Math.round(volumeRatio * 100) / 100 : null,
     avgVol20: avgVol20 != null ? Math.round(avgVol20) : null,
+    idealPullbackSetup,
+    idealPullbackBarTimes,
+    relativeStrength, // NEW: RS value (or null)
+    rsData, // NEW: Full RS details
+    pattern: patternResult.pattern, // NEW: Pattern name
+    patternConfidence: patternResult.confidence, // NEW: Pattern confidence (0-100)
+    patternDetails: patternResult.details, // NEW: Pattern analysis details
   };
   const { score, recommendation, scoreBreakdown } = computeBuyScore(raw);
   return { ...raw, score, recommendation, scoreBreakdown };
 }
+
+export { sma, volumeSma, findPullbacks, checkVCP, nearMA, computeBuyScore, calculateRelativeStrength };
 
 /**
  * Compute a 0–100 buy score and recommendation from VCP result.
@@ -221,6 +347,13 @@ function computeBuyScore(vcp) {
     } else {
       breakdown.push({ criterion: 'Volume drying up on pullbacks (<85% of 20d avg)', matched: false, points: 0 });
     }
+
+    if (vcp.idealPullbackSetup) {
+      breakdown.push({ criterion: 'Ideal setup: 5-10d pullback, vol high at last high, vol push from higher low', matched: true, points: 15 });
+      score += 15;
+    } else {
+      breakdown.push({ criterion: 'Ideal setup: 5-10d pullback, vol high at last high, vol push from higher low', matched: false, points: 0 });
+    }
   }
 
   score = Math.min(100, Math.max(0, score));
@@ -231,5 +364,3 @@ function computeBuyScore(vcp) {
 
   return { score, recommendation, scoreBreakdown: breakdown };
 }
-
-export { sma, volumeSma, findPullbacks, checkVCP, nearMA, computeBuyScore };

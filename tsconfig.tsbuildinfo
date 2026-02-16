@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/layout.tsx","./src/pages/dashboard.tsx","./src/pages/stockdetail.tsx","./src/utils/chartindicators.ts"],"version":"5.6.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/errorboundary.tsx","./src/components/layout.tsx","./src/components/tickerchart.tsx","./src/contexts/scancontext.tsx","./src/pages/dashboard.tsx","./src/pages/industry.tsx","./src/pages/stockdetail.tsx","./src/utils/chartindicators.ts"],"errors":true,"version":"5.6.3"}

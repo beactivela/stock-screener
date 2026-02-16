@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import TickerChart from '../components/TickerChart'
+import { useScan } from '../contexts/ScanContext'
 
 interface ScanResult {
   ticker: string
@@ -20,6 +22,23 @@ interface ScanResult {
   qtrEarningsYoY?: number | null
   profitMargin?: number | null
   operatingMargin?: number | null
+  // NEW: Enhanced scoring fields
+  enhancedScore?: number
+  baseScore?: number
+  industryRank?: number | null
+  industryName?: string | null
+  industryMultiplier?: number
+  relativeStrength?: number | null
+  rsData?: {
+    rs: number
+    stockChange: number
+    spyChange: number
+    outperforming: boolean
+  } | null
+  // NEW: Pattern detection fields
+  pattern?: string
+  patternConfidence?: number
+  patternDetails?: string
 }
 
 interface ScanPayload {
@@ -78,105 +97,129 @@ interface EvaluateResult {
 }
 
 export default function Dashboard() {
+  const { scanState, startScan: triggerScan } = useScan();
   const [data, setData] = useState<ScanPayload | null>(null)
+  const [apiError, setApiError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [scanning, setScanning] = useState(false)
-  const [scanProgress, setScanProgress] = useState<{ index: number; total: number } | null>(null)
   const [filter, setFilter] = useState<'all' | '10' | '20' | '50' | 'all3'>('all')
   const [tickerInput, setTickerInput] = useState('')
   const [evaluateResult, setEvaluateResult] = useState<EvaluateResult | null>(null)
   const [evaluateLoading, setEvaluateLoading] = useState(false)
   const [fundamentals, setFundamentals] = useState<
-    Record<string, { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null }>
+    Record<string, { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null; sector?: string | null; companyName?: string | null }>
   >({})
+  const [industryTrendMap, setIndustryTrendMap] = useState<Record<string, number>>({})
+  const [industryTrendMap6M, setIndustryTrendMap6M] = useState<Record<string, number>>({})
+  const [industryTrendMap1Y, setIndustryTrendMap1Y] = useState<Record<string, number>>({})
+  const [industryTrendMapYtd, setIndustryTrendMapYtd] = useState<Record<string, number>>({})
   const [fetchingFundamentals, setFetchingFundamentals] = useState(false)
   const [fundamentalsProgress, setFundamentalsProgress] = useState<{ index: number; total: number } | null>(null)
+  const [fetchingYahoo1Y, setFetchingYahoo1Y] = useState(false)
+  const [yahoo1YProgress, setYahoo1YProgress] = useState<{ index: number; total: number } | null>(null)
   const [sortColumn, setSortColumn] = useState<string>('score')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [viewMode, setViewMode] = useState<'table' | 'charts'>('table')
 
   useEffect(() => {
     fetch('/api/scan-results')
-      .then((r) => r.json())
-      .then(setData)
+      .then((r) => {
+        if (!r.ok) throw new Error(`API ${r.status}`)
+        return r.json()
+      })
+      .then((d) => {
+        setData(d)
+        setApiError(null)
+      })
+      .catch((err) => {
+        setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
+        setApiError(err instanceof Error ? err.message : 'API unavailable')
+      })
       .finally(() => setLoading(false))
   }, [])
+  
+  // Reload data when scan completes
+  useEffect(() => {
+    if (!scanState.running && scanState.progress.completedAt) {
+      fetch('/api/scan-results')
+        .then((r) => r.json())
+        .then((d) => setData(d))
+        .catch(() => {});
+    }
+  }, [scanState.running, scanState.progress.completedAt])
 
   useEffect(() => {
-    fetch('/api/fundamentals')
+    fetch('/api/fundamentals', { cache: 'no-store' })
       .then((r) => r.json())
       .then(setFundamentals)
       .catch(() => {})
   }, [])
 
-  const runScan = async () => {
-    setScanning(true)
-    setScanProgress(null)
-    setData((prev) => ({ ...prev, results: [], scannedAt: null, totalTickers: 0, vcpBullishCount: 0 } as ScanPayload))
-    try {
-      const res = await fetch('/api/scan', { method: 'POST' })
-      if (!res.ok || !res.body) {
-        const body = await res.json().catch(() => ({}))
-        if (body?.error) alert(body.error)
-        else alert(res.statusText || 'Scan failed')
-        return
-      }
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      const results: ScanResult[] = []
-      let total = 0
-      let vcpBullishCount = 0
+  useEffect(() => {
+    fetch('/api/industry-trend', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => {
+        const map3m: Record<string, number> = {}
+        const map6m: Record<string, number> = {}
+        const map1y: Record<string, number> = {}
+        const mapYtd: Record<string, number> = {}
+        for (const g of d?.industries ?? []) {
+          let trend3m = g.industryAvg3Mo
+          if (trend3m == null && g.tickers?.length) {
+            const withChange = g.tickers.filter((t: { change3mo?: number | null }) => t.change3mo != null)
+            if (withChange.length) trend3m = withChange.reduce((s: number, t: { change3mo?: number }) => s + (t.change3mo ?? 0), 0) / withChange.length
+          }
+          let trend6m = g.industryAvg6Mo
+          if (trend6m == null && g.tickers?.length) {
+            const withChange = g.tickers.filter((t: { change6mo?: number | null }) => t.change6mo != null)
+            if (withChange.length) trend6m = withChange.reduce((s: number, t: { change6mo?: number }) => s + (t.change6mo ?? 0), 0) / withChange.length
+          }
+          let trend1y = g.industryAvg1Y
+          if (trend1y == null && g.tickers?.length) {
+            const withChange = g.tickers.filter((t: { change1y?: number | null }) => t.change1y != null)
+            if (withChange.length) trend1y = withChange.reduce((s: number, t: { change1y?: number }) => s + (t.change1y ?? 0), 0) / withChange.length
+          }
+          let trendYtd = g.industryYtd
+          if (trendYtd == null && g.tickers?.length) {
+            const withChange = g.tickers.filter((t: { ytd?: number | null }) => t.ytd != null)
+            if (withChange.length) trendYtd = withChange.reduce((s: number, t: { ytd?: number }) => s + (t.ytd ?? 0), 0) / withChange.length
+          }
+          if (trend3m != null && !Number.isNaN(trend3m)) map3m[g.industry] = trend3m
+          if (trend6m != null && !Number.isNaN(trend6m)) map6m[g.industry] = trend6m
+          if (trend1y != null && !Number.isNaN(trend1y)) map1y[g.industry] = trend1y
+          if (trendYtd != null && !Number.isNaN(trendYtd)) mapYtd[g.industry] = trendYtd
+        }
+        setIndustryTrendMap(map3m)
+        setIndustryTrendMap6M(map6m)
+        setIndustryTrendMap1Y(map1y)
+        setIndustryTrendMapYtd(mapYtd)
+      })
+      .catch(() => {})
+  }, [])
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          const idx = line.indexOf('data: ')
-          if (idx === -1) continue
-          try {
-            const msg = JSON.parse(line.slice(idx + 6).trim()) as {
-              result?: ScanResult
-              index?: number
-              total?: number
-              vcpBullishCount?: number
-              done?: boolean
-              error?: string
-            }
-            if (msg.error) {
-              alert(msg.error)
-              return
-            }
-            if (msg.done) {
-              total = msg.total ?? results.length
-              vcpBullishCount = msg.vcpBullishCount ?? 0
-              break
-            }
-            if (msg.result) {
-              results.push(msg.result)
-              vcpBullishCount = msg.vcpBullishCount ?? 0
-              total = msg.total ?? 0
-              setScanProgress(msg.index != null && total ? { index: msg.index, total } : null)
-              setData({
-                scannedAt: new Date().toISOString(),
-                results: [...results].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
-                totalTickers: total,
-                vcpBullishCount,
-              })
-            }
-          } catch {
-            // skip malformed
+  const runScan = async () => {
+    try {
+      // Start the scan
+      await triggerScan();
+      
+      // Wait for scan to complete, then fetch fundamentals automatically
+      const checkAndFetch = setInterval(async () => {
+        if (!scanState.running && scanState.progress.completedAt) {
+          clearInterval(checkAndFetch);
+          
+          // Refresh results
+          const resultsResponse = await fetch('/api/scan-results');
+          const resultsData = await resultsResponse.json();
+          setData(resultsData);
+          
+          // Auto-fetch fundamentals for all tickers
+          const tickers = resultsData.results?.map((r: ScanResult) => r.ticker).filter(Boolean) || [];
+          if (tickers.length > 0) {
+            await fetchFundamentals();
           }
         }
-      }
-      // Final fetch in case we missed any
-      const final = await fetch('/api/scan-results').then((r) => r.json())
-      setData(final)
-    } finally {
-      setScanning(false)
-      setScanProgress(null)
+      }, 1000);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to start scan');
     }
   }
 
@@ -192,7 +235,8 @@ export default function Dashboard() {
       const res = await fetch('/api/fundamentals/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers }),
+        body: JSON.stringify({ tickers, force: true }), // true = always refetch to get company names (Yahoo cache can be stale)
+        cache: 'no-store',
       })
       if (!res.ok || !res.body) {
         const body = await res.json().catch(() => ({}))
@@ -204,7 +248,7 @@ export default function Dashboard() {
       let buffer = ''
       const merged: Record<
         string,
-        { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null }
+        { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null; sector?: string | null; companyName?: string | null }
       > = {}
 
       while (true) {
@@ -223,6 +267,9 @@ export default function Dashboard() {
               qtrEarningsYoY?: number | null
               profitMargin?: number | null
               operatingMargin?: number | null
+              industry?: string | null
+              sector?: string | null
+              companyName?: string | null
               index?: number
               total?: number
               done?: boolean
@@ -235,6 +282,9 @@ export default function Dashboard() {
                 qtrEarningsYoY: msg.qtrEarningsYoY ?? null,
                 profitMargin: msg.profitMargin ?? null,
                 operatingMargin: msg.operatingMargin ?? null,
+                industry: msg.industry ?? null,
+                sector: msg.sector ?? null,
+                companyName: msg.companyName ?? null,
               }
               setFundamentalsProgress(msg.index != null && msg.total ? { index: msg.index, total: msg.total } : null)
               setFundamentals((prev) => ({ ...prev, ...merged }))
@@ -244,11 +294,140 @@ export default function Dashboard() {
           }
         }
       }
-      const final = await fetch('/api/fundamentals').then((r) => r.json())
-      setFundamentals(final)
+      const finalRes = await fetch(`/api/fundamentals?t=${Date.now()}`, { cache: 'no-store' })
+      const final = await finalRes.json()
+      setFundamentals({ ...final, ...merged })
+      // Refetch industry trend so Industry 3M/6M/1Y/YTD columns update with new industry groupings
+      fetch('/api/industry-trend', { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((d) => {
+          const map3m: Record<string, number> = {}
+          const map6m: Record<string, number> = {}
+          const map1y: Record<string, number> = {}
+          const mapYtd: Record<string, number> = {}
+          for (const g of d?.industries ?? []) {
+            let trend3m = g.industryAvg3Mo
+            if (trend3m == null && g.tickers?.length) {
+              const withChange = g.tickers.filter((t: { change3mo?: number | null }) => t.change3mo != null)
+              if (withChange.length) trend3m = withChange.reduce((s: number, t: { change3mo?: number }) => s + (t.change3mo ?? 0), 0) / withChange.length
+            }
+            let trend6m = g.industryAvg6Mo
+            if (trend6m == null && g.tickers?.length) {
+              const withChange = g.tickers.filter((t: { change6mo?: number | null }) => t.change6mo != null)
+              if (withChange.length) trend6m = withChange.reduce((s: number, t: { change6mo?: number }) => s + (t.change6mo ?? 0), 0) / withChange.length
+            }
+            let trend1y = g.industryAvg1Y
+            if (trend1y == null && g.tickers?.length) {
+              const withChange = g.tickers.filter((t: { change1y?: number | null }) => t.change1y != null)
+              if (withChange.length) trend1y = withChange.reduce((s: number, t: { change1y?: number }) => s + (t.change1y ?? 0), 0) / withChange.length
+            }
+            let trendYtd = g.industryYtd
+            if (trendYtd == null && g.tickers?.length) {
+              const withChange = g.tickers.filter((t: { ytd?: number | null }) => t.ytd != null)
+              if (withChange.length) trendYtd = withChange.reduce((s: number, t: { ytd?: number }) => s + (t.ytd ?? 0), 0) / withChange.length
+            }
+            if (trend3m != null && !Number.isNaN(trend3m)) map3m[g.industry] = trend3m
+            if (trend6m != null && !Number.isNaN(trend6m)) map6m[g.industry] = trend6m
+            if (trend1y != null && !Number.isNaN(trend1y)) map1y[g.industry] = trend1y
+            if (trendYtd != null && !Number.isNaN(trendYtd)) mapYtd[g.industry] = trendYtd
+          }
+          setIndustryTrendMap(map3m)
+          setIndustryTrendMap6M(map6m)
+          setIndustryTrendMap1Y(map1y)
+          setIndustryTrendMapYtd(mapYtd)
+        })
+        .catch(() => {})
     } finally {
       setFetchingFundamentals(false)
       setFundamentalsProgress(null)
+    }
+  }
+
+  const fetchYahooIndustry1Y = async () => {
+    setFetchingYahoo1Y(true)
+    setYahoo1YProgress(null)
+    try {
+      const res = await fetch('/api/industry-trend/fetch-yahoo', { method: 'POST' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        alert(body?.error || res.statusText || 'Fetch failed')
+        return
+      }
+      if (!res.body) {
+        alert('Server returned empty response')
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const idx = line.indexOf('data: ')
+          if (idx === -1) continue
+          try {
+            const msg = JSON.parse(line.slice(idx + 6).trim()) as {
+              index?: number
+              total?: number
+              done?: boolean
+              error?: string
+            }
+            if (msg.done) {
+              if (msg.error) alert(msg.error)
+              break
+            }
+            if (msg.index != null && msg.total != null) setYahoo1YProgress({ index: msg.index, total: msg.total })
+          } catch {
+            /* skip */
+          }
+        }
+      }
+      // Refetch industry-trend to update Industry 1Y/6M columns
+      const trendRes = await fetch('/api/industry-trend', { cache: 'no-store' })
+      const d = await trendRes.json()
+      const map3m: Record<string, number> = {}
+      const map6m: Record<string, number> = {}
+      const map1y: Record<string, number> = {}
+      const mapYtd: Record<string, number> = {}
+      for (const g of d?.industries ?? []) {
+        let trend3m = g.industryAvg3Mo
+        if (trend3m == null && g.tickers?.length) {
+          const withChange = g.tickers.filter((t: { change3mo?: number | null }) => t.change3mo != null)
+          if (withChange.length) trend3m = withChange.reduce((s: number, t: { change3mo?: number }) => s + (t.change3mo ?? 0), 0) / withChange.length
+        }
+        let trend6m = g.industryAvg6Mo
+        if (trend6m == null && g.tickers?.length) {
+          const withChange = g.tickers.filter((t: { change6mo?: number | null }) => t.change6mo != null)
+          if (withChange.length) trend6m = withChange.reduce((s: number, t: { change6mo?: number }) => s + (t.change6mo ?? 0), 0) / withChange.length
+        }
+        let trend1y = g.industryAvg1Y
+        if (trend1y == null && g.tickers?.length) {
+          const withChange = g.tickers.filter((t: { change1y?: number | null }) => t.change1y != null)
+          if (withChange.length) trend1y = withChange.reduce((s: number, t: { change1y?: number }) => s + (t.change1y ?? 0), 0) / withChange.length
+        }
+        let trendYtd = g.industryYtd
+        if (trendYtd == null && g.tickers?.length) {
+          const withChange = g.tickers.filter((t: { ytd?: number | null }) => t.ytd != null)
+          if (withChange.length) trendYtd = withChange.reduce((s: number, t: { ytd?: number }) => s + (t.ytd ?? 0), 0) / withChange.length
+        }
+        if (trend3m != null && !Number.isNaN(trend3m)) map3m[g.industry] = trend3m
+        if (trend6m != null && !Number.isNaN(trend6m)) map6m[g.industry] = trend6m
+        if (trend1y != null && !Number.isNaN(trend1y)) map1y[g.industry] = trend1y
+        if (trendYtd != null && !Number.isNaN(trendYtd)) mapYtd[g.industry] = trendYtd
+      }
+      setIndustryTrendMap(map3m)
+      setIndustryTrendMap6M(map6m)
+      setIndustryTrendMap1Y(map1y)
+      setIndustryTrendMapYtd(mapYtd)
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Fetch industry 1Y failed')
+    } finally {
+      setFetchingYahoo1Y(false)
+      setYahoo1YProgress(null)
     }
   }
 
@@ -301,7 +480,15 @@ export default function Dashboard() {
       case 'ticker':
         return r.ticker
       case 'score':
-        return r.score ?? -1
+        return r.enhancedScore ?? r.score ?? -1
+      case 'pattern':
+        return r.pattern ?? 'None'
+      case 'patternConfidence':
+        return r.patternConfidence ?? -1
+      case 'relativeStrength':
+        return r.relativeStrength ?? -Infinity
+      case 'industryRank':
+        return r.industryRank ?? Infinity
       case 'close':
         return r.lastClose ?? -Infinity
       case 'contractions':
@@ -320,6 +507,16 @@ export default function Dashboard() {
         return fundamentals[r.ticker]?.profitMargin ?? -Infinity
       case 'operatingMargin':
         return fundamentals[r.ticker]?.operatingMargin ?? -Infinity
+      case 'industry':
+        return fundamentals[r.ticker]?.industry ?? ''
+      case 'industry3M':
+        return industryTrendMap[fundamentals[r.ticker]?.industry ?? ''] ?? -Infinity
+      case 'industry6M':
+        return industryTrendMap6M[fundamentals[r.ticker]?.industry ?? ''] ?? -Infinity
+      case 'industry1Y':
+        return industryTrendMap1Y[fundamentals[r.ticker]?.industry ?? ''] ?? -Infinity
+      case 'industryYtd':
+        return industryTrendMapYtd[fundamentals[r.ticker]?.industry ?? ''] ?? -Infinity
       default:
         return ''
     }
@@ -329,7 +526,15 @@ export default function Dashboard() {
     const va = getSortValue(a, sortColumn)
     const vb = getSortValue(b, sortColumn)
     const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb))
-    return sortDir === 'asc' ? cmp : -cmp
+    const primary = sortDir === 'asc' ? cmp : -cmp
+    // Secondary sort: when primary is equal and sorting by score, break tie by Industry 1Y (desc)
+    if (primary !== 0) return primary
+    if (sortColumn === 'score') {
+      const i1yA = industryTrendMap1Y[fundamentals[a.ticker]?.industry ?? ''] ?? -Infinity
+      const i1yB = industryTrendMap1Y[fundamentals[b.ticker]?.industry ?? ''] ?? -Infinity
+      return i1yB - i1yA // desc: higher 1Y first
+    }
+    return 0
   })
 
   const handleSort = (col: string) => {
@@ -340,17 +545,19 @@ export default function Dashboard() {
     }
   }
 
-  const SortHeader = ({ col, label }: { col: string; label: string }) => (
+  const SortHeader = ({ col, label, alignRight, sticky, stickyLeft }: { col: string; label: string; alignRight?: boolean; sticky?: boolean; stickyLeft?: string }) => {
+    const leftClass = sticky && stickyLeft === '0' ? 'left-0' : sticky && stickyLeft === '10rem' ? 'left-[10rem]' : ''
+    return (
     <th
-      className="px-4 py-3 text-slate-300 font-medium cursor-pointer hover:text-slate-100 select-none"
+      className={`px-4 py-3 text-slate-300 font-medium cursor-pointer hover:text-slate-100 select-none whitespace-nowrap ${alignRight ? 'text-right' : ''} sticky top-0 z-20 bg-slate-900/95 backdrop-blur-sm ${sticky ? `shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] ${leftClass}` : ''}`}
       onClick={() => handleSort(col)}
     >
-      <span className="inline-flex items-center gap-1">
+      <span className={`inline-flex items-center gap-1 ${alignRight ? 'justify-end' : ''}`}>
         {label}
         {sortColumn === col && <span className="text-sky-400">{sortDir === 'asc' ? '↑' : '↓'}</span>}
       </span>
     </th>
-  )
+  )}
 
   if (loading) {
     return (
@@ -362,218 +569,402 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-100">VCP Bullish Setups</h1>
-          <p className="text-slate-400 mt-1">
-            S&P 500 tickers from flat file, scored by VCP setup. Sorted by score descending. Run populate-tickers 500 for full list.
-          </p>
-        </div>
-        <div className="flex gap-2 shrink-0">
-          <button
-            onClick={fetchFundamentals}
-            disabled={fetchingFundamentals || !(data?.results?.length)}
-            className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium"
-          >
-            {fetchingFundamentals
-              ? fundamentalsProgress
-                ? `Fetching ${fundamentalsProgress.index}/${fundamentalsProgress.total}…`
-                : 'Fetching…'
-              : 'Fetch fundamentals'}
-          </button>
-          <button
-            onClick={runScan}
-            disabled={scanning}
-            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
-          >
-            {scanning
-              ? scanProgress
-                ? `Scanning ${scanProgress.index}/${scanProgress.total}…`
-                : 'Scanning…'
-              : 'Run scan now'}
-          </button>
-        </div>
+      {/* Header section with title and description */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-100">VCP Bullish Setups</h1>
+        <p className="text-slate-400 mt-1">
+          S&P 500 tickers from flat file, scored by VCP setup. Sorted by score descending. Run populate-tickers 500 for full list.
+        </p>
       </div>
 
-      {/* Add ticker: evaluate and show buy score */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-        <h2 className="text-lg font-medium text-slate-200 mb-3">Evaluate a ticker</h2>
-        <p className="text-slate-400 text-sm mb-3">
-          Enter a symbol to get a 0–100 buy score and recommendation (buy / hold / avoid) based on VCP setup.
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="text"
-            placeholder="e.g. AAPL"
-            value={tickerInput}
-            onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
-            onKeyDown={(e) => e.key === 'Enter' && evaluateTicker()}
-            className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 w-32 focus:outline-none focus:ring-2 focus:ring-sky-500"
-            aria-label="Ticker symbol"
-          />
-          <button
-            type="button"
-            onClick={evaluateTicker}
-            disabled={evaluateLoading || !tickerInput.trim()}
-            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
-          >
-            {evaluateLoading ? 'Evaluating…' : 'Evaluate'}
-          </button>
+      {/* Action row: ticker search + buttons */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          placeholder="e.g. AAPL"
+          value={tickerInput}
+          onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
+          onKeyDown={(e) => e.key === 'Enter' && evaluateTicker()}
+          className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 w-32 focus:outline-none focus:ring-2 focus:ring-sky-500"
+          aria-label="Ticker symbol"
+        />
+        <button
+          type="button"
+          onClick={evaluateTicker}
+          disabled={evaluateLoading || !tickerInput.trim()}
+          className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-medium"
+        >
+          {evaluateLoading ? 'Evaluating…' : 'Evaluate'}
+        </button>
+        <button
+          onClick={fetchYahooIndustry1Y}
+          disabled={fetchingYahoo1Y || !(data?.results?.length)}
+          className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-medium"
+          title="Fetch Industry 1Y from Yahoo Finance"
+        >
+          {fetchingYahoo1Y
+            ? yahoo1YProgress
+              ? `Fetching 1Y ${yahoo1YProgress.index}/${yahoo1YProgress.total}…`
+              : 'Fetching 1Y…'
+            : 'Fetch industry 1Y'}
+        </button>
+        <button
+          onClick={runScan}
+          disabled={scanState.running || fetchingFundamentals}
+          className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
+        >
+          {scanState.running
+            ? `Scanning ${scanState.progress.index}/${scanState.progress.total}…`
+            : fetchingFundamentals
+              ? fundamentalsProgress
+                ? `Fetching fundamentals ${fundamentalsProgress.index}/${fundamentalsProgress.total}…`
+                : 'Fetching fundamentals…'
+              : 'Run Scan'}
+        </button>
+      </div>
+
+      {/* Banner when API server is not running */}
+      {apiError && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+          <p className="text-amber-200 font-medium">Cannot load data – API server not running</p>
+          <p className="text-amber-200/80 text-sm mt-1">
+            Open a terminal and run <code className="bg-amber-900/50 px-1 rounded">npm run server</code>, then refresh this page. Your data (scan-results.json, fundamentals.json) is still in the <code className="bg-amber-900/50 px-1 rounded">data/</code> folder.
+          </p>
         </div>
-        {evaluateResult && (
-          <div className="mt-4 p-4 rounded-lg bg-slate-800/80 border border-slate-700">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="font-semibold text-slate-100">{evaluateResult.ticker}</span>
-              {evaluateResult.error ? (
-                <span className="text-amber-400 text-sm">{evaluateResult.error}</span>
-              ) : (
-                <>
-                  <span className="text-slate-400">Score:</span>
-                  <span className="text-xl font-bold text-slate-100">{evaluateResult.score ?? 0}/100</span>
-                  <span
-                    className={`px-2 py-1 rounded text-sm font-medium ${
-                      evaluateResult.recommendation === 'buy'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : evaluateResult.recommendation === 'hold'
-                          ? 'bg-amber-500/20 text-amber-400'
-                          : 'bg-slate-600 text-slate-400'
-                    }`}
-                  >
-                    {evaluateResult.recommendation === 'buy' ? 'Buy' : evaluateResult.recommendation === 'hold' ? 'Hold' : 'Avoid'}
-                  </span>
-                  <Link
-                    to={`/stock/${evaluateResult.ticker}`}
-                    className="text-sky-400 hover:text-sky-300 text-sm"
-                  >
-                    View chart →
-                  </Link>
-                </>
-              )}
+      )}
+      
+      {/* Background scan indicator */}
+      {scanState.running && (
+        <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sky-200 font-medium">🔄 Scan running in background</p>
+              <p className="text-sky-200/80 text-sm mt-1">
+                Progress: {scanState.progress.index}/{scanState.progress.total} tickers 
+                · {scanState.progress.vcpBullishCount} VCP bullish
+                · You can navigate away, the scan will continue
+              </p>
             </div>
-            {!evaluateResult.error && evaluateResult.lastClose != null && (
-              <div className="mt-2 text-slate-500 text-sm">
-                Last close: {evaluateResult.lastClose.toFixed(2)}
-                {evaluateResult.contractions > 0 && ` · ${evaluateResult.contractions} contraction(s)`}
+            <div className="text-right">
+              <div className="text-2xl font-bold text-sky-400">
+                {Math.round((scanState.progress.index / Math.max(scanState.progress.total, 1)) * 100)}%
               </div>
-            )}
-            {!evaluateResult.error && (() => {
-              const breakdown = evaluateResult.scoreBreakdown?.length ? evaluateResult.scoreBreakdown : getScoreBreakdown(evaluateResult)
-              return breakdown.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-slate-700">
-                <div className="text-slate-400 text-sm font-medium mb-2">Why this score?</div>
-                <ul className="space-y-1 text-sm">
-                  {breakdown.map((c, i) => (
-                    <li key={i} className={c.matched ? 'text-slate-300' : ''}>
-                      {c.matched ? '✓' : '–'} {c.criterion}
-                      {c.detail && <span className="text-slate-500"> ({c.detail})</span>}
-                      {c.points > 0 && <span className="text-sky-400 ml-1">+{c.points}</span>}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )
-            })()}
+            </div>
           </div>
+          <div className="mt-3 h-2 bg-slate-800 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-sky-500 transition-all duration-300"
+              style={{ width: `${(scanState.progress.index / Math.max(scanState.progress.total, 1)) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Evaluation result (if any) */}
+      {evaluateResult && (
+        <div className="rounded-lg bg-slate-800/80 border border-slate-700 p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-semibold text-slate-100">{evaluateResult.ticker}</span>
+            {evaluateResult.error ? (
+              <span className="text-amber-400 text-sm">{evaluateResult.error}</span>
+            ) : (
+              <>
+                <span className="text-slate-400">Score:</span>
+                <span className="text-xl font-bold text-slate-100">{evaluateResult.score ?? 0}/100</span>
+                <span
+                  className={`px-2 py-1 rounded text-sm font-medium ${
+                    evaluateResult.recommendation === 'buy'
+                      ? 'bg-emerald-500/20 text-emerald-400'
+                      : evaluateResult.recommendation === 'hold'
+                        ? 'bg-amber-500/20 text-amber-400'
+                        : 'bg-slate-600 text-slate-400'
+                  }`}
+                >
+                  {evaluateResult.recommendation === 'buy' ? 'Buy' : evaluateResult.recommendation === 'hold' ? 'Hold' : 'Avoid'}
+                </span>
+                <Link
+                  to={`/stock/${evaluateResult.ticker}`}
+                  className="text-sky-400 hover:text-sky-300 text-sm"
+                >
+                  View chart →
+                </Link>
+              </>
+            )}
+          </div>
+          {!evaluateResult.error && evaluateResult.lastClose != null && (
+            <div className="mt-2 text-slate-500 text-sm">
+              Last close: {evaluateResult.lastClose.toFixed(2)}
+              {evaluateResult.contractions > 0 && ` · ${evaluateResult.contractions} contraction(s)`}
+            </div>
+          )}
+          {!evaluateResult.error && (() => {
+            const breakdown = evaluateResult.scoreBreakdown?.length ? evaluateResult.scoreBreakdown : getScoreBreakdown(evaluateResult)
+            return breakdown.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-slate-700">
+              <div className="text-slate-400 text-sm font-medium mb-2">Why this score?</div>
+              <ul className="space-y-1 text-sm">
+                {breakdown.map((c, i) => (
+                  <li key={i} className={c.matched ? 'text-slate-300' : ''}>
+                    {c.matched ? '✓' : '–'} {c.criterion}
+                    {c.detail && <span className="text-slate-500"> ({c.detail})</span>}
+                    {c.points > 0 && <span className="text-sky-400 ml-1">+{c.points}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )
+          })()}
+        </div>
+      )}
+      
+      {/* Last scan info - no border, 10pt font */}
+      <div className="flex flex-wrap items-center gap-4" style={{ fontSize: '10pt' }}>
+        <span className="text-slate-400">
+          Last scan:{' '}
+          {data?.scannedAt
+            ? new Date(data.scannedAt).toLocaleString()
+            : 'Never (run scan or run `npm run scan`)'}
+        </span>
+        {data?.totalTickers != null && (
+          <span className="text-slate-400">
+            Tickers scanned: {data.totalTickers} · VCP bullish: {data.vcpBullishCount}
+          </span>
         )}
       </div>
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <span className="text-slate-400">
-            Last scan:{' '}
-            {data?.scannedAt
-              ? new Date(data.scannedAt).toLocaleString()
-              : 'Never (run scan or run `npm run scan`)'}
-          </span>
-          {data?.totalTickers != null && (
-            <span className="text-slate-400">
-              Tickers scanned: {data.totalTickers} · VCP bullish: {data.vcpBullishCount}
-            </span>
-          )}
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex flex-wrap gap-2">
+          <span className="text-slate-400 text-sm mr-2">Filter by MA:</span>
+          {(['all', '10', '20', '50', 'all3'] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+                filter === f
+                  ? 'bg-sky-600 text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              {f === 'all' ? 'All' : f === 'all3' ? '10+20+50' : `${f} MA`}
+            </button>
+          ))}
         </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <span className="text-slate-400 text-sm mr-2">Filter by MA:</span>
-        {(['all', '10', '20', '50', 'all3'] as const).map((f) => (
+        <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
+          <span className="text-slate-400 text-sm">View:</span>
           <button
-            key={f}
-            onClick={() => setFilter(f)}
+            onClick={() => setViewMode('table')}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-              filter === f
+              viewMode === 'table'
                 ? 'bg-sky-600 text-white'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
             }`}
           >
-            {f === 'all' ? 'All' : f === 'all3' ? '10+20+50' : `${f} MA`}
+            Table
           </button>
-        ))}
+          <button
+            onClick={() => setViewMode('charts')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+              viewMode === 'charts'
+                ? 'bg-sky-600 text-white'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            Charts
+          </button>
+        </div>
       </div>
 
+      {viewMode === 'charts' ? (
+        sorted.length === 0 ? (
+          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-8 text-center text-slate-500">
+            No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.
+          </div>
+        ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {sorted.map((r) => (
+            <TickerChart
+              key={r.ticker}
+              ticker={r.ticker}
+              score={r.score}
+              recommendation={r.recommendation}
+            />
+          ))}
+        </div>
+        )
+      ) : (
       <div className="rounded-xl border border-slate-800 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
+        <div className="overflow-x-scroll min-w-0">
+          <table className="w-full min-w-[2000px]">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-900/80">
-                <SortHeader col="ticker" label="Ticker" />
-                <SortHeader col="score" label="Score" />
-                <SortHeader col="close" label="Close" />
-                <SortHeader col="contractions" label="Contractions" />
-                <SortHeader col="ma10" label="10 MA" />
-                <SortHeader col="ma20" label="20 MA" />
-                <SortHeader col="ma50" label="50 MA" />
-                <SortHeader col="pctHeldByInst" label="% Held by Inst" />
-                <SortHeader col="qtrEarningsYoY" label="Qtr Earnings YoY" />
-                <SortHeader col="profitMargin" label="Profit Margin" />
-                <SortHeader col="operatingMargin" label="Operating Margin" />
-                <th className="px-4 py-3 text-slate-300 font-medium"></th>
+                <SortHeader col="ticker" label="Ticker" sticky stickyLeft="0" />
+                <SortHeader col="score" label="Score" alignRight sticky stickyLeft="10rem" />
+                <SortHeader col="pattern" label="Setup" />
+                <SortHeader col="relativeStrength" label="RS" alignRight />
+                <SortHeader col="industryRank" label="Ind.Rank" alignRight />
+                <SortHeader col="close" label="Price" alignRight />
+                <SortHeader col="contractions" label="Contractions" alignRight />
+                <SortHeader col="ma10" label="10 MA" alignRight />
+                <SortHeader col="ma20" label="20 MA" alignRight />
+                <SortHeader col="ma50" label="50 MA" alignRight />
+                <SortHeader col="pctHeldByInst" label="% Held by Inst" alignRight />
+                <SortHeader col="qtrEarningsYoY" label="Qtr Earnings YoY" alignRight />
+                <SortHeader col="profitMargin" label="Profit Margin" alignRight />
+                <SortHeader col="operatingMargin" label="Operating Margin" alignRight />
+                <SortHeader col="industry1Y" label="Industry 1Y" alignRight />
+                <SortHeader col="industry6M" label="Industry 6M" alignRight />
+                <SortHeader col="industry3M" label="Industry 3M" alignRight />
+                <SortHeader col="industryYtd" label="Industry YTD" alignRight />
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={18} className="px-4 py-8 text-center text-slate-500">
                     No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.
                   </td>
                 </tr>
               ) : (
                 sorted.map((r) => (
-                  <tr key={r.ticker} className="border-b border-slate-800/80 hover:bg-slate-800/40">
-                    <td className="px-4 py-3">
+                  <tr key={r.ticker} className="group border-b border-slate-800/80 hover:bg-slate-800/40">
+                    <td className="sticky left-0 z-10 min-w-[10rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3">
                       <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium">
                         {r.ticker}
                       </Link>
+                      {(fundamentals[r.ticker]?.companyName ?? fundamentals[r.ticker]?.industry) && (
+                        <div className="text-slate-400 mt-1 truncate" style={{ fontSize: '10pt' }}>
+                          {fundamentals[r.ticker].companyName ?? fundamentals[r.ticker].industry}
+                        </div>
+                      )}
                     </td>
-                    <td className="px-4 py-3 font-medium tabular-nums">
+                    <td className="sticky left-[10rem] z-10 min-w-[5rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3 font-medium tabular-nums text-right">
                       <span className={r.recommendation === 'buy' ? 'text-emerald-400' : r.recommendation === 'hold' ? 'text-amber-400' : 'text-slate-300'}>
-                        {r.error ? '–' : typeof r.score === 'number' ? `${r.score}/100` : '–'}
+                        {r.error ? '–' : typeof (r.enhancedScore ?? r.score) === 'number' ? `${r.enhancedScore ?? r.score}/100` : '–'}
                       </span>
+                      {r.industryMultiplier != null && r.industryMultiplier !== 1.0 && (
+                        <span className="text-xs ml-1 text-slate-500">
+                          ({r.industryMultiplier > 1 ? '+' : ''}{((r.industryMultiplier - 1) * 100).toFixed(0)}%)
+                        </span>
+                      )}
                     </td>
-                    <td className="px-4 py-3 text-slate-300">{r.lastClose != null ? r.lastClose.toFixed(2) : '–'}</td>
-                    <td className="px-4 py-3 text-slate-300">{r.contractions ?? '–'}</td>
-                    <td className="px-4 py-3">{r.atMa10 ? '✓' : '–'}</td>
-                    <td className="px-4 py-3">{r.atMa20 ? '✓' : '–'}</td>
-                    <td className="px-4 py-3">{r.atMa50 ? '✓' : '–'}</td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums">
+                    {/* Pattern/Setup */}
+                    <td className="px-4 py-3">
+                      {r.pattern && r.pattern !== 'None' ? (
+                        <div className="flex items-center gap-2" title={r.patternDetails || ''}>
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            r.pattern === 'VCP' ? 'bg-sky-500/20 text-sky-400' :
+                            r.pattern === 'Flat Base' ? 'bg-purple-500/20 text-purple-400' :
+                            r.pattern === 'Cup-with-Handle' ? 'bg-emerald-500/20 text-emerald-400' :
+                            'bg-slate-700 text-slate-400'
+                          }`}>
+                            {r.pattern === 'Cup-with-Handle' ? 'C&H' : r.pattern === 'Flat Base' ? 'Flat' : r.pattern}
+                          </span>
+                          {r.patternConfidence != null && (
+                            <span className="text-xs text-slate-500">{r.patternConfidence}%</span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-slate-500">–</span>
+                      )}
+                    </td>
+                    {/* RS vs SPY */}
+                    <td className="px-4 py-3 tabular-nums text-right">
+                      {r.relativeStrength != null ? (
+                        <span className={`font-medium ${
+                          r.relativeStrength > 110 ? 'text-emerald-400' :
+                          r.relativeStrength > 100 ? 'text-green-400' :
+                          r.relativeStrength > 90 ? 'text-slate-300' :
+                          'text-red-400'
+                        }`}>
+                          {r.relativeStrength.toFixed(1)}
+                        </span>
+                      ) : '–'}
+                    </td>
+                    {/* Industry Rank */}
+                    <td className="px-4 py-3 tabular-nums text-right">
+                      {r.industryRank != null ? (
+                        <span className={`font-medium ${
+                          r.industryRank <= 20 ? 'text-emerald-400' :
+                          r.industryRank <= 40 ? 'text-green-400' :
+                          r.industryRank <= 80 ? 'text-slate-300' :
+                          'text-red-400'
+                        }`}>
+                          #{r.industryRank}
+                        </span>
+                      ) : '–'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">{r.lastClose != null ? `$${r.lastClose.toFixed(2)}` : '–'}</td>
+                    <td className="px-4 py-3 text-slate-300 text-right">{r.contractions ?? '–'}</td>
+                    <td className="px-4 py-3 text-right">{r.atMa10 ? '✅' : '–'}</td>
+                    <td className="px-4 py-3 text-right">{r.atMa20 ? '✅' : '–'}</td>
+                    <td className="px-4 py-3 text-right">{r.atMa50 ? '✅' : '–'}</td>
+                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
                       {fundamentals[r.ticker]?.pctHeldByInst != null ? `${fundamentals[r.ticker].pctHeldByInst}%` : '–'}
                     </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums">
+                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
                       {fundamentals[r.ticker]?.qtrEarningsYoY != null ? `${fundamentals[r.ticker].qtrEarningsYoY}%` : '–'}
                     </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums">
+                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
                       {fundamentals[r.ticker]?.profitMargin != null ? `${fundamentals[r.ticker].profitMargin}%` : '–'}
                     </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums">
+                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
                       {fundamentals[r.ticker]?.operatingMargin != null ? `${fundamentals[r.ticker].operatingMargin}%` : '–'}
                     </td>
-                    <td className="px-4 py-3">
-                      <Link
-                        to={`/stock/${r.ticker}`}
-                        state={{ scanResult: r }}
-                        className="text-sky-400 hover:text-sky-300 text-sm"
-                      >
-                        Chart →
-                      </Link>
+                    {/* Industry 1Y */}
+                    <td className="px-4 py-3 text-right">
+                      {(() => {
+                        const ind = fundamentals[r.ticker]?.industry
+                        const trend = ind != null ? industryTrendMap1Y[ind] : undefined
+                        return trend != null ? (
+                          <span className={trend >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                            {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">–</span>
+                        )
+                      })()}
+                    </td>
+                    {/* Industry 6M */}
+                    <td className="px-4 py-3 text-right">
+                      {(() => {
+                        const ind = fundamentals[r.ticker]?.industry
+                        const trend = ind != null ? industryTrendMap6M[ind] : undefined
+                        return trend != null ? (
+                          <span className={trend >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                            {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">–</span>
+                        )
+                      })()}
+                    </td>
+                    {/* Industry 3M */}
+                    <td className="px-4 py-3 text-right">
+                      {(() => {
+                        const ind = fundamentals[r.ticker]?.industry
+                        const trend = ind != null ? industryTrendMap[ind] : undefined
+                        return trend != null ? (
+                          <span className={trend >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                            {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">–</span>
+                        )
+                      })()}
+                    </td>
+                    {/* Industry YTD */}
+                    <td className="px-4 py-3 text-right">
+                      {(() => {
+                        const ind = fundamentals[r.ticker]?.industry
+                        const trend = ind != null ? industryTrendMapYtd[ind] : undefined
+                        return trend != null ? (
+                          <span className={trend >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                            {trend >= 0 ? '+' : ''}{trend.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">–</span>
+                        )
+                      })()}
                     </td>
                   </tr>
                 ))
@@ -582,6 +973,7 @@ export default function Dashboard() {
           </table>
         </div>
       </div>
+      )}
     </div>
   )
 }
