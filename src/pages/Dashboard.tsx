@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import TickerChart from '../components/TickerChart'
+import SortHeader from '../components/SortHeader'
 import { useScan } from '../contexts/ScanContext'
+import { buildIndustryMaps } from '../utils/industryMaps'
+import { API_BASE } from '../utils/api'
 
 interface ScanResult {
   ticker: string
@@ -121,7 +124,7 @@ export default function Dashboard() {
   const [viewMode, setViewMode] = useState<'table' | 'charts'>('table')
 
   useEffect(() => {
-    fetch('/api/scan-results')
+    fetch(`${API_BASE}/api/scan-results`)
       .then((r) => {
         if (!r.ok) throw new Error(`API ${r.status}`)
         return r.json()
@@ -140,7 +143,7 @@ export default function Dashboard() {
   // Reload data when scan completes
   useEffect(() => {
     if (!scanState.running && scanState.progress.completedAt) {
-      fetch('/api/scan-results')
+      fetch(`${API_BASE}/api/scan-results`)
         .then((r) => r.json())
         .then((d) => setData(d))
         .catch(() => {});
@@ -148,46 +151,17 @@ export default function Dashboard() {
   }, [scanState.running, scanState.progress.completedAt])
 
   useEffect(() => {
-    fetch('/api/fundamentals', { cache: 'no-store' })
+    fetch(`${API_BASE}/api/fundamentals`, { cache: 'no-store' })
       .then((r) => r.json())
       .then(setFundamentals)
       .catch(() => {})
   }, [])
 
   useEffect(() => {
-    fetch('/api/industry-trend', { cache: 'no-store' })
+    fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
-        const map3m: Record<string, number> = {}
-        const map6m: Record<string, number> = {}
-        const map1y: Record<string, number> = {}
-        const mapYtd: Record<string, number> = {}
-        for (const g of d?.industries ?? []) {
-          let trend3m = g.industryAvg3Mo
-          if (trend3m == null && g.tickers?.length) {
-            const withChange = g.tickers.filter((t: { change3mo?: number | null }) => t.change3mo != null)
-            if (withChange.length) trend3m = withChange.reduce((s: number, t: { change3mo?: number }) => s + (t.change3mo ?? 0), 0) / withChange.length
-          }
-          let trend6m = g.industryAvg6Mo
-          if (trend6m == null && g.tickers?.length) {
-            const withChange = g.tickers.filter((t: { change6mo?: number | null }) => t.change6mo != null)
-            if (withChange.length) trend6m = withChange.reduce((s: number, t: { change6mo?: number }) => s + (t.change6mo ?? 0), 0) / withChange.length
-          }
-          let trend1y = g.industryAvg1Y
-          if (trend1y == null && g.tickers?.length) {
-            const withChange = g.tickers.filter((t: { change1y?: number | null }) => t.change1y != null)
-            if (withChange.length) trend1y = withChange.reduce((s: number, t: { change1y?: number }) => s + (t.change1y ?? 0), 0) / withChange.length
-          }
-          let trendYtd = g.industryYtd
-          if (trendYtd == null && g.tickers?.length) {
-            const withChange = g.tickers.filter((t: { ytd?: number | null }) => t.ytd != null)
-            if (withChange.length) trendYtd = withChange.reduce((s: number, t: { ytd?: number }) => s + (t.ytd ?? 0), 0) / withChange.length
-          }
-          if (trend3m != null && !Number.isNaN(trend3m)) map3m[g.industry] = trend3m
-          if (trend6m != null && !Number.isNaN(trend6m)) map6m[g.industry] = trend6m
-          if (trend1y != null && !Number.isNaN(trend1y)) map1y[g.industry] = trend1y
-          if (trendYtd != null && !Number.isNaN(trendYtd)) mapYtd[g.industry] = trendYtd
-        }
+        const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(d?.industries)
         setIndustryTrendMap(map3m)
         setIndustryTrendMap6M(map6m)
         setIndustryTrendMap1Y(map1y)
@@ -207,7 +181,7 @@ export default function Dashboard() {
           clearInterval(checkAndFetch);
           
           // Refresh results
-          const resultsResponse = await fetch('/api/scan-results');
+          const resultsResponse = await fetch(`${API_BASE}/api/scan-results`);
           const resultsData = await resultsResponse.json();
           setData(resultsData);
           
@@ -232,7 +206,7 @@ export default function Dashboard() {
     setFetchingFundamentals(true)
     setFundamentalsProgress(null)
     try {
-      const res = await fetch('/api/fundamentals/fetch', {
+      const res = await fetch(`${API_BASE}/api/fundamentals/fetch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickers, force: true }), // true = always refetch to get company names (Yahoo cache can be stale)
@@ -294,43 +268,14 @@ export default function Dashboard() {
           }
         }
       }
-      const finalRes = await fetch(`/api/fundamentals?t=${Date.now()}`, { cache: 'no-store' })
+      const finalRes = await fetch(`${API_BASE}/api/fundamentals?t=${Date.now()}`, { cache: 'no-store' })
       const final = await finalRes.json()
       setFundamentals({ ...final, ...merged })
       // Refetch industry trend so Industry 3M/6M/1Y/YTD columns update with new industry groupings
-      fetch('/api/industry-trend', { cache: 'no-store' })
+      fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
         .then((r) => r.json())
         .then((d) => {
-          const map3m: Record<string, number> = {}
-          const map6m: Record<string, number> = {}
-          const map1y: Record<string, number> = {}
-          const mapYtd: Record<string, number> = {}
-          for (const g of d?.industries ?? []) {
-            let trend3m = g.industryAvg3Mo
-            if (trend3m == null && g.tickers?.length) {
-              const withChange = g.tickers.filter((t: { change3mo?: number | null }) => t.change3mo != null)
-              if (withChange.length) trend3m = withChange.reduce((s: number, t: { change3mo?: number }) => s + (t.change3mo ?? 0), 0) / withChange.length
-            }
-            let trend6m = g.industryAvg6Mo
-            if (trend6m == null && g.tickers?.length) {
-              const withChange = g.tickers.filter((t: { change6mo?: number | null }) => t.change6mo != null)
-              if (withChange.length) trend6m = withChange.reduce((s: number, t: { change6mo?: number }) => s + (t.change6mo ?? 0), 0) / withChange.length
-            }
-            let trend1y = g.industryAvg1Y
-            if (trend1y == null && g.tickers?.length) {
-              const withChange = g.tickers.filter((t: { change1y?: number | null }) => t.change1y != null)
-              if (withChange.length) trend1y = withChange.reduce((s: number, t: { change1y?: number }) => s + (t.change1y ?? 0), 0) / withChange.length
-            }
-            let trendYtd = g.industryYtd
-            if (trendYtd == null && g.tickers?.length) {
-              const withChange = g.tickers.filter((t: { ytd?: number | null }) => t.ytd != null)
-              if (withChange.length) trendYtd = withChange.reduce((s: number, t: { ytd?: number }) => s + (t.ytd ?? 0), 0) / withChange.length
-            }
-            if (trend3m != null && !Number.isNaN(trend3m)) map3m[g.industry] = trend3m
-            if (trend6m != null && !Number.isNaN(trend6m)) map6m[g.industry] = trend6m
-            if (trend1y != null && !Number.isNaN(trend1y)) map1y[g.industry] = trend1y
-            if (trendYtd != null && !Number.isNaN(trendYtd)) mapYtd[g.industry] = trendYtd
-          }
+          const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(d?.industries)
           setIndustryTrendMap(map3m)
           setIndustryTrendMap6M(map6m)
           setIndustryTrendMap1Y(map1y)
@@ -347,7 +292,7 @@ export default function Dashboard() {
     setFetchingYahoo1Y(true)
     setYahoo1YProgress(null)
     try {
-      const res = await fetch('/api/industry-trend/fetch-yahoo', { method: 'POST' })
+      const res = await fetch(`${API_BASE}/api/industry-trend/fetch-yahoo`, { method: 'POST' })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         alert(body?.error || res.statusText || 'Fetch failed')
@@ -387,38 +332,9 @@ export default function Dashboard() {
         }
       }
       // Refetch industry-trend to update Industry 1Y/6M columns
-      const trendRes = await fetch('/api/industry-trend', { cache: 'no-store' })
+      const trendRes = await fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
       const d = await trendRes.json()
-      const map3m: Record<string, number> = {}
-      const map6m: Record<string, number> = {}
-      const map1y: Record<string, number> = {}
-      const mapYtd: Record<string, number> = {}
-      for (const g of d?.industries ?? []) {
-        let trend3m = g.industryAvg3Mo
-        if (trend3m == null && g.tickers?.length) {
-          const withChange = g.tickers.filter((t: { change3mo?: number | null }) => t.change3mo != null)
-          if (withChange.length) trend3m = withChange.reduce((s: number, t: { change3mo?: number }) => s + (t.change3mo ?? 0), 0) / withChange.length
-        }
-        let trend6m = g.industryAvg6Mo
-        if (trend6m == null && g.tickers?.length) {
-          const withChange = g.tickers.filter((t: { change6mo?: number | null }) => t.change6mo != null)
-          if (withChange.length) trend6m = withChange.reduce((s: number, t: { change6mo?: number }) => s + (t.change6mo ?? 0), 0) / withChange.length
-        }
-        let trend1y = g.industryAvg1Y
-        if (trend1y == null && g.tickers?.length) {
-          const withChange = g.tickers.filter((t: { change1y?: number | null }) => t.change1y != null)
-          if (withChange.length) trend1y = withChange.reduce((s: number, t: { change1y?: number }) => s + (t.change1y ?? 0), 0) / withChange.length
-        }
-        let trendYtd = g.industryYtd
-        if (trendYtd == null && g.tickers?.length) {
-          const withChange = g.tickers.filter((t: { ytd?: number | null }) => t.ytd != null)
-          if (withChange.length) trendYtd = withChange.reduce((s: number, t: { ytd?: number }) => s + (t.ytd ?? 0), 0) / withChange.length
-        }
-        if (trend3m != null && !Number.isNaN(trend3m)) map3m[g.industry] = trend3m
-        if (trend6m != null && !Number.isNaN(trend6m)) map6m[g.industry] = trend6m
-        if (trend1y != null && !Number.isNaN(trend1y)) map1y[g.industry] = trend1y
-        if (trendYtd != null && !Number.isNaN(trendYtd)) mapYtd[g.industry] = trendYtd
-      }
+      const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(d?.industries)
       setIndustryTrendMap(map3m)
       setIndustryTrendMap6M(map6m)
       setIndustryTrendMap1Y(map1y)
@@ -436,7 +352,7 @@ export default function Dashboard() {
     if (!sym) return
     setEvaluateLoading(true)
     setEvaluateResult(null)
-    fetch(`/api/vcp/${encodeURIComponent(sym)}`)
+    fetch(`${API_BASE}/api/vcp/${encodeURIComponent(sym)}`)
       .then(async (r) => {
         const text = await r.text()
         let body: unknown = null
@@ -537,27 +453,18 @@ export default function Dashboard() {
     return 0
   })
 
-  const handleSort = (col: string) => {
-    if (sortColumn === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
-    else {
-      setSortColumn(col)
+  const handleSort = useCallback((col: string) => {
+    setSortColumn((prev) => {
+      if (prev === col) {
+        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+        return prev
+      }
       setSortDir(col === 'ticker' ? 'asc' : 'desc')
-    }
-  }
+      return col
+    })
+  }, [])
 
-  const SortHeader = ({ col, label, alignRight, sticky, stickyLeft }: { col: string; label: string; alignRight?: boolean; sticky?: boolean; stickyLeft?: string }) => {
-    const leftClass = sticky && stickyLeft === '0' ? 'left-0' : sticky && stickyLeft === '10rem' ? 'left-[10rem]' : ''
-    return (
-    <th
-      className={`px-4 py-3 text-slate-300 font-medium cursor-pointer hover:text-slate-100 select-none whitespace-nowrap ${alignRight ? 'text-right' : ''} sticky top-0 z-20 bg-slate-900/95 backdrop-blur-sm ${sticky ? `shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] ${leftClass}` : ''}`}
-      onClick={() => handleSort(col)}
-    >
-      <span className={`inline-flex items-center gap-1 ${alignRight ? 'justify-end' : ''}`}>
-        {label}
-        {sortColumn === col && <span className="text-sky-400">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-      </span>
-    </th>
-  )}
+  const sortHeaderProps = { sortColumn, sortDir, onSort: handleSort }
 
   if (loading) {
     return (
@@ -569,14 +476,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8">
-      {/* Header section with title and description */}
-      <div>
-        <h1 className="text-2xl font-bold text-slate-100">VCP Bullish Setups</h1>
-        <p className="text-slate-400 mt-1">
-          S&P 500 tickers from flat file, scored by VCP setup. Sorted by score descending. Run populate-tickers 500 for full list.
-        </p>
-      </div>
-
       {/* Action row: ticker search + buttons */}
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -792,29 +691,30 @@ export default function Dashboard() {
         </div>
         )
       ) : (
-      <div className="rounded-xl border border-slate-800 overflow-hidden">
-        <div className="overflow-x-scroll min-w-0">
-          <table className="w-full min-w-[2000px]">
-            <thead>
-              <tr className="border-b border-slate-800 bg-slate-900/80">
-                <SortHeader col="ticker" label="Ticker" sticky stickyLeft="0" />
-                <SortHeader col="score" label="Score" alignRight sticky stickyLeft="10rem" />
-                <SortHeader col="pattern" label="Setup" />
-                <SortHeader col="relativeStrength" label="RS" alignRight />
-                <SortHeader col="industryRank" label="Ind.Rank" alignRight />
-                <SortHeader col="close" label="Price" alignRight />
-                <SortHeader col="contractions" label="Contractions" alignRight />
-                <SortHeader col="ma10" label="10 MA" alignRight />
-                <SortHeader col="ma20" label="20 MA" alignRight />
-                <SortHeader col="ma50" label="50 MA" alignRight />
-                <SortHeader col="pctHeldByInst" label="% Held by Inst" alignRight />
-                <SortHeader col="qtrEarningsYoY" label="Qtr Earnings YoY" alignRight />
-                <SortHeader col="profitMargin" label="Profit Margin" alignRight />
-                <SortHeader col="operatingMargin" label="Operating Margin" alignRight />
-                <SortHeader col="industry1Y" label="Industry 1Y" alignRight />
-                <SortHeader col="industry6M" label="Industry 6M" alignRight />
-                <SortHeader col="industry3M" label="Industry 3M" alignRight />
-                <SortHeader col="industryYtd" label="Industry YTD" alignRight />
+      <>
+      {/* Table lives in its own scroll container so sticky thead sticks to the top of this box (and thus viewport when scrolled into view). Parent overflow-x would otherwise trap sticky. */}
+      <div className="rounded-xl border border-slate-800 max-h-[calc(100vh-6rem)] overflow-auto min-w-0">
+        <table className="w-full min-w-[2000px]">
+            <thead className="sticky top-0 z-30 bg-slate-900 shadow-[0_1px_0_0_rgba(148,163,184,0.1)]">
+              <tr className="border-b border-slate-800 bg-slate-900">
+                <SortHeader col="ticker" label="Ticker" {...sortHeaderProps} sticky stickyLeft="0" />
+                <SortHeader col="score" label="Score" {...sortHeaderProps} alignRight sticky stickyLeft="10rem" />
+                <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
+                <SortHeader col="relativeStrength" label="RS" {...sortHeaderProps} alignRight />
+                <SortHeader col="industryRank" label="Ind.Rank" {...sortHeaderProps} alignRight />
+                <SortHeader col="close" label="Price" {...sortHeaderProps} alignRight />
+                <SortHeader col="contractions" label="Contractions" {...sortHeaderProps} alignRight />
+                <SortHeader col="ma10" label="10 MA" {...sortHeaderProps} alignRight />
+                <SortHeader col="ma20" label="20 MA" {...sortHeaderProps} alignRight />
+                <SortHeader col="ma50" label="50 MA" {...sortHeaderProps} alignRight />
+                <SortHeader col="pctHeldByInst" label="% Held by Inst" {...sortHeaderProps} alignRight />
+                <SortHeader col="qtrEarningsYoY" label="Qtr Earnings YoY" {...sortHeaderProps} alignRight />
+                <SortHeader col="profitMargin" label="Profit Margin" {...sortHeaderProps} alignRight />
+                <SortHeader col="operatingMargin" label="Operating Margin" {...sortHeaderProps} alignRight />
+                <SortHeader col="industry1Y" label="Industry 1Y" {...sortHeaderProps} alignRight />
+                <SortHeader col="industry6M" label="Industry 6M" {...sortHeaderProps} alignRight />
+                <SortHeader col="industry3M" label="Industry 3M" {...sortHeaderProps} alignRight />
+                <SortHeader col="industryYtd" label="Industry YTD" {...sortHeaderProps} alignRight />
               </tr>
             </thead>
             <tbody>
@@ -971,8 +871,8 @@ export default function Dashboard() {
               )}
             </tbody>
           </table>
-        </div>
       </div>
+      </>
       )}
     </div>
   )

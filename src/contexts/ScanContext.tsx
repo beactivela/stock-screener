@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { API_BASE } from '../utils/api';
 
 interface ScanProgress {
   index: number;
@@ -42,7 +43,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
       try {
         const parsed = JSON.parse(savedScan);
         // Check if scan is still running on server
-        fetch('/api/scan/progress')
+        fetch(`${API_BASE}/api/scan/progress`)
           .then((r) => r.json())
           .then((data) => {
             if (data.running && data.scanId === parsed.scanId) {
@@ -82,13 +83,13 @@ export function ScanProvider({ children }: { children: ReactNode }) {
     }
   }, [scanState.running, scanState.scanId, scanState.progress.startedAt]);
 
-  let pollInterval: number | null = null;
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const startPolling = () => {
-    if (pollInterval) clearInterval(pollInterval);
-    pollInterval = window.setInterval(async () => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = window.setInterval(async () => {
       try {
-        const response = await fetch('/api/scan/progress');
+        const response = await fetch(`${API_BASE}/api/scan/progress`);
         const data = await response.json();
         
         setScanState({
@@ -99,8 +100,10 @@ export function ScanProvider({ children }: { children: ReactNode }) {
 
         // Stop polling if scan complete
         if (!data.running) {
-          if (pollInterval) clearInterval(pollInterval);
-          pollInterval = null;
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
         }
       } catch (error) {
         console.error('Failed to check scan progress:', error);
@@ -109,15 +112,15 @@ export function ScanProvider({ children }: { children: ReactNode }) {
   };
 
   const stopPolling = () => {
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
   };
 
   const checkProgress = async () => {
     try {
-      const response = await fetch('/api/scan/progress');
+      const response = await fetch(`${API_BASE}/api/scan/progress`);
       const data = await response.json();
       
       setScanState({
@@ -132,7 +135,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
 
   const startScan = async () => {
     try {
-      const response = await fetch('/api/scan', { method: 'POST' });
+      const response = await fetch(`${API_BASE}/api/scan`, { method: 'POST' });
       
       if (!response.ok) {
         const error = await response.json();

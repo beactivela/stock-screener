@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { API_BASE } from '../utils/api'
 import { Link } from 'react-router-dom'
 
 /** All industries across all sectors (name, sector, ytdReturn, url, optional 6M/1Y, tickers, industryRank) */
@@ -27,7 +28,7 @@ export default function Industry() {
   const autoRefreshedAllIndustries = useRef(false)
 
   const loadAllIndustries = () => {
-    fetch('/api/all-industries', { cache: 'no-store' })
+    fetch(`${API_BASE}/api/all-industries`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => setAllIndustriesData(d))
       .catch(() => setAllIndustriesData({ industries: [], fetchedAt: null, source: null }))
@@ -61,7 +62,7 @@ export default function Industry() {
     setFetchProgress('Fetching all sectors from Yahoo Finance…')
     setFetchSummary(null)
     try {
-      const res = await fetch('/api/all-industries/fetch', { method: 'POST' })
+      const res = await fetch(`${API_BASE}/api/all-industries/fetch`, { method: 'POST' })
       if (!res.ok) {
         const ct = res.headers.get('content-type') ?? ''
         let errMsg = res.statusText

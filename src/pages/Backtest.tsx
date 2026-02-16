@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { API_BASE } from '../utils/api'
 
 /**
  * Backtest Page
@@ -34,7 +35,7 @@ export default function Backtest() {
   // Fetch available backtest snapshots on mount
   // These are saved scan results from previous runs
   useEffect(() => {
-    fetch('/api/backtest/snapshots')
+    fetch(`${API_BASE}/api/backtest/snapshots`)
       .then((r) => r.json())
       .then((d) => {
         setBacktestSnapshots(d.snapshots || [])
@@ -66,7 +67,7 @@ export default function Backtest() {
     setBacktestResult(null)
     
     try {
-      const res = await fetch('/api/backtest/run', {
+      const res = await fetch(`${API_BASE}/api/backtest/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

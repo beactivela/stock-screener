@@ -1,11 +1,13 @@
 /**
  * Compact chart for a single ticker: 6 months of data with 10/20/50/150 MAs.
  * Used in Dashboard's "View as charts" grid.
+ * Memoized to avoid re-renders when parent (Dashboard) updates.
  */
-import { useEffect, useRef, useMemo, useState } from 'react'
+import { useEffect, useRef, useMemo, useState, memo } from 'react'
 import { Link } from 'react-router-dom'
 import { createChart, ColorType } from 'lightweight-charts'
 import { sma } from '../utils/chartIndicators'
+import { API_BASE } from '../utils/api'
 
 interface Bar {
   t: number
@@ -29,7 +31,7 @@ interface TickerChartProps {
   recommendation?: 'buy' | 'hold' | 'avoid'
 }
 
-export default function TickerChart({ ticker, score, recommendation }: TickerChartProps) {
+function TickerChart({ ticker, score, recommendation }: TickerChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null)
   const [bars, setBars] = useState<Bar[]>([])
@@ -41,7 +43,7 @@ export default function TickerChart({ ticker, score, recommendation }: TickerCha
     if (!ticker) return
     setLoading(true)
     setError(null)
-    fetch(`/api/bars/${encodeURIComponent(ticker)}?days=180&interval=1d`, { cache: 'no-store' })
+    fetch(`${API_BASE}/api/bars/${encodeURIComponent(ticker)}?days=180&interval=1d`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((res) => {
         if (res.error) throw new Error(res.error)
@@ -192,3 +194,5 @@ export default function TickerChart({ ticker, score, recommendation }: TickerCha
     </div>
   )
 }
+
+export default memo(TickerChart)

@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import { createChart, ColorType } from 'lightweight-charts'
 import { sma, rsi, findPullbacks, vcpContraction, findIdealPullbackBarTimes } from '../utils/chartIndicators'
+import { API_BASE } from '../utils/api'
 
 interface Bar {
   t: number
@@ -96,7 +97,7 @@ export default function StockDetail() {
   const [bars, setBars] = useState<Bar[]>([])
   const [vcp, setVcp] = useState<VCPInfo | null>(null)
   const [companyName, setCompanyName] = useState<string | null>(null)
-  const [exchange, setExchange] = useState<string | null>(null)
+  const [, setExchange] = useState<string | null>(null)
   const [fundamentals, setFundamentals] = useState<{ profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null } | null>(null)
   const [industry3M, setIndustry3M] = useState<number | null>(null)
   const [industry1Y, setIndustry1Y] = useState<number | null>(null)
@@ -118,7 +119,7 @@ export default function StockDetail() {
     if (!ticker) return
     setLoading(true)
     // Always fetch 365 days regardless of timeframe selection (timeframe only controls chart zoom)
-    const barsUrl = `/api/bars/${ticker}?days=365&interval=${interval}`
+    const barsUrl = `${API_BASE}/api/bars/${ticker}?days=365&interval=${interval}`
     // cache: 'no-store' prevents browser from returning cached daily when switching to weekly
     fetch(barsUrl, { cache: 'no-store' })
       .then((r) => r.json())
@@ -133,7 +134,7 @@ export default function StockDetail() {
       })
       .finally(() => setLoading(false))
     // VCP in parallel; failures are non-fatal (we keep scanResult or previous vcp)
-    fetch(`/api/vcp/${ticker}`)
+    fetch(`${API_BASE}/api/vcp/${ticker}`)
       .then((r) => r.json())
       .then((vcpRes) => {
         const hasValidVcp = vcpRes && !vcpRes.error && (vcpRes.score != null || vcpRes.vcpBullish != null)
@@ -145,7 +146,7 @@ export default function StockDetail() {
   // Fetch company name and exchange (for TradingView symbol); failures are non-fatal
   useEffect(() => {
     if (!ticker) return
-    fetch(`/api/quote/${encodeURIComponent(ticker)}`)
+    fetch(`${API_BASE}/api/quote/${encodeURIComponent(ticker)}`)
       .then((r) => (r.ok ? r.json() : { name: null, exchange: null }))
       .then((data) => {
         setCompanyName(data?.name ?? null)
@@ -160,7 +161,7 @@ export default function StockDetail() {
   // Fetch fundamentals (Profit Margin, Operating Margin, Industry) from cache
   useEffect(() => {
     if (!ticker) return
-    fetch(`/api/fundamentals/${encodeURIComponent(ticker)}`)
+    fetch(`${API_BASE}/api/fundamentals/${encodeURIComponent(ticker)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.ticker) setFundamentals({ profitMargin: data.profitMargin ?? null, operatingMargin: data.operatingMargin ?? null, industry: data.industry ?? null })
@@ -177,7 +178,7 @@ export default function StockDetail() {
       setIndustryYtd(null)
       return
     }
-    fetch('/api/industry-trend', { cache: 'no-store' })
+    fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
         const g = (d?.industries ?? []).find((x: { industry: string }) => x.industry === fundamentals?.industry)
