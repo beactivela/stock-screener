@@ -135,7 +135,7 @@ export default function Dashboard() {
       })
       .catch((err) => {
         setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
-        setApiError(err instanceof Error ? err.message : 'API unavailable')
+        setApiError(err instanceof Error ? err.message : 'Cannot reach app')
       })
       .finally(() => setLoading(false))
   }, [])
@@ -370,7 +370,7 @@ export default function Dashboard() {
           return Promise.reject(new Error(msg))
         }
         if (body == null || typeof body !== 'object') {
-          return Promise.reject(new Error('API returned empty or invalid response. Is the app running? Run: npm run dev'))
+          return Promise.reject(new Error('Empty or invalid response from app. Run: npm run dev'))
         }
         return body as Record<string, unknown>
       })
@@ -522,14 +522,14 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Banner when app/API is not running or errors */}
+      {/* Banner when the app can't load data (single server – no separate API) */}
       {apiError && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <p className="text-amber-200 font-medium">Cannot load data – {typeof window !== 'undefined' && !window.location.hostname.includes('localhost') ? 'API error on deployment' : 'app not running'}</p>
+          <p className="text-amber-200 font-medium">Cannot load data</p>
           <p className="text-amber-200/80 text-sm mt-1">
             {typeof window !== 'undefined' && !window.location.hostname.includes('localhost')
-              ? <>On Vercel: check Function logs for <code className="bg-amber-900/50 px-1 rounded">api/[[...path]]</code>. To get data, add a <code className="bg-amber-900/50 px-1 rounded">data/</code> snapshot to the repo or set <code className="bg-amber-900/50 px-1 rounded">VITE_API_URL</code> to an external API.</>
-              : <>Open a terminal and run <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5173</code>, then refresh. Data is in the <code className="bg-amber-900/50 px-1 rounded">data/</code> folder.</>
+              ? <>Deployed app: add a <code className="bg-amber-900/50 px-1 rounded">data/</code> snapshot to the repo for read-only data, or set <code className="bg-amber-900/50 px-1 rounded">VITE_API_URL</code> to an external server for scans.</>
+              : <>Run the app: <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5173</code>, then refresh.</>
             }
           </p>
         </div>
