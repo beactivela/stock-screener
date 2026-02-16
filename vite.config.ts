@@ -16,11 +16,8 @@ export default defineConfig({
     },
     chunkSizeWarningLimit: 500,
   },
+  // In dev we run via Express + Vite middleware (npm run dev), so no standalone server here.
   server: {
     port: 5173,
-    proxy: {
-      // Proxy API calls to backend so we don't expose Massive API key
-      '/api': { target: 'http://localhost:3001', changeOrigin: true },
-    },
   },
 })

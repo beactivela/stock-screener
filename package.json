@@ -8,7 +8,7 @@
     "verify-fundamentals": "node scripts/verify-fundamentals.js",
     "verify-industry-fetch": "node scripts/verify-industry-fetch.js",
     "populate-industry-1y": "node scripts/populate-industry-1y.js",
-    "dev": "vite",
+    "dev": "NODE_ENV=development PORT=5173 node server/index.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

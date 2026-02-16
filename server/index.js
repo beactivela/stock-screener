@@ -1,7 +1,7 @@
 /**
- * Express server: serves API + optional static build. Caches API data to flat JSON files.
- * Loads .env from project root. Uses Yahoo Finance for bars (no API key). Massive only for populate-tickers.
- * Dev: npm run server (API only, port 3001). Production: npm run serve (build + serve app on PORT).
+ * Express server: API + frontend (Vite in dev, static dist in prod). Caches API data to flat JSON files.
+ * Loads .env from project root. Yahoo Finance for bars (no API key); Massive only for populate-tickers.
+ * Dev: npm run dev → one process on 5173 (API + Vite HMR). Prod: npm run serve (build + serve on PORT).
  */
 
 import dotenv from 'dotenv';
@@ -1481,17 +1481,31 @@ function computeVolatility(bars) {
   return Math.round(stdDev * Math.sqrt(252) * 1000) / 10;
 }
 
-// Serve built frontend when dist exists (e.g. after npm run build)
+// --- Frontend: Vite dev middleware (dev) or static dist (production) ---
 const DIST_DIR = path.join(__dirname, '..', 'dist');
-if (fs.existsSync(DIST_DIR)) {
-  app.use(express.static(DIST_DIR, { index: false }));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) return next();
-    res.sendFile(path.join(DIST_DIR, 'index.html'));
+const isDev = process.env.NODE_ENV === 'development';
+
+async function attachFrontend() {
+  if (isDev) {
+    // Single process: Express serves /api, Vite serves app + HMR on same port
+    const { createServer } = await import('vite');
+    const vite = await createServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+    console.log('Dev: Vite middleware attached (HMR on same port)');
+  } else if (fs.existsSync(DIST_DIR)) {
+    app.use(express.static(DIST_DIR, { index: false }));
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api')) return next();
+      res.sendFile(path.join(DIST_DIR, 'index.html'));
+    });
+    console.log('Serving static app from dist/');
+  }
+  app.listen(PORT, () => {
+    console.log(`Stock screener at http://localhost:${PORT}`);
   });
-  console.log('Serving static app from dist/');
 }
 
-app.listen(PORT, () => {
-  console.log(`Stock screener at http://localhost:${PORT}`);
-});
+attachFrontend();

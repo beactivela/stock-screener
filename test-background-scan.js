@@ -4,7 +4,7 @@
  * Tests that scan can run in background and progress can be polled
  */
 
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = process.env.BASE_URL || 'http://localhost:5173';
 
 async function testBackgroundScan() {
   console.log('🧪 Testing background scan functionality...\n');
