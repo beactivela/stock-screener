@@ -38,7 +38,18 @@ const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 100
 app.use(cors());
 app.use(express.json());
 
+// On Vercel, writes (POST) cannot persist; return clear error instead of filesystem failure
+app.use((req, res, next) => {
+  if (process.env.VERCEL && req.method === 'POST' && req.path.startsWith('/api')) {
+    return res.status(503).json({
+      error: 'Writes are disabled on Vercel (read-only filesystem). Run the API locally or set VITE_API_URL to an external API for scans and fetches.',
+    });
+  }
+  next();
+});
+
 function ensureDirs() {
+  if (process.env.VERCEL) return; // Vercel serverless: read-only filesystem (no data/ writes)
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
 }
@@ -1508,4 +1519,9 @@ async function attachFrontend() {
   });
 }
 
-attachFrontend();
+// On Vercel, the app is used as serverless handler (api/[[...path]].js); do not start a server.
+if (!process.env.VERCEL) {
+  attachFrontend();
+}
+
+export { app };

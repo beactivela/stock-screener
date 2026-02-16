@@ -1,6 +1,18 @@
 # System Architecture & Data Flow
 
+## Runtime model (single port)
+
+- **Development:** One process. Run `npm run dev` → Express listens on **port 5173**, with Vite dev middleware for the React app (HMR). The same origin serves both the UI and `/api/*`; no separate backend URL or proxy.
+- **Production:** `npm run build` then `npm run serve` → Express serves the built static app from `dist/` and the same API routes.
+- **Optional:** `npm run server` runs the API only (default port 3001) for scripts or external clients; use `BASE_URL=http://localhost:3001` in scripts if needed.
+
+**Single URL in dev:** `http://localhost:5173` (app) and `http://localhost:5173/api/...` (API).
+
+---
+
 ## Complete System Diagram
+
+*In development, the "Server/Backend" and "Frontend" layers below run in one Node process; the diagram shows logical separation.*
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -501,6 +513,11 @@ SCAN COMPLETED
 
 ## Technology Stack
 
+### Runtime
+- **Dev:** Single process — Express (port 5173) + Vite middleware (HMR). One command: `npm run dev`.
+- **Prod:** Express serves `dist/` + API. Commands: `npm run build` then `npm run serve`.
+- **Scripts / API-only:** `npm run server` (Express only, default port 3001).
+
 ### Backend
 - **Runtime:** Node.js (ES modules)
 - **Server:** Express.js
@@ -531,12 +548,9 @@ SCAN COMPLETED
   ```
 
 ### Deployment
-- **Development:** 
-  - Frontend: `npm run dev` (port 5173)
-  - Backend: `npm run server` (port 3001)
-- **Production:**
-  - Build: `npm run build`
-  - Serve: `npm run serve` (static + API)
+- **Development:** `npm run dev` — single process on **http://localhost:5173** (Express API + Vite HMR; app and `/api` on same origin).
+- **Production:** Build `npm run build`, then serve with `npm run serve` (static + API from same server).
+- **Vercel:** Both frontend and API deploy together. The `api/[[...path]].js` serverless handler forwards `/api/*` to the same Express app (with `VERCEL=1`, so no listen). **Limits:** (1) `data/` is not in the repo (gitignored), so deploy has no scan/fundamentals unless you commit a snapshot or use an external API. (2) Writes (POST scan, POST fundamentals/fetch) do not persist (read-only filesystem). For full scans and persistence, point **VITE_API_URL** to an external API (e.g. Railway) that runs `npm run server`.
 
 ---
 

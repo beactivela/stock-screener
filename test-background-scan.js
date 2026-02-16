@@ -14,7 +14,7 @@ async function testBackgroundScan() {
     console.log('1️⃣ Checking server status...');
     const healthCheck = await fetch(`${SERVER_URL}/api/scan-results`);
     if (!healthCheck.ok) {
-      throw new Error('Server not running. Start it with: npm run server');
+      throw new Error('Server not running. Start it with: npm run dev');
     }
     console.log('✅ Server is running\n');
     

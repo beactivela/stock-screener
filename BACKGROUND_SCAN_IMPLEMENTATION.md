@@ -1,7 +1,7 @@
 # Background Scan Implementation Summary
 
 ## Overview
-Implemented a background scan system that allows users to navigate away from the Dashboard while scans continue running. The scan progress is tracked on the backend and can be polled by the frontend.
+Implemented a background scan system that allows users to navigate away from the Dashboard while scans continue running. The scan progress is tracked by the server (same process as the app in dev; see [ARCHITECTURE.md](./ARCHITECTURE.md)) and polled by the frontend via `/api/scan/progress`.
 
 ## What Was Built
 
@@ -128,7 +128,7 @@ Implemented a background scan system that allows users to navigate away from the
 node test-background-scan.js
 
 # Check scan progress manually
-curl http://localhost:3001/api/scan/progress
+curl http://localhost:5173/api/scan/progress
 ```
 
 ## Technical Notes

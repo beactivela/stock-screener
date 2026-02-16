@@ -370,7 +370,7 @@ export default function Dashboard() {
           return Promise.reject(new Error(msg))
         }
         if (body == null || typeof body !== 'object') {
-          return Promise.reject(new Error('API returned empty or invalid response. Is the API server running? Run: npm run server'))
+          return Promise.reject(new Error('API returned empty or invalid response. Is the app running? Run: npm run dev'))
         }
         return body as Record<string, unknown>
       })
@@ -522,12 +522,12 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Banner when API server is not running */}
+      {/* Banner when app/API is not running */}
       {apiError && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <p className="text-amber-200 font-medium">Cannot load data – API server not running</p>
+          <p className="text-amber-200 font-medium">Cannot load data – app not running</p>
           <p className="text-amber-200/80 text-sm mt-1">
-            Open a terminal and run <code className="bg-amber-900/50 px-1 rounded">npm run server</code>, then refresh this page. Your data (scan-results.json, fundamentals.json) is still in the <code className="bg-amber-900/50 px-1 rounded">data/</code> folder.
+            Open a terminal and run <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> (single server at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5173</code>), then refresh. Your data (scan-results.json, fundamentals.json) is in the <code className="bg-amber-900/50 px-1 rounded">data/</code> folder.
           </p>
         </div>
       )}

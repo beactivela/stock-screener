@@ -41,11 +41,9 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
 ## 3. Architecture
 
 - **Frontend:** React + Vite + Tailwind.  
-- **Backend:** Node (Express) or Next.js API routes:
-  - Proxy to Massive (keep apiKey server-side).
-  - Run “VCP scan”: fetch constituents (SPY + IWM), then for each ticker get ~6 months daily bars + SMAs, run VCP logic, store results.
-- **Storage:** SQLite or JSON file for “last scan results” (ticker, signal strength, which MAs touched, last scan time).
-- **Scheduler:** Run full scan every 24 hours (cron or in-process setInterval / node-cron).
+- **Backend:** Node (Express). Single process in dev: `npm run dev` serves both the app and API at **http://localhost:5173** (Express + Vite middleware). API routes proxy to Massive (apiKey server-side), run VCP scan, serve cached results.
+- **Storage:** JSON files in `data/` (scan-results, fundamentals, industry data, bars cache). No database.
+- **Scheduler:** Optional 24h scan: `SCHEDULE_SCAN=1 npm run dev` (in-process interval).
 
 ---
 

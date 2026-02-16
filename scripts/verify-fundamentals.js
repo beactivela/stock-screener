@@ -35,7 +35,7 @@ async function main() {
     }
   } catch (e) {
     console.log('1. GET /api/fundamentals failed:', e.message);
-    console.log('   Is the server running? Try: npm run server');
+    console.log('   Is the server running? Try: npm run dev');
     process.exit(1);
   }
 

@@ -126,10 +126,7 @@ Your scan from today (2026-02-15) has been auto-saved!
 
 ```bash
 # If you need to run a fresh scan
-npm run server    # Terminal 1
-npm run dev       # Terminal 2
-
-# Go to http://localhost:5173/
+npm run dev       # Single server at http://localhost:5173/
 # Click "Run scan now"
 ```
 
@@ -414,15 +411,8 @@ Most traders never validate their systems. You now have:
 ```bash
 # Already running? Great!
 # Not running? Start:
-
-# Terminal 1
-npm run server
-
-# Terminal 2  
 npm run dev
-
-# Browser
-http://localhost:5173/
+# Browser: http://localhost:5173/
 
 # Look for:
 1. 🧪 Backtest button (top right, purple)

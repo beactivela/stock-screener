@@ -70,7 +70,7 @@ export default function Industry() {
           const body = await res.json().catch(() => ({}))
           errMsg = body?.error ?? errMsg
         } else if (ct.includes('text/html')) {
-          errMsg = `Server error ${res.status}. Restart the server (npm run server) and try again.`
+          errMsg = `Server error ${res.status}. Restart the app (npm run dev) and try again.`
         }
         throw new Error(errMsg)
       }
@@ -109,7 +109,7 @@ export default function Industry() {
         }
       }
       if (!payload && !buf.includes('"done"')) {
-        setFetchSummary('No data received. Restart the server (npm run server) and try again.')
+        setFetchSummary('No data received. Restart the app (npm run dev) and try again.')
       }
     } catch (e) {
       setFetchSummary(e instanceof Error ? e.message : 'Fetch failed')

@@ -166,8 +166,7 @@
 
 ### 1. Run a New Scan
 ```bash
-npm run server    # Start backend (terminal 1)
-npm run dev       # Start frontend (terminal 2)
+npm run dev       # Single server at http://localhost:5173/
 ```
 
 Open http://localhost:5173/ and click "Run scan now"
@@ -353,16 +352,10 @@ That's a **24-point difference** just from industry!
 
 ## 🚀 Ready to Test!
 
-Run these commands:
+Run:
 ```bash
-# Terminal 1: Start backend
-npm run server
-
-# Terminal 2: Start frontend  
 npm run dev
-
-# Open browser: http://localhost:5173/
-# Click "Run scan now"
+# Open http://localhost:5173/ → "Run scan now"
 # Watch for new RS and Ind.Rank columns!
 ```
 
