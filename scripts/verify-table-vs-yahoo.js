@@ -15,13 +15,20 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Use server modules (same as scan)
+// Use server modules (same as scan) — dynamic import in async to avoid top-level await for lint
 const serverDir = path.join(__dirname, '..', 'server');
-const { getDailyBars } = await import(path.join(serverDir, 'yahoo.js'));
-const { checkVCP } = await import(path.join(serverDir, 'vcp.js'));
+let getDailyBars, checkVCP;
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const SCAN_FILE = path.join(DATA_DIR, 'scan-results.json');
+
+async function run() {
+  const yahoo = await import(path.join(serverDir, 'yahoo.js'));
+  const vcp = await import(path.join(serverDir, 'vcp.js'));
+  getDailyBars = yahoo.getDailyBars;
+  checkVCP = vcp.checkVCP;
+  main();
+}
 
 function main() {
   if (!fs.existsSync(SCAN_FILE)) {
@@ -70,4 +77,4 @@ function main() {
   })();
 }
 
-main();
+run();

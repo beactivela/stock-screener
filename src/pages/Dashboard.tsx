@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import TickerChart from '../components/TickerChart'
 import SortHeader from '../components/SortHeader'
@@ -42,6 +42,31 @@ interface ScanResult {
   pattern?: string
   patternConfidence?: number
   patternDetails?: string
+}
+
+// Opus4.5 Signal from API
+interface Opus45Signal {
+  ticker: string
+  signal: boolean
+  signalType: 'STRONG' | 'MODERATE' | 'WEAK' | null
+  opus45Confidence: number
+  opus45Grade: string
+  entryPrice: number
+  stopLossPrice: number
+  stopLossPercent: number
+  targetPrice: number
+  riskRewardRatio: number
+  metrics?: {
+    relativeStrength?: number
+    contractions?: number
+    pattern?: string
+    industryRank?: number
+    entryPoint?: { atWhichMA?: string }
+  }
+  /** Scan enhanced score (VCP + industry); same as table. */
+  enhancedScore?: number
+  /** @deprecated use enhancedScore */
+  originalScore?: number
 }
 
 interface ScanPayload {
@@ -94,6 +119,7 @@ interface EvaluateResult {
   sma20?: number
   sma50?: number
   score?: number
+  enhancedScore?: number
   recommendation?: 'buy' | 'hold' | 'avoid'
   scoreBreakdown?: ScoreCriterion[]
   error?: string
@@ -117,36 +143,84 @@ export default function Dashboard() {
   const [industryTrendMapYtd, setIndustryTrendMapYtd] = useState<Record<string, number>>({})
   const [fetchingFundamentals, setFetchingFundamentals] = useState(false)
   const [fundamentalsProgress, setFundamentalsProgress] = useState<{ index: number; total: number } | null>(null)
-  const [fetchingYahoo1Y, setFetchingYahoo1Y] = useState(false)
-  const [yahoo1YProgress, setYahoo1YProgress] = useState<{ index: number; total: number } | null>(null)
-  const [sortColumn, setSortColumn] = useState<string>('score')
+  const [sortColumn, setSortColumn] = useState<string>('opus45')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [viewMode, setViewMode] = useState<'table' | 'charts'>('table')
+  // Opus4.5 signals state
+  const [opus45Signals, setOpus45Signals] = useState<Opus45Signal[]>([])
+  /** Per-ticker Opus score for every analyzed ticker (800+); used for table column. */
+  const [opus45AllScores, setOpus45AllScores] = useState<Array<{ ticker: string; opus45Confidence: number; opus45Grade: string }>>([])
+  const [opus45Loading, setOpus45Loading] = useState(false)
+  const [opus45Stats, setOpus45Stats] = useState<{ total: number; strong: number; moderate: number; weak: number; avgConfidence: number; avgRiskReward: number } | null>(null)
+  /** When false, only first 12 Opus4.5 signals are shown; "more" button expands to show all. */
+  const [showAllOpus45Signals, setShowAllOpus45Signals] = useState(false)
 
+  // Load scan-results and Opus4.5 signals in parallel so both can appear as soon as ready
+  // (Opus is often cached on server → instant; table uses scan-results → no extra delay)
   useEffect(() => {
+    let cancelled = false
+    const ok = (d: ScanPayload) => {
+      if (!cancelled) {
+        setData(d)
+        setApiError(null)
+      }
+    }
+    const fail = (err: unknown) => {
+      if (!cancelled) {
+        setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
+        setApiError(err instanceof Error ? err.message : 'Cannot reach app')
+      }
+    }
     fetch(`${API_BASE}/api/scan-results`)
       .then((r) => {
         if (!r.ok) throw new Error(`API ${r.status}`)
         return r.json()
       })
+      .then(ok)
+      .catch(fail)
+      .finally(() => { if (!cancelled) setLoading(false) })
+
+    // Opus fetch in parallel — no longer waits for scan-results
+    setOpus45Loading(true)
+    fetch(`${API_BASE}/api/opus45/signals`, { cache: 'no-store' })
+      .then((r) => r.json())
       .then((d) => {
-        setData(d)
-        setApiError(null)
+        if (!cancelled) {
+          setOpus45Signals(d.signals || [])
+          setOpus45AllScores(d.allScores || [])
+          setOpus45Stats(d.stats || null)
+        }
       })
-      .catch((err) => {
-        setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
-        setApiError(err instanceof Error ? err.message : 'Cannot reach app')
+      .catch(() => {
+        if (!cancelled) {
+          setOpus45Signals([])
+          setOpus45AllScores([])
+          setOpus45Stats(null)
+        }
       })
-      .finally(() => setLoading(false))
+      .finally(() => { if (!cancelled) setOpus45Loading(false) })
+
+    return () => { cancelled = true }
   }, [])
-  
-  // Reload data when scan completes
+
+  // Reload data when scan completes (refresh both scan-results and Opus so new scan is reflected)
   useEffect(() => {
     if (!scanState.running && scanState.progress.completedAt) {
       fetch(`${API_BASE}/api/scan-results`)
         .then((r) => r.json())
         .then((d) => setData(d))
-        .catch(() => {});
+        .catch(() => {})
+      // Refresh Opus signals after scan (server may have updated cache during/after scan)
+      setOpus45Loading(true)
+      fetch(`${API_BASE}/api/opus45/signals?force=true`, { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((d) => {
+          setOpus45Signals(d.signals || [])
+          setOpus45AllScores(d.allScores || [])
+          setOpus45Stats(d.stats || null)
+        })
+        .catch(() => {})
+        .finally(() => setOpus45Loading(false))
     }
   }, [scanState.running, scanState.progress.completedAt])
 
@@ -288,65 +362,6 @@ export default function Dashboard() {
     }
   }
 
-  const fetchYahooIndustry1Y = async () => {
-    setFetchingYahoo1Y(true)
-    setYahoo1YProgress(null)
-    try {
-      const res = await fetch(`${API_BASE}/api/industry-trend/fetch-yahoo`, { method: 'POST' })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        alert(body?.error || res.statusText || 'Fetch failed')
-        return
-      }
-      if (!res.body) {
-        alert('Server returned empty response')
-        return
-      }
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          const idx = line.indexOf('data: ')
-          if (idx === -1) continue
-          try {
-            const msg = JSON.parse(line.slice(idx + 6).trim()) as {
-              index?: number
-              total?: number
-              done?: boolean
-              error?: string
-            }
-            if (msg.done) {
-              if (msg.error) alert(msg.error)
-              break
-            }
-            if (msg.index != null && msg.total != null) setYahoo1YProgress({ index: msg.index, total: msg.total })
-          } catch {
-            /* skip */
-          }
-        }
-      }
-      // Refetch industry-trend to update Industry 1Y/6M columns
-      const trendRes = await fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
-      const d = await trendRes.json()
-      const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(d?.industries)
-      setIndustryTrendMap(map3m)
-      setIndustryTrendMap6M(map6m)
-      setIndustryTrendMap1Y(map1y)
-      setIndustryTrendMapYtd(mapYtd)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Fetch industry 1Y failed')
-    } finally {
-      setFetchingYahoo1Y(false)
-      setYahoo1YProgress(null)
-    }
-  }
-
   const evaluateTicker = () => {
     const sym = tickerInput.trim().toUpperCase()
     if (!sym) return
@@ -380,6 +395,27 @@ export default function Dashboard() {
   }
 
   const results = data?.results ?? []
+  // Map ticker -> Opus score for table column (all 800+ when API returns allScores, else only active signals)
+  const opus45ByTicker = useMemo(() => {
+    const m: Record<string, { opus45Confidence: number; opus45Grade: string; entryDate?: string; daysSinceBuy?: number; pctChange?: number }> = {}
+    if (opus45AllScores.length > 0) {
+      opus45AllScores.forEach((s: { ticker: string; opus45Confidence: number; opus45Grade: string; entryDate?: string; daysSinceBuy?: number; pctChange?: number }) => {
+        m[s.ticker] = {
+          opus45Confidence: s.opus45Confidence,
+          opus45Grade: s.opus45Grade,
+          entryDate: s.entryDate,
+          daysSinceBuy: s.daysSinceBuy,
+          pctChange: s.pctChange
+        }
+      })
+    } else {
+      opus45Signals.forEach((s) => {
+        m[s.ticker] = { opus45Confidence: s.opus45Confidence, opus45Grade: s.opus45Grade }
+      })
+    }
+    return m
+  }, [opus45AllScores, opus45Signals])
+
   const filtered =
     filter === 'all'
       ? results
@@ -397,6 +433,8 @@ export default function Dashboard() {
         return r.ticker
       case 'score':
         return r.enhancedScore ?? r.score ?? -1
+      case 'opus45':
+        return opus45ByTicker[r.ticker]?.opus45Confidence ?? -1
       case 'pattern':
         return r.pattern ?? 'None'
       case 'patternConfidence':
@@ -443,12 +481,12 @@ export default function Dashboard() {
     const vb = getSortValue(b, sortColumn)
     const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb))
     const primary = sortDir === 'asc' ? cmp : -cmp
-    // Secondary sort: when primary is equal and sorting by score, break tie by Industry 1Y (desc)
+    // Secondary sort: when primary equal and sorting by opus45, break tie by Industry 1Y (desc)
     if (primary !== 0) return primary
-    if (sortColumn === 'score') {
+    if (sortColumn === 'opus45') {
       const i1yA = industryTrendMap1Y[fundamentals[a.ticker]?.industry ?? ''] ?? -Infinity
       const i1yB = industryTrendMap1Y[fundamentals[b.ticker]?.industry ?? ''] ?? -Infinity
-      return i1yB - i1yA // desc: higher 1Y first
+      return i1yB - i1yA
     }
     return 0
   })
@@ -475,51 +513,44 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Action row: ticker search + buttons */}
+    <div className="w-[90%] max-w-full mx-auto">
+      <div className="space-y-8">
+      {/* Action row: ticker search + Evaluate left; Fetch Industry + Run Scan right */}
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          type="text"
-          placeholder="e.g. AAPL"
-          value={tickerInput}
-          onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
-          onKeyDown={(e) => e.key === 'Enter' && evaluateTicker()}
-          className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 w-32 focus:outline-none focus:ring-2 focus:ring-sky-500"
-          aria-label="Ticker symbol"
-        />
-        <button
-          type="button"
-          onClick={evaluateTicker}
-          disabled={evaluateLoading || !tickerInput.trim()}
-          className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-medium"
-        >
-          {evaluateLoading ? 'Evaluating…' : 'Evaluate'}
-        </button>
-        <button
-          onClick={fetchYahooIndustry1Y}
-          disabled={fetchingYahoo1Y || !(data?.results?.length)}
-          className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-medium"
-          title="Fetch Industry 1Y from Yahoo Finance"
-        >
-          {fetchingYahoo1Y
-            ? yahoo1YProgress
-              ? `Fetching 1Y ${yahoo1YProgress.index}/${yahoo1YProgress.total}…`
-              : 'Fetching 1Y…'
-            : 'Fetch industry 1Y'}
-        </button>
-        <button
-          onClick={runScan}
-          disabled={scanState.running || fetchingFundamentals}
-          className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
-        >
-          {scanState.running
-            ? `Scanning ${scanState.progress.index}/${scanState.progress.total}…`
-            : fetchingFundamentals
-              ? fundamentalsProgress
-                ? `Fetching fundamentals ${fundamentalsProgress.index}/${fundamentalsProgress.total}…`
-                : 'Fetching fundamentals…'
-              : 'Run Scan'}
-        </button>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="e.g. AAPL"
+            value={tickerInput}
+            onChange={(e) => setTickerInput(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && evaluateTicker()}
+            className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 w-32 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            aria-label="Ticker symbol"
+          />
+          <button
+            type="button"
+            onClick={evaluateTicker}
+            disabled={evaluateLoading || !tickerInput.trim()}
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium"
+          >
+            {evaluateLoading ? 'Evaluating…' : 'Evaluate'}
+          </button>
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
+          <button
+            onClick={runScan}
+            disabled={scanState.running || fetchingFundamentals}
+            className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
+          >
+            {scanState.running
+              ? `Scanning ${scanState.progress.index}/${scanState.progress.total}…`
+              : fetchingFundamentals
+                ? fundamentalsProgress
+                  ? `Fetching fundamentals ${fundamentalsProgress.index}/${fundamentalsProgress.total}…`
+                  : 'Fetching fundamentals…'
+                : 'Run Scan'}
+          </button>
+        </div>
       </div>
 
       {/* Banner when the app can't load data (single server – no separate API) */}
@@ -562,6 +593,87 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Opus4.5 High-Confidence Signals Panel */}
+      {opus45Signals.length > 0 && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-bold text-emerald-400">Opus4.5 Buy Signals</h2>
+              <span className="px-3 py-1 rounded-full text-sm font-semibold bg-emerald-500 text-white">
+                {opus45Stats?.total || opus45Signals.length} Active
+              </span>
+              {opus45Stats && (
+                <span className="text-slate-400 text-sm">
+                  {opus45Stats.strong} Strong · {opus45Stats.moderate} Moderate · Avg {opus45Stats.avgConfidence}% conf
+                </span>
+              )}
+            </div>
+            <div className="text-slate-400 text-sm">
+              Exit: Below 10 MA or -4% stop
+            </div>
+          </div>
+          <p className="text-xs text-slate-500 mb-3" title="Stocks in the table can show 100% Opus if they are in an open position from an older buy; this section only lists entries from the last 2 days.">
+            Only stocks with a <strong>buy signal in the last 2 days</strong> appear here (actionable entries). The table Opus column shows signal strength for <strong>any</strong> open position, so tickers like CMI, NOC, TER may show 100% in the table but not here if their buy was more than 2 days ago (holding, not a new entry).
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {(showAllOpus45Signals ? opus45Signals : opus45Signals.slice(0, 12)).map((sig) => (
+              <Link
+                key={sig.ticker}
+                to={`/stock/${sig.ticker}`}
+                className="block p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 transition-colors"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-bold text-slate-100">{sig.ticker}</span>
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    sig.signalType === 'STRONG' ? 'bg-emerald-500/30 text-emerald-300' :
+                    sig.signalType === 'MODERATE' ? 'bg-yellow-500/30 text-yellow-300' :
+                    'bg-slate-600 text-slate-300'
+                  }`} title="Opus4.5 signal strength (entry quality, pattern, volume)">
+                    {sig.opus45Confidence}% {sig.opus45Grade}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <div className="text-slate-500">Entry</div>
+                    <div className="text-slate-200 font-mono">${sig.entryPrice?.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Stop</div>
+                    <div className="text-red-400 font-mono">${sig.stopLossPrice?.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">R:R</div>
+                    <div className="text-emerald-400 font-mono">{sig.riskRewardRatio?.toFixed(1)}:1</div>
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {sig.metrics?.pattern || 'VCP'} · RS {sig.metrics?.relativeStrength?.toFixed(0) || '–'} · {sig.metrics?.entryPoint?.atWhichMA || '–'}
+                </div>
+              </Link>
+            ))}
+          </div>
+          {opus45Signals.length > 12 && (
+            <div className="mt-3 text-center">
+              <button
+                type="button"
+                onClick={() => setShowAllOpus45Signals((prev) => !prev)}
+                className="text-sm text-emerald-400 hover:text-emerald-300 font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/50 rounded px-2 py-1"
+              >
+                {showAllOpus45Signals
+                  ? 'Show less'
+                  : `+${opus45Signals.length - 12} more signals available`}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {opus45Loading && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-center text-slate-400">
+          Analyzing Opus4.5 signals...
+        </div>
+      )}
+
       {/* Evaluation result (if any) */}
       {evaluateResult && (
         <div className="rounded-lg bg-slate-800/80 border border-slate-700 p-4">
@@ -572,7 +684,7 @@ export default function Dashboard() {
             ) : (
               <>
                 <span className="text-slate-400">Score:</span>
-                <span className="text-xl font-bold text-slate-100">{evaluateResult.score ?? 0}/100</span>
+                <span className="text-xl font-bold text-slate-100">{evaluateResult.enhancedScore ?? evaluateResult.score ?? 0}/100</span>
                 <span
                   className={`px-2 py-1 rounded text-sm font-medium ${
                     evaluateResult.recommendation === 'buy'
@@ -701,7 +813,8 @@ export default function Dashboard() {
             <thead className="sticky top-0 z-30 bg-slate-900 shadow-[0_1px_0_0_rgba(148,163,184,0.1)]">
               <tr className="border-b border-slate-800 bg-slate-900">
                 <SortHeader col="ticker" label="Ticker" {...sortHeaderProps} sticky stickyLeft="0" />
-                <SortHeader col="score" label="Score" {...sortHeaderProps} alignRight sticky stickyLeft="10rem" />
+                <SortHeader col="opus45" label="Opus" {...sortHeaderProps} alignRight sticky stickyLeft="10rem" />
+                <th className="px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">Open Trade</th>
                 <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
                 <SortHeader col="relativeStrength" label="RS" {...sortHeaderProps} alignRight />
                 <SortHeader col="industryRank" label="Ind.Rank" {...sortHeaderProps} alignRight />
@@ -711,19 +824,19 @@ export default function Dashboard() {
                 <SortHeader col="ma20" label="20 MA" {...sortHeaderProps} alignRight />
                 <SortHeader col="ma50" label="50 MA" {...sortHeaderProps} alignRight />
                 <SortHeader col="pctHeldByInst" label="% Held by Inst" {...sortHeaderProps} alignRight />
-                <SortHeader col="qtrEarningsYoY" label="Qtr Earnings YoY" {...sortHeaderProps} alignRight />
-                <SortHeader col="profitMargin" label="Profit Margin" {...sortHeaderProps} alignRight />
-                <SortHeader col="operatingMargin" label="Operating Margin" {...sortHeaderProps} alignRight />
                 <SortHeader col="industry1Y" label="Industry 1Y" {...sortHeaderProps} alignRight />
                 <SortHeader col="industry6M" label="Industry 6M" {...sortHeaderProps} alignRight />
                 <SortHeader col="industry3M" label="Industry 3M" {...sortHeaderProps} alignRight />
                 <SortHeader col="industryYtd" label="Industry YTD" {...sortHeaderProps} alignRight />
+                <SortHeader col="qtrEarningsYoY" label="Qtr Earnings YoY" {...sortHeaderProps} alignRight />
+                <SortHeader col="profitMargin" label="Profit Margin" {...sortHeaderProps} alignRight />
+                <SortHeader col="operatingMargin" label="Operating Margin" {...sortHeaderProps} alignRight />
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                    <td colSpan={18} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={19} className="px-4 py-8 text-center text-slate-500">
                     No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.
                   </td>
                 </tr>
@@ -740,14 +853,32 @@ export default function Dashboard() {
                         </div>
                       )}
                     </td>
-                    <td className="sticky left-[10rem] z-10 min-w-[5rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3 font-medium tabular-nums text-right">
-                      <span className={r.recommendation === 'buy' ? 'text-emerald-400' : r.recommendation === 'hold' ? 'text-amber-400' : 'text-slate-300'}>
-                        {r.error ? '–' : typeof (r.enhancedScore ?? r.score) === 'number' ? `${r.enhancedScore ?? r.score}/100` : '–'}
-                      </span>
-                      {r.industryMultiplier != null && r.industryMultiplier !== 1.0 && (
-                        <span className="text-xs ml-1 text-slate-500">
-                          ({r.industryMultiplier > 1 ? '+' : ''}{((r.industryMultiplier - 1) * 100).toFixed(0)}%)
+                    {/* Opus: primary strength (not constrained to 2-day buy) */}
+                    <td className="sticky left-[10rem] z-10 min-w-[5rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3 font-mono tabular-nums text-right">
+                      {opus45ByTicker[r.ticker] ? (
+                        <span
+                          className={opus45ByTicker[r.ticker].opus45Confidence > 0 ? 'text-slate-300' : 'text-slate-500'}
+                          title="Opus4.5 signal strength (entry quality, pattern, volume)"
+                        >
+                          {opus45ByTicker[r.ticker].opus45Confidence}% {opus45ByTicker[r.ticker].opus45Grade}
                         </span>
+                      ) : (
+                        <span className="text-slate-500">–</span>
+                      )}
+                    </td>
+                    {/* Open Trade: date long, days, P/L % (only when in position) */}
+                    <td className="px-4 py-3 font-mono text-right text-sm">
+                      {opus45ByTicker[r.ticker]?.entryDate != null && opus45ByTicker[r.ticker].daysSinceBuy != null ? (
+                        <span className="text-slate-300">
+                          {opus45ByTicker[r.ticker].entryDate} · {opus45ByTicker[r.ticker].daysSinceBuy}d
+                          {opus45ByTicker[r.ticker].pctChange != null && (
+                            <span className={opus45ByTicker[r.ticker].pctChange! >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                              {' '}{opus45ByTicker[r.ticker].pctChange! >= 0 ? '+' : ''}{opus45ByTicker[r.ticker].pctChange}%
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500">–</span>
                       )}
                     </td>
                     {/* Pattern/Setup */}
@@ -763,7 +894,7 @@ export default function Dashboard() {
                             {r.pattern === 'Cup-with-Handle' ? 'C&H' : r.pattern === 'Flat Base' ? 'Flat' : r.pattern}
                           </span>
                           {r.patternConfidence != null && (
-                            <span className="text-xs text-slate-500">{r.patternConfidence}%</span>
+                            <span className="text-xs text-slate-500 font-mono">{r.patternConfidence}%</span>
                           )}
                         </div>
                       ) : (
@@ -771,7 +902,7 @@ export default function Dashboard() {
                       )}
                     </td>
                     {/* RS vs SPY */}
-                    <td className="px-4 py-3 tabular-nums text-right">
+                    <td className="px-4 py-3 font-mono tabular-nums text-right">
                       {r.relativeStrength != null ? (
                         <span className={`font-medium ${
                           r.relativeStrength > 110 ? 'text-emerald-400' :
@@ -784,7 +915,7 @@ export default function Dashboard() {
                       ) : '–'}
                     </td>
                     {/* Industry Rank */}
-                    <td className="px-4 py-3 tabular-nums text-right">
+                    <td className="px-4 py-3 font-mono tabular-nums text-right">
                       {r.industryRank != null ? (
                         <span className={`font-medium ${
                           r.industryRank <= 20 ? 'text-emerald-400' :
@@ -796,25 +927,16 @@ export default function Dashboard() {
                         </span>
                       ) : '–'}
                     </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">{r.lastClose != null ? `$${r.lastClose.toFixed(2)}` : '–'}</td>
-                    <td className="px-4 py-3 text-slate-300 text-right">{r.contractions ?? '–'}</td>
+                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">{r.lastClose != null ? `$${r.lastClose.toFixed(2)}` : '–'}</td>
+                    <td className="px-4 py-3 text-slate-300 font-mono text-right">{r.contractions ?? '–'}</td>
                     <td className="px-4 py-3 text-right">{r.atMa10 ? '✅' : '–'}</td>
                     <td className="px-4 py-3 text-right">{r.atMa20 ? '✅' : '–'}</td>
                     <td className="px-4 py-3 text-right">{r.atMa50 ? '✅' : '–'}</td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
+                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">
                       {fundamentals[r.ticker]?.pctHeldByInst != null ? `${fundamentals[r.ticker].pctHeldByInst}%` : '–'}
                     </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
-                      {fundamentals[r.ticker]?.qtrEarningsYoY != null ? `${fundamentals[r.ticker].qtrEarningsYoY}%` : '–'}
-                    </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
-                      {fundamentals[r.ticker]?.profitMargin != null ? `${fundamentals[r.ticker].profitMargin}%` : '–'}
-                    </td>
-                    <td className="px-4 py-3 text-slate-300 tabular-nums text-right">
-                      {fundamentals[r.ticker]?.operatingMargin != null ? `${fundamentals[r.ticker].operatingMargin}%` : '–'}
-                    </td>
                     {/* Industry 1Y */}
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 font-mono text-right">
                       {(() => {
                         const ind = fundamentals[r.ticker]?.industry
                         const trend = ind != null ? industryTrendMap1Y[ind] : undefined
@@ -828,7 +950,7 @@ export default function Dashboard() {
                       })()}
                     </td>
                     {/* Industry 6M */}
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 font-mono text-right">
                       {(() => {
                         const ind = fundamentals[r.ticker]?.industry
                         const trend = ind != null ? industryTrendMap6M[ind] : undefined
@@ -842,7 +964,7 @@ export default function Dashboard() {
                       })()}
                     </td>
                     {/* Industry 3M */}
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 font-mono text-right">
                       {(() => {
                         const ind = fundamentals[r.ticker]?.industry
                         const trend = ind != null ? industryTrendMap[ind] : undefined
@@ -856,7 +978,7 @@ export default function Dashboard() {
                       })()}
                     </td>
                     {/* Industry YTD */}
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 font-mono text-right">
                       {(() => {
                         const ind = fundamentals[r.ticker]?.industry
                         const trend = ind != null ? industryTrendMapYtd[ind] : undefined
@@ -869,6 +991,15 @@ export default function Dashboard() {
                         )
                       })()}
                     </td>
+                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">
+                      {fundamentals[r.ticker]?.qtrEarningsYoY != null ? `${fundamentals[r.ticker].qtrEarningsYoY}%` : '–'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">
+                      {fundamentals[r.ticker]?.profitMargin != null ? `${fundamentals[r.ticker].profitMargin}%` : '–'}
+                    </td>
+                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">
+                      {fundamentals[r.ticker]?.operatingMargin != null ? `${fundamentals[r.ticker].operatingMargin}%` : '–'}
+                    </td>
                   </tr>
                 ))
               )}
@@ -877,6 +1008,7 @@ export default function Dashboard() {
       </div>
       </>
       )}
+      </div>
     </div>
   )
 }

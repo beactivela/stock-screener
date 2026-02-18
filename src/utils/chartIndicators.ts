@@ -185,6 +185,141 @@ export function findIdealPullbackBarTimes(bars: Bar[], lookback = 80): number[] 
   return result
 }
 
+/**
+ * Find volume-based buy signals with strict trend filters:
+ * 0. Price must be above 50 MA (minimum requirement for longs)
+ * 1. Look back 4-10 days for a period with volume increase
+ * 2. Price decreased during that period (accumulation)
+ * 3. 10 MA must be above 20 MA (uptrend structure)
+ * 4. Price must be above prior red candle high (resistance cleared)
+ * 5. Signal when price crosses above 10MA, 20MA, or the high from the volume period
+ * 
+ * Returns array of bar times (ms) where buy signals occur
+ */
+export function findVolumePriceBreakouts(bars: Bar[]): number[] {
+  if (bars.length < 30) return []
+  
+  const volumes = bars.map((b) => b.v ?? 0)
+  const closes = bars.map((b) => b.c)
+  const highs = bars.map((b) => b.h)
+  
+  // Calculate 20-day volume SMA for comparison
+  const volSma20 = sma(volumes, 20)
+  
+  // Calculate 10, 20, and 50 MA for price breakout detection and trend filtering
+  const sma10 = sma(closes, 10)
+  const sma20 = sma(closes, 20)
+  const sma50 = sma(closes, 50)
+  
+  const signals: number[] = []
+  
+  // Start from bar 25 to ensure we have enough history
+  for (let i = 25; i < bars.length; i++) {
+    // Look back 4-10 days to find volume spike period
+    for (let lookback = 4; lookback <= 10; lookback++) {
+      const volumePeriodStart = i - lookback
+      if (volumePeriodStart < 20) continue
+      
+      // Check if there was volume increase during this period
+      // Compare average volume in this period vs the 20-day SMA before it
+      let volumeSpikePeriodEnd = volumePeriodStart
+      let maxVolume = volumes[volumePeriodStart]
+      let hadVolumeIncrease = false
+      
+      // Find the bar with highest volume in the lookback period
+      for (let j = volumePeriodStart; j <= i - 1; j++) {
+        const vol = volumes[j]
+        const volAvg = volSma20[j]
+        
+        if (volAvg && vol > maxVolume) {
+          maxVolume = vol
+          volumeSpikePeriodEnd = j
+        }
+        
+        // Volume increase means volume was above 20-day average
+        if (volAvg && vol > volAvg * 1.2) {
+          hadVolumeIncrease = true
+        }
+      }
+      
+      if (!hadVolumeIncrease) continue
+      
+      // Check if price decreased from start to end of volume period
+      const priceAtStart = closes[volumePeriodStart]
+      const priceAtEnd = closes[volumeSpikePeriodEnd]
+      
+      if (priceAtEnd >= priceAtStart) continue // Price didn't decrease
+      
+      // Find the high during the volume spike period
+      const highDuringVolume = Math.max(...highs.slice(volumePeriodStart, volumeSpikePeriodEnd + 1))
+      
+      // FILTER 0: Price must be above 50 MA (minimum requirement for long trades)
+      const currentClose = closes[i]
+      const currentHigh = highs[i]
+      const ma10Value = sma10[i]
+      const ma20Value = sma20[i]
+      const ma50Value = sma50[i]
+      
+      // Skip if price is not above 50 MA (not in a strong uptrend)
+      if (!ma50Value || currentClose <= ma50Value) {
+        continue
+      }
+      
+      // FILTER 1: Only proceed if 10 MA is above 20 MA (uptrend confirmation)
+      // Check if 10 MA is above 20 MA (uptrend structure)
+      if (!ma10Value || !ma20Value || ma10Value <= ma20Value) {
+        continue
+      }
+      
+      // FILTER 2: Find the most recent red candle and check if price is above its high
+      let priorRedCandleHigh = 0
+      for (let j = i - 1; j >= Math.max(0, i - 10); j--) {
+        const barOpen = bars[j].o
+        const barClose = bars[j].c
+        const barHigh = bars[j].h
+        
+        // Red candle: close < open
+        if (barClose < barOpen) {
+          priorRedCandleHigh = barHigh
+          break
+        }
+      }
+      
+      // If we found a prior red candle, current price must be above its high
+      if (priorRedCandleHigh > 0 && currentClose <= priorRedCandleHigh) {
+        continue
+      }
+      
+      // Previous bar values to confirm breakout (not just touching)
+      const prevClose = closes[i - 1]
+      
+      let hasBreakout = false
+      
+      // Breakout above 10 MA
+      if (ma10Value && prevClose < ma10Value && currentClose > ma10Value) {
+        hasBreakout = true
+      }
+      
+      // Breakout above 20 MA
+      if (ma20Value && prevClose < ma20Value && currentClose > ma20Value) {
+        hasBreakout = true
+      }
+      
+      // Breakout above volume period high
+      if (prevClose < highDuringVolume && currentHigh > highDuringVolume) {
+        hasBreakout = true
+      }
+      
+      if (hasBreakout) {
+        signals.push(bars[i].t)
+        break // Only one signal per bar
+      }
+    }
+  }
+  
+  return signals
+}
+
 /** RSI (14-period default) using Wilder smoothing. Returns 0–100 or null for insufficient data. */
 export function rsi(closes: number[], period = 14): (number | null)[] {
   const out: (number | null)[] = []
@@ -210,4 +345,80 @@ export function rsi(closes: number[], period = 14): (number | null)[] {
     out.push(100 - 100 / (1 + rs))
   }
   return out
+}
+
+/**
+ * Calculate Relative Strength (RS) line for CANSLIM methodology.
+ * RS = (Stock Price / S&P 500 Price) × Base Value
+ * 
+ * Returns normalized RS line values. Rising RS = stock outperforming SPX (bullish).
+ * Falling RS = stock underperforming SPX (bearish).
+ * 
+ * @param stockBars - Stock's OHLC bars (must be sorted by time ascending)
+ * @param spxBars - S&P 500's OHLC bars (must be sorted by time ascending)
+ * @param baseValue - Starting value for normalization (default 1000)
+ * @returns Array of RS values aligned by date, or null when dates don't match
+ */
+export function calculateRelativeStrength(
+  stockBars: Bar[],
+  spxBars: Bar[],
+  baseValue = 1000
+): (number | null)[] {
+  if (stockBars.length === 0 || spxBars.length === 0) return []
+
+  // Create a map of SPX prices by date for fast lookup
+  // Format: 'YYYY-MM-DD' -> close price
+  const spxPriceMap = new Map<string, number>()
+  for (const bar of spxBars) {
+    const dateKey = new Date(bar.t).toISOString().slice(0, 10)
+    spxPriceMap.set(dateKey, bar.c)
+  }
+
+  // Find the first date where we have both stock and SPX data
+  let firstStockDate = new Date(stockBars[0].t).toISOString().slice(0, 10)
+  let firstSpxPrice = spxPriceMap.get(firstStockDate)
+  let firstStockPrice = stockBars[0].c
+
+  // If first dates don't align, find the earliest common date
+  let startIndex = 0
+  while (!firstSpxPrice && startIndex < stockBars.length) {
+    startIndex++
+    firstStockDate = new Date(stockBars[startIndex]?.t ?? 0).toISOString().slice(0, 10)
+    firstSpxPrice = spxPriceMap.get(firstStockDate)
+    firstStockPrice = stockBars[startIndex]?.c ?? 0
+  }
+
+  if (!firstSpxPrice || firstSpxPrice <= 0 || firstStockPrice <= 0) {
+    // No common dates or invalid prices
+    return stockBars.map(() => null)
+  }
+
+  // Calculate initial RS ratio
+  const initialRatio = firstStockPrice / firstSpxPrice
+
+  // Calculate RS for each bar
+  const rsValues: (number | null)[] = []
+  
+  for (let i = 0; i < stockBars.length; i++) {
+    const dateKey = new Date(stockBars[i].t).toISOString().slice(0, 10)
+    const spxPrice = spxPriceMap.get(dateKey)
+    const stockPrice = stockBars[i].c
+
+    if (!spxPrice || spxPrice <= 0 || stockPrice <= 0) {
+      // No SPX data for this date or invalid price
+      rsValues.push(null)
+      continue
+    }
+
+    // Calculate current ratio
+    const currentRatio = stockPrice / spxPrice
+    
+    // Normalize to base value using the initial ratio
+    // This ensures the RS line starts at baseValue and moves from there
+    const rsValue = (currentRatio / initialRatio) * baseValue
+    
+    rsValues.push(rsValue)
+  }
+
+  return rsValues
 }

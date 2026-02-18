@@ -4,11 +4,12 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "test": "node --test server/fundamentals.test.js",
+    "test": "node --test server/fundamentals.test.js server/backtest.test.js server/opus45Signal.test.js server/industrials.test.js",
     "verify-fundamentals": "node scripts/verify-fundamentals.js",
     "verify-industry-fetch": "node scripts/verify-industry-fetch.js",
     "populate-industry-1y": "node scripts/populate-industry-1y.js",
     "dev": "NODE_ENV=development PORT=5173 node server/index.js",
+    "dev:server": "NODE_ENV=development PORT=3001 node server/index.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -16,17 +17,26 @@
     "start": "node server/index.js",
     "serve": "npm run build && node server/index.js",
     "scan": "node server/scan.js",
-    "populate-tickers": "node server/populate-tickers.js"
+    "populate-tickers": "node server/populate-tickers.js",
+    "fetch-regime-data": "node scripts/fetch-regime-data.js",
+    "regime:train": "node scripts/train-regime-hmm.js",
+    "test:supabase": "node scripts/test-supabase.js",
+    "migrate:supabase": "node scripts/migrate-supabase.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.97.0",
+    "@tensorflow/tfjs": "^4.22.0",
     "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "hidden-markov-model-tf": "^4.0.0",
     "lightweight-charts": "^4.2.3",
+    "pg": "^8.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "uuid": "^13.0.0",
     "yahoo-finance2": "^3.13.0"
   },
   "devDependencies": {

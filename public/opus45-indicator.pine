@@ -1,0 +1,267 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Opus4.5 Trading System
+// Based on Mark Minervini's SEPA and William O'Neil's CANSLIM Methodologies
+
+//@version=5
+indicator("Opus4.5 Buy Signal", overlay=true, shorttitle="Opus4.5")
+
+// ============================================================================
+// INPUT SETTINGS
+// ============================================================================
+
+// Moving Average Settings
+showMAs = input.bool(true, "Show Moving Averages", group="Display")
+ma10Color = input.color(color.orange, "10 MA Color", group="Moving Averages")
+ma20Color = input.color(color.blue, "20 MA Color", group="Moving Averages")
+ma50Color = input.color(color.purple, "50 MA Color", group="Moving Averages")
+ma150Color = input.color(color.fuchsia, "150 MA Color", group="Moving Averages")
+ma200Color = input.color(color.gray, "200 MA Color", group="Moving Averages")
+
+// Signal Settings
+showSignals = input.bool(true, "Show Buy/Sell Signals", group="Signals")
+maTolerance = input.float(2.5, "MA Tolerance %", minval=0.5, maxval=5.0, step=0.5, group="Signals")
+minRS = input.int(70, "Min Relative Strength", minval=50, maxval=95, group="Signals")
+minContractions = input.int(2, "Min Contractions", minval=1, maxval=5, group="Signals")
+
+// Exit Settings
+stopLossPercent = input.float(4.0, "Stop Loss %", minval=1.0, maxval=10.0, step=0.5, group="Exit Rules")
+useMA10Exit = input.bool(true, "Exit when below 10 MA", group="Exit Rules")
+
+// ============================================================================
+// MOVING AVERAGE CALCULATIONS
+// ============================================================================
+
+ma10 = ta.sma(close, 10)
+ma20 = ta.sma(close, 20)
+ma50 = ta.sma(close, 50)
+ma150 = ta.sma(close, 150)
+ma200 = ta.sma(close, 200)
+
+// Check if 200 MA is rising (compare to 20 bars ago)
+ma200Rising = ma200 > ma200[20]
+
+// ============================================================================
+// PLOT MOVING AVERAGES
+// ============================================================================
+
+plot(showMAs ? ma10 : na, "10 MA", color=ma10Color, linewidth=1)
+plot(showMAs ? ma20 : na, "20 MA", color=ma20Color, linewidth=1)
+plot(showMAs ? ma50 : na, "50 MA", color=ma50Color, linewidth=2)
+plot(showMAs ? ma150 : na, "150 MA", color=ma150Color, linewidth=1)
+plot(showMAs ? ma200 : na, "200 MA", color=ma200Color, linewidth=2)
+
+// ============================================================================
+// MINERVINI STAGE 2 CRITERIA
+// ============================================================================
+
+// 1. MA Alignment: 50 > 150 > 200 (all MAs in proper order)
+maAlignment = ma50 > ma150 and ma150 > ma200
+
+// 2. Price above all key MAs
+priceAboveAllMAs = close > ma50 and close > ma150 and close > ma200
+
+// 3. Stage 2 confirmed (alignment + price + 200 rising)
+stage2 = maAlignment and priceAboveAllMAs and ma200Rising
+
+// ============================================================================
+// 52-WEEK HIGH/LOW CALCULATIONS
+// ============================================================================
+
+high52w = ta.highest(high, 252)
+low52w = ta.lowest(low, 252)
+
+pctFromHigh = (high52w - close) / high52w * 100
+pctAboveLow = (close - low52w) / low52w * 100
+
+// Within 25% of 52-week high
+withinHighRange = pctFromHigh <= 25
+
+// At least 25% above 52-week low
+aboveLowRange = pctAboveLow >= 25
+
+// ============================================================================
+// RELATIVE STRENGTH (vs S&P 500)
+// Uses simple momentum comparison
+// ============================================================================
+
+// 6-month performance calculation
+sixMonthChange = (close - close[126]) / close[126] * 100
+
+// Normalized RS (scale to 0-100+ range, assuming 10% is baseline)
+rs = (sixMonthChange / 10) * 100
+
+// RS meets threshold
+rsValid = rs >= minRS
+
+// ============================================================================
+// VOLATILITY CONTRACTION PATTERN (VCP) DETECTION
+// Counts pullbacks that are smaller than the previous pullback
+// ============================================================================
+
+// Simple contraction detection using ATR compression
+atr14 = ta.atr(14)
+atr14_20ago = atr14[20]
+atr14_40ago = atr14[40]
+atr14_60ago = atr14[60]
+
+// Count contractions (ATR getting smaller over time)
+contraction1 = atr14 < atr14_20ago ? 1 : 0
+contraction2 = atr14_20ago < atr14_40ago ? 1 : 0
+contraction3 = atr14_40ago < atr14_60ago ? 1 : 0
+contractions = contraction1 + contraction2 + contraction3
+
+// Volatility is contracting
+vcpForming = contractions >= minContractions
+
+// ============================================================================
+// ENTRY POINT - AT MA SUPPORT
+// ============================================================================
+
+// Check if price is at MA support (within tolerance)
+atMA10 = math.abs(close - ma10) / ma10 <= maTolerance / 100
+atMA20 = math.abs(close - ma20) / ma20 <= maTolerance / 100
+atMASupport = atMA10 or atMA20
+
+// ============================================================================
+// VOLUME CONFIRMATION
+// ============================================================================
+
+vol20Avg = ta.sma(volume, 20)
+recent5Vol = ta.sma(volume, 5)
+
+// Volume drying up on pullback (bullish)
+volumeDryUp = recent5Vol < vol20Avg * 0.85
+
+// Volume expanding (breakout confirmation)
+volumeExpanding = volume > vol20Avg * 1.0
+
+// ============================================================================
+// OPUS4.5 BUY SIGNAL
+// All mandatory criteria must pass
+// ============================================================================
+
+// Mandatory criteria
+mandatory1_stage2 = stage2
+mandatory2_withinHigh = withinHighRange
+mandatory3_aboveLow = aboveLowRange
+mandatory4_rs = rsValid
+mandatory5_vcp = vcpForming
+mandatory6_maSupport = atMASupport
+
+// All mandatory criteria passed
+opus45Buy = mandatory1_stage2 and mandatory2_withinHigh and mandatory3_aboveLow and mandatory4_rs and mandatory5_vcp and mandatory6_maSupport
+
+// Additional quality factors for confidence
+qualityVolume = volumeDryUp or volumeExpanding
+qualityTightEntry = atMA10  // Tighter entry is better
+
+// High confidence signal (buy + quality factors)
+highConfidenceBuy = opus45Buy and qualityVolume and qualityTightEntry
+
+// ============================================================================
+// EXIT SIGNALS
+// ============================================================================
+
+// Track entry price for stop loss calculation
+var float entryPrice = na
+var bool inPosition = false
+
+// Enter position on buy signal
+if opus45Buy and not inPosition
+    entryPrice := close
+    inPosition := true
+
+// Exit conditions
+stopLossHit = inPosition and (close - entryPrice) / entryPrice * 100 <= -stopLossPercent
+below10MA = inPosition and useMA10Exit and close < ma10
+
+exitSignal = stopLossHit or below10MA
+
+// Reset position on exit
+if exitSignal
+    inPosition := false
+    entryPrice := na
+
+// ============================================================================
+// PLOT SIGNALS
+// ============================================================================
+
+// Buy signal markers
+plotshape(showSignals and highConfidenceBuy and not highConfidenceBuy[1], 
+    title="Opus4.5 BUY (Strong)", 
+    text="BUY", 
+    location=location.belowbar, 
+    style=shape.labelup, 
+    size=size.normal, 
+    color=color.new(color.green, 0), 
+    textcolor=color.white)
+
+plotshape(showSignals and opus45Buy and not highConfidenceBuy and not opus45Buy[1], 
+    title="Opus4.5 BUY", 
+    text="○", 
+    location=location.belowbar, 
+    style=shape.labelup, 
+    size=size.small, 
+    color=color.new(color.lime, 20), 
+    textcolor=color.white)
+
+// Sell signal markers
+plotshape(showSignals and exitSignal, 
+    title="Opus4.5 SELL", 
+    text="SELL", 
+    location=location.abovebar, 
+    style=shape.labeldown, 
+    size=size.normal, 
+    color=color.new(color.red, 0), 
+    textcolor=color.white)
+
+// ============================================================================
+// BACKGROUND HIGHLIGHTING
+// ============================================================================
+
+// Highlight Stage 2 uptrend
+bgcolor(stage2 ? color.new(color.green, 95) : na, title="Stage 2 Background")
+
+// Highlight when in position
+bgcolor(inPosition ? color.new(color.blue, 95) : na, title="In Position")
+
+// ============================================================================
+// INFORMATION TABLE
+// ============================================================================
+
+var table infoTable = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80), frame_width=1, frame_color=color.gray)
+
+if barstate.islast
+    // Headers
+    table.cell(infoTable, 0, 0, "Opus4.5 Criteria", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTable, 1, 0, "Status", text_color=color.white, text_size=size.small, text_halign=text.align_right)
+    
+    // Criteria rows
+    table.cell(infoTable, 0, 1, "Stage 2 (MA align)", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoTable, 1, 1, stage2 ? "✓" : "✗", text_color=stage2 ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+    
+    table.cell(infoTable, 0, 2, "Within 25% of High", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoTable, 1, 2, withinHighRange ? "✓" : "✗", text_color=withinHighRange ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+    
+    table.cell(infoTable, 0, 3, "25%+ Above Low", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoTable, 1, 3, aboveLowRange ? "✓" : "✗", text_color=aboveLowRange ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+    
+    table.cell(infoTable, 0, 4, "RS ≥ " + str.tostring(minRS), text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoTable, 1, 4, rsValid ? "✓ " + str.tostring(math.round(rs)) : "✗ " + str.tostring(math.round(rs)), text_color=rsValid ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+    
+    table.cell(infoTable, 0, 5, "VCP (" + str.tostring(minContractions) + "+ contr.)", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoTable, 1, 5, vcpForming ? "✓ " + str.tostring(contractions) : "✗ " + str.tostring(contractions), text_color=vcpForming ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+    
+    table.cell(infoTable, 0, 6, "At MA Support", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+    table.cell(infoTable, 1, 6, atMASupport ? (atMA10 ? "✓ 10MA" : "✓ 20MA") : "✗", text_color=atMASupport ? color.green : color.red, text_size=size.tiny, text_halign=text.align_right)
+    
+    table.cell(infoTable, 0, 7, "SIGNAL", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(infoTable, 1, 7, opus45Buy ? "🟢 BUY" : "–", text_color=opus45Buy ? color.green : color.gray, text_size=size.small, text_halign=text.align_right)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(highConfidenceBuy and not highConfidenceBuy[1], "Opus4.5 Strong Buy", "Opus4.5 HIGH CONFIDENCE Buy Signal on {{ticker}}")
+alertcondition(opus45Buy and not opus45Buy[1], "Opus4.5 Buy", "Opus4.5 Buy Signal on {{ticker}}")
+alertcondition(exitSignal, "Opus4.5 Exit", "Opus4.5 Exit Signal on {{ticker}} - Stop loss or below 10 MA")

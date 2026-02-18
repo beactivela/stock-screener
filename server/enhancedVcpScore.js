@@ -1,6 +1,9 @@
 /**
  * Enhanced VCP + CANSLIM + Industry Trends Scoring System
- * 
+ *
+ * NOT WIRED INTO API: This module is not imported by index.js or scan.js.
+ * See docs/IMPROVEMENT_PLAN.md for integrating it with real data.
+ *
  * This system combines:
  * 1. Mark Minervini's VCP (Volatility Contraction Pattern) criteria
  * 2. William O'Neil's CANSLIM methodology from IBD

@@ -132,14 +132,46 @@ export function listScanSnapshots() {
 }
 
 /**
- * Calculate forward returns for a scan snapshot
- * Fetches current prices and compares to entry prices
+ * Calculate simple moving average for a series
+ * @param {Array} values - Array of numbers
+ * @param {number} period - Period for SMA calculation
+ * @returns {number|null} SMA value or null if insufficient data
+ */
+function calculateSMA(values, period) {
+  if (!values || values.length < period) return null;
+  const sum = values.slice(-period).reduce((a, b) => a + b, 0);
+  return sum / period;
+}
+
+/**
+ * Check if price is near MA (within 2%)
+ * This is the "buy signal" - price bouncing off or near the MA
+ * @param {number} price - Current price
+ * @param {number} ma - Moving average value
+ * @returns {boolean} True if price is within 2% of MA
+ */
+function isPriceNearMA(price, ma) {
+  if (!price || !ma) return false;
+  const diff = Math.abs(price - ma);
+  const pct = (diff / ma) * 100;
+  return pct <= 2.0; // Within 2%
+}
+
+/**
+ * Calculate forward returns using 10 MA exit strategy
+ * 
+ * NEW STRATEGY:
+ * - Entry: First time price is at/near 10 MA after scan date (buy signal)
+ * - Exit: When price closes below 10 MA OR -8% stop loss hit
+ * - Max hold: daysForward parameter (e.g., 30, 60, 90 days)
+ * - Portfolio filtering: Optional topN to test only highest scoring stocks
  * 
  * @param {Object} snapshot - Scan snapshot from loadScanSnapshot()
- * @param {number} daysForward - Number of days forward to measure (e.g., 30, 60, 90)
+ * @param {number} daysForward - Maximum days to hold (exit if no signal by then)
+ * @param {number|null} topN - Optional: only test top N stocks by enhancedScore (null = all)
  * @returns {Object|null} Backtest results or null if not enough time elapsed
  */
-export async function calculateForwardReturns(snapshot, daysForward = 30) {
+export async function calculateForwardReturns(snapshot, daysForward = 30, topN = null) {
   const scanDate = new Date(snapshot.scanDate);
   const today = new Date();
   const daysElapsed = Math.floor((today - scanDate) / (1000 * 60 * 60 * 24));
@@ -153,33 +185,52 @@ export async function calculateForwardReturns(snapshot, daysForward = 30) {
     };
   }
   
-  console.log(`📈 Calculating ${daysForward}-day returns for ${snapshot.tickers.length} tickers...`);
+  // Filter to top N stocks by enhancedScore if specified
+  let tickersToTest = snapshot.tickers;
+  if (topN && topN > 0) {
+    tickersToTest = [...snapshot.tickers]
+      .sort((a, b) => (b.enhancedScore || 0) - (a.enhancedScore || 0))
+      .slice(0, topN);
+    console.log(`📊 Portfolio filter: Testing top ${topN} stocks (out of ${snapshot.tickers.length})`);
+  }
+  
+  console.log(`📈 Calculating ${daysForward}-day returns (10 MA exit strategy) for ${tickersToTest.length} tickers...`);
   
   const results = [];
   let processed = 0;
   
-  for (const entry of snapshot.tickers) {
+  for (const entry of tickersToTest) {
     try {
       // Calculate target date (scanDate + daysForward)
       const targetDate = new Date(scanDate);
       targetDate.setDate(targetDate.getDate() + daysForward);
       
-      // Get bars from scan date to target date (plus buffer for holidays)
+      // FIX: Fetch bars starting 30 days BEFORE scan date
+      // This provides enough historical data to calculate 10 MA from day 1
+      const fromDate = new Date(scanDate);
+      fromDate.setDate(fromDate.getDate() - 30); // 30 days of history for MA calculation
+      
+      // Get bars to target date (plus buffer for holidays)
       const toDate = new Date(targetDate);
       toDate.setDate(toDate.getDate() + 10); // Buffer for weekends/holidays
       
-      const bars = await getDailyBars(
+      const allBars = await getDailyBars(
         entry.ticker,
-        snapshot.scanDate,
+        fromDate.toISOString().slice(0, 10),
         toDate.toISOString().slice(0, 10)
       );
       
-      if (!bars || bars.length < Math.floor(daysForward * 0.7)) {
+      if (!allBars || allBars.length < 15) {
         // Not enough data (delisted, suspended, etc.)
         results.push({
           ...entry,
+          entryPrice: null,
+          exitPrice: null,
+          entryDate: null,
+          exitDate: null,
+          exitReason: 'NO_DATA',
+          daysHeld: null,
           forwardReturn: null,
-          currentPrice: null,
           mfe: null,
           mae: null,
           outcome: 'NO_DATA',
@@ -189,59 +240,168 @@ export async function calculateForwardReturns(snapshot, daysForward = 30) {
         continue;
       }
       
-      // Find price at T+daysForward (or closest available)
-      const targetBar = bars[Math.min(daysForward, bars.length - 1)];
-      const currentPrice = targetBar.c;
-      
-      const returnPct = ((currentPrice - entry.price) / entry.price) * 100;
-      
-      // Calculate max favorable excursion (MFE) and max adverse excursion (MAE)
-      let maxPrice = entry.price;
-      let minPrice = entry.price;
-      const barsToAnalyze = bars.slice(0, Math.min(daysForward + 5, bars.length));
-      
-      for (const bar of barsToAnalyze) {
-        maxPrice = Math.max(maxPrice, bar.h || bar.c);
-        minPrice = Math.min(minPrice, bar.l || bar.c);
+      // Find the index where scan date starts (first bar on or after scan date)
+      const scanDateTs = scanDate.getTime();
+      let scanDateIdx = allBars.findIndex(b => b.t >= scanDateTs);
+      if (scanDateIdx === -1) {
+        scanDateIdx = 0; // Fallback if no exact match
       }
       
-      const mfe = ((maxPrice - entry.price) / entry.price) * 100;
-      const mae = ((minPrice - entry.price) / entry.price) * 100;
+      // We need bars AFTER the scan date for trading
+      // The historical bars before scanDateIdx are just for MA calculation
+      const bars = allBars; // Keep all bars for MA calculation
+      
+      // Step 1: Find entry point - first time price is at/near 10 MA after scan date
+      let entryIdx = -1;
+      let entryPrice = null;
+      let entryDate = null;
+      
+      // Start looking from the scan date index (not index 0)
+      // Look for buy signal starting from day after scan date
+      for (let i = scanDateIdx + 1; i < Math.min(scanDateIdx + daysForward + 5, bars.length); i++) {
+        const bar = bars[i];
+        const closes = bars.slice(0, i + 1).map(b => b.c);
+        
+        // Calculate 10 MA at this point (now we have enough history!)
+        const ma10 = calculateSMA(closes, 10);
+        
+        if (ma10 && isPriceNearMA(bar.c, ma10)) {
+          // Found buy signal - price at/near 10 MA
+          entryIdx = i;
+          entryPrice = bar.c;
+          entryDate = bar.t;
+          break;
+        }
+      }
+      
+      // If no buy signal found, mark as NO_SIGNAL
+      if (entryIdx === -1) {
+        results.push({
+          ...entry,
+          entryPrice: null,
+          exitPrice: null,
+          entryDate: null,
+          exitDate: null,
+          exitReason: 'NO_SIGNAL',
+          daysHeld: null,
+          forwardReturn: null,
+          mfe: null,
+          mae: null,
+          outcome: 'NO_SIGNAL',
+          error: 'No buy signal (price never at 10 MA)'
+        });
+        processed++;
+        continue;
+      }
+      
+      // Step 2: Find exit point - when price closes below 10 MA or stop loss hit
+      let exitIdx = -1;
+      let exitPrice = null;
+      let exitDate = null;
+      let exitReason = 'MAX_HOLD'; // Default if we hit max hold time
+      
+      // Track MFE and MAE from entry point
+      let maxPrice = entryPrice;
+      let minPrice = entryPrice;
+      
+      // Look for exit signal after entry
+      for (let i = entryIdx + 1; i < Math.min(entryIdx + daysForward, bars.length); i++) {
+        const bar = bars[i];
+        const closes = bars.slice(0, i + 1).map(b => b.c);
+        
+        // Update MFE and MAE
+        maxPrice = Math.max(maxPrice, bar.h || bar.c);
+        minPrice = Math.min(minPrice, bar.l || bar.c);
+        
+        // Calculate current return
+        const currentReturn = ((bar.c - entryPrice) / entryPrice) * 100;
+        
+        // Exit Rule 1: -8% stop loss hit
+        if (currentReturn <= -8) {
+          exitIdx = i;
+          exitPrice = bar.c;
+          exitDate = bar.t;
+          exitReason = 'STOP_LOSS';
+          break;
+        }
+        
+        // Calculate 10 MA at this point (need at least 10 bars for MA)
+        const ma10 = calculateSMA(closes, 10);
+        
+        // Exit Rule 2: Price closes below 10 MA
+        if (ma10 && bar.c < ma10) {
+          exitIdx = i;
+          exitPrice = bar.c;
+          exitDate = bar.t;
+          exitReason = 'BELOW_10MA';
+          break;
+        }
+      }
+      
+      // If no exit signal found, exit at max hold time
+      if (exitIdx === -1) {
+        exitIdx = Math.min(entryIdx + daysForward, bars.length - 1);
+        const exitBar = bars[exitIdx];
+        exitPrice = exitBar.c;
+        exitDate = exitBar.t;
+        exitReason = 'MAX_HOLD';
+        
+        // Update MFE/MAE for remaining bars
+        for (let i = entryIdx + 1; i <= exitIdx; i++) {
+          maxPrice = Math.max(maxPrice, bars[i].h || bars[i].c);
+          minPrice = Math.min(minPrice, bars[i].l || bars[i].c);
+        }
+      }
+      
+      // Calculate metrics
+      const daysHeld = exitIdx - entryIdx;
+      const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100;
+      const mfe = ((maxPrice - entryPrice) / entryPrice) * 100;
+      const mae = ((minPrice - entryPrice) / entryPrice) * 100;
       
       // Classify outcome
       // WIN: +20% gain OR +15% with <-8% drawdown
-      // LOSS: -8% stop loss hit
-      // NEUTRAL: Neither
+      // LOSS: -8% stop loss hit OR negative return
+      // NEUTRAL: Positive but below win threshold
       let outcome = 'NEUTRAL';
       if (returnPct >= 20 || (returnPct >= 15 && mae > -8)) {
         outcome = 'WIN';
-      } else if (mae <= -8) {
+      } else if (returnPct < 0 || mae <= -8) {
         outcome = 'LOSS';
       }
       
       results.push({
         ...entry,
+        entryPrice: Math.round(entryPrice * 100) / 100,
+        exitPrice: Math.round(exitPrice * 100) / 100,
+        entryDate: new Date(entryDate).toISOString().slice(0, 10),
+        exitDate: new Date(exitDate).toISOString().slice(0, 10),
+        exitReason,
+        daysHeld,
         forwardReturn: Math.round(returnPct * 100) / 100,
-        currentPrice: Math.round(currentPrice * 100) / 100,
         mfe: Math.round(mfe * 100) / 100,
         mae: Math.round(mae * 100) / 100,
-        outcome,
-        barsAnalyzed: barsToAnalyze.length
+        outcome
       });
       
       processed++;
       
       // Progress log every 25 tickers
-      if (processed % 25 === 0 || processed === snapshot.tickers.length) {
-        console.log(`  ${processed} / ${snapshot.tickers.length}`);
+      if (processed % 25 === 0 || processed === tickersToTest.length) {
+        console.log(`  ${processed} / ${tickersToTest.length}`);
       }
       
     } catch (e) {
       console.warn(`  ${entry.ticker}: ${e.message}`);
       results.push({
         ...entry,
+        entryPrice: null,
+        exitPrice: null,
+        entryDate: null,
+        exitDate: null,
+        exitReason: 'ERROR',
+        daysHeld: null,
         forwardReturn: null,
-        currentPrice: null,
         mfe: null,
         mae: null,
         outcome: 'ERROR',
@@ -261,10 +421,13 @@ export async function calculateForwardReturns(snapshot, daysForward = 30) {
     calculatedAt: new Date().toISOString(),
     daysElapsed,
     totalTickers: results.length,
+    portfolioSize: topN || 'ALL', // Track portfolio size filter
+    strategy: '10MA_EXIT', // Mark which strategy was used
     results
   };
   
-  const outputFilename = `backtest-${snapshot.scanDate}-${daysForward}d.json`;
+  const portfolioSuffix = topN ? `-top${topN}` : '';
+  const outputFilename = `backtest-${snapshot.scanDate}-${daysForward}d-10ma${portfolioSuffix}.json`;
   const outputPath = path.join(BACKTEST_DIR, outputFilename);
   fs.writeFileSync(outputPath, JSON.stringify(backtestResult, null, 2), 'utf8');
   console.log(`✅ Backtest results saved: ${outputFilename}`);
@@ -288,9 +451,9 @@ export function analyzeBacktestResults(backtestResults) {
     'below-50': []
   };
   
-  // Group results by score bucket
+  // Group results by score bucket (exclude NO_DATA, ERROR, and NO_SIGNAL)
   for (const r of backtestResults.results) {
-    if (r.outcome === 'NO_DATA' || r.outcome === 'ERROR') continue;
+    if (r.outcome === 'NO_DATA' || r.outcome === 'ERROR' || r.outcome === 'NO_SIGNAL') continue;
     
     const score = r.enhancedScore;
     let bucket;
@@ -352,25 +515,43 @@ export function analyzeBacktestResults(backtestResults) {
   
   // Overall summary
   const validTrades = backtestResults.results.filter(
-    r => r.outcome !== 'NO_DATA' && r.outcome !== 'ERROR'
+    r => r.outcome !== 'NO_DATA' && r.outcome !== 'ERROR' && r.outcome !== 'NO_SIGNAL'
   );
   
   const totalWins = validTrades.filter(t => t.outcome === 'WIN').length;
   const totalLosses = validTrades.filter(t => t.outcome === 'LOSS').length;
+  const noSignalCount = backtestResults.results.filter(r => r.outcome === 'NO_SIGNAL').length;
   const overallWinRate = validTrades.length > 0
     ? Math.round((totalWins / validTrades.length) * 100 * 10) / 10
     : 0;
+  
+  // Calculate average hold time for valid trades
+  const avgHoldTime = validTrades.length > 0
+    ? Math.round(validTrades.reduce((sum, t) => sum + (t.daysHeld || 0), 0) / validTrades.length * 10) / 10
+    : 0;
+  
+  // Calculate exit reason breakdown
+  const exitReasons = {
+    BELOW_10MA: validTrades.filter(t => t.exitReason === 'BELOW_10MA').length,
+    STOP_LOSS: validTrades.filter(t => t.exitReason === 'STOP_LOSS').length,
+    MAX_HOLD: validTrades.filter(t => t.exitReason === 'MAX_HOLD').length
+  };
   
   return {
     scanDate: backtestResults.scanDate,
     daysForward: backtestResults.daysForward,
     calculatedAt: backtestResults.calculatedAt,
+    strategy: backtestResults.strategy || 'UNKNOWN',
+    portfolioSize: backtestResults.portfolioSize || 'ALL',
     byScoreBucket: analysis,
     summary: {
       totalTrades: validTrades.length,
       totalWins,
       totalLosses,
       overallWinRate,
+      avgHoldTime,
+      exitReasons,
+      noSignalCount,
       invalidResults: backtestResults.results.length - validTrades.length
     }
   };
@@ -381,10 +562,12 @@ export function analyzeBacktestResults(backtestResults) {
  * 
  * @param {string} scanDate - Date of scan to backtest (YYYY-MM-DD)
  * @param {number} daysForward - Days forward to measure (30, 60, 90, 180)
+ * @param {number|null} topN - Optional: only test top N stocks by enhancedScore
  * @returns {Object} Complete backtest analysis
  */
-export async function runBacktest(scanDate, daysForward = 30) {
-  console.log(`\n🧪 Running backtest for ${scanDate}, ${daysForward} days forward...\n`);
+export async function runBacktest(scanDate, daysForward = 30, topN = null) {
+  const portfolioMsg = topN ? ` (top ${topN} stocks)` : '';
+  console.log(`\n🧪 Running backtest for ${scanDate}, ${daysForward} days forward${portfolioMsg}...\n`);
   
   // Load snapshot
   const snapshot = loadScanSnapshot(scanDate);
@@ -395,7 +578,7 @@ export async function runBacktest(scanDate, daysForward = 30) {
   console.log(`Loaded snapshot: ${snapshot.tickerCount} tickers`);
   
   // Calculate forward returns
-  const backtestResults = await calculateForwardReturns(snapshot, daysForward);
+  const backtestResults = await calculateForwardReturns(snapshot, daysForward, topN);
   
   if (backtestResults.error) {
     return backtestResults; // Return error info

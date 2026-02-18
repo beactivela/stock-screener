@@ -17,20 +17,40 @@ import cors from 'cors';
 import fs from 'fs';
 import { getBars, getFundamentals, getQuoteInfo } from './yahoo.js';
 import { checkVCP } from './vcp.js';
-import { computeEnhancedScore } from './enhancedScan.js';
+import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { fetchIndustrialsFromYahoo, fetchAllIndustriesFromYahoo, fetchSectorsFromYahoo, fetchIndustryReturns, fetchIndustry1YReturn, industryPageUrl } from './industrials.js';
 import { listScanSnapshots, runBacktest, loadScanSnapshot } from './backtest.js';
+import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS } from './opus45Signal.js';
+import { loadOptimizedWeights, runLearningPipeline, getLearningStatus, applyWeightChanges, resetWeightsToDefault } from './opus45Learning.js';
+import { runRetroBacktest, getTickersForBacktest } from './retroBacktest.js';
+import { loadCurrentRegime, loadRegimeBacktest } from './regimeHmm.js';
+// Trade Journal system for logging and learning from real trades
+import { 
+  loadTrades, 
+  getAllTrades, 
+  getTradesByStatus, 
+  getTradeById, 
+  createTrade, 
+  updateTrade, 
+  closeTrade, 
+  deleteTrade, 
+  checkAutoExits,
+  generateLearningFeedback,
+  getTradeStats 
+} from './trades.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
+const TICKERS_FILE = path.join(DATA_DIR, 'tickers.txt');
 const RESULTS_FILE = path.join(DATA_DIR, 'scan-results.json');
 const FUNDAMENTALS_FILE = path.join(DATA_DIR, 'fundamentals.json');
 const INDUSTRIALS_CACHE_FILE = path.join(DATA_DIR, 'industrials.json');
 const ALL_INDUSTRIES_CACHE_FILE = path.join(DATA_DIR, 'all-industries.json');
 const SECTORS_CACHE_FILE = path.join(DATA_DIR, 'sectors.json');
 const INDUSTRY_YAHOO_RETURNS_FILE = path.join(DATA_DIR, 'industry-yahoo-returns.json');
+const OPUS45_CACHE_FILE = path.join(DATA_DIR, 'opus45-signals.json');
 
 // Cache TTL: how long to use saved bar data before refetching (default 24h)
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
@@ -308,15 +328,29 @@ function buildIndustryDataForTickers(results, fundamentals, yahooReturns, getBar
 }
 
 // Latest scan results (from file written by server/scan.js).
-// Returns results as-is from file since scan already includes enhanced scores
+// Filter results to only tickers in data/tickers.txt - ensures table uses tickers.txt as source of truth.
 app.get('/api/scan-results', (req, res) => {
   try {
     if (!fs.existsSync(RESULTS_FILE)) {
       return res.json({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 });
     }
     const data = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-    // Return data as-is - scan already computed enhanced scores, RS, and industry ranks
-    res.json(data);
+    let results = data.results || [];
+    // Filter to only tickers present in data/tickers.txt (source of truth for scan universe)
+    if (fs.existsSync(TICKERS_FILE)) {
+      const raw = fs.readFileSync(TICKERS_FILE, 'utf8');
+      const tickerSet = new Set(
+        raw.split(/\r?\n/).map((s) => s.trim().toUpperCase()).filter(Boolean)
+      );
+      results = results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase()));
+    }
+    const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
+    res.json({
+      ...data,
+      results,
+      totalTickers: results.length,
+      vcpBullishCount
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -449,6 +483,11 @@ app.post('/api/scan', async (req, res) => {
       )
     );
     
+    // Compute and cache Opus4.5 scores immediately after scan completes
+    // This runs in background so dashboard loads instantly
+    console.log('Opus4.5: Computing scores after scan...');
+    await computeAndSaveOpus45Scores();
+    
     // Mark scan as complete
     activeScan.running = false;
     activeScan.progress.completedAt = new Date().toISOString();
@@ -494,6 +533,115 @@ app.get('/api/bars/:ticker', async (req, res) => {
   // lightweight-charts requires asc by time; Yahoo can return unsorted
   const sorted = [...bars].sort((a, b) => a.t - b.t);
   res.json({ ticker, from: fromStr, to: toStr, interval, results: sorted });
+});
+
+// S&P 500 (^GSPC) bars for Relative Strength calculation. Cached like other tickers.
+app.get('/api/spx/bars', async (req, res) => {
+  // Handle interval: may be string, array (duplicate params), or missing; ensure valid value
+  let interval = req.query.interval;
+  if (Array.isArray(interval)) interval = interval[0];
+  const intervalStr = String(interval || '').toLowerCase();
+  interval = ['1d', '1wk', '1mo'].includes(intervalStr) ? intervalStr : '1d';
+  let days = Number(req.query.days) || 180;
+  // Weekly/monthly need longer range for enough bars
+  if (interval === '1wk') days = Math.max(days, 730); // min 2y for weekly
+  if (interval === '1mo') days = Math.max(days, 1825); // min 5y for monthly
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - days);
+  const fromStr = from.toISOString().slice(0, 10);
+  const toStr = to.toISOString().slice(0, 10);
+
+  const spxTicker = '^GSPC';
+  let bars = getBarsFromFile(spxTicker, fromStr, toStr, interval);
+  if (!bars) {
+    try {
+      bars = await getBars(spxTicker, fromStr, toStr, interval);
+      saveBarsToFile(spxTicker, fromStr, toStr, bars, interval);
+    } catch (e) {
+      return res.status(502).json({ error: e.message });
+    }
+  }
+  // lightweight-charts requires asc by time; Yahoo can return unsorted
+  const sorted = [...bars].sort((a, b) => a.t - b.t);
+  res.json({ ticker: spxTicker, from: fromStr, to: toStr, interval, results: sorted });
+});
+
+/**
+ * Resolve industry name to Yahoo index symbol (e.g. "Semiconductors" -> "^YH31130020").
+ * Uses all-industries.json; fallback: scan data/industries/*.json for industry name in saved metadata.
+ */
+function getIndustrySymbolByName(industryName) {
+  if (!industryName || typeof industryName !== 'string') return null;
+  const name = industryName.trim();
+  if (!name) return null;
+  // 1. Prefer all-industries cache (has name + symbol for all Yahoo industries)
+  if (fs.existsSync(ALL_INDUSTRIES_CACHE_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(ALL_INDUSTRIES_CACHE_FILE, 'utf8'));
+      const industries = data.industries || [];
+      const exact = industries.find((ind) => ind.name && ind.name.trim() === name);
+      if (exact?.symbol) return exact.symbol;
+      const lower = name.toLowerCase();
+      const fuzzy = industries.find((ind) => ind.name && ind.name.trim().toLowerCase() === lower);
+      if (fuzzy?.symbol) return fuzzy.symbol;
+    } catch (e) {
+      console.error('getIndustrySymbolByName: all-industries read failed', e.message);
+    }
+  }
+  // 2. Fallback: industry data files in data/industries (from industry-data/collect)
+  if (fs.existsSync(INDUSTRY_DATA_DIR)) {
+    try {
+      const files = fs.readdirSync(INDUSTRY_DATA_DIR).filter((f) => f.endsWith('_1y.json'));
+      for (const f of files) {
+        const raw = JSON.parse(fs.readFileSync(path.join(INDUSTRY_DATA_DIR, f), 'utf8'));
+        if (raw.industry && raw.industry.trim() === name && raw.symbol) return raw.symbol;
+      }
+    } catch (e) {
+      console.error('getIndustrySymbolByName: industries dir read failed', e.message);
+    }
+  }
+  return null;
+}
+
+// OHLC bars for an industry by name (12 months default). Uses Yahoo industry index symbol; same format as /api/bars/:ticker.
+app.get('/api/industry-bars', async (req, res) => {
+  const industryName = req.query.industry;
+  if (!industryName) {
+    return res.status(400).json({ error: 'Query "industry" (industry name) is required.' });
+  }
+  const symbol = getIndustrySymbolByName(industryName);
+  if (!symbol) {
+    return res.status(404).json({
+      error: `No symbol found for industry "${industryName}". Run "Fetch all industries" from the Industry page to populate industry symbols.`,
+      industry: industryName,
+      results: [],
+    });
+  }
+  let interval = req.query.interval;
+  if (Array.isArray(interval)) interval = interval[0];
+  const intervalStr = String(interval || '').toLowerCase();
+  interval = ['1d', '1wk', '1mo'].includes(intervalStr) ? intervalStr : '1d';
+  let days = Number(req.query.days) || 365;
+  if (interval === '1wk') days = Math.max(days, 730);
+  if (interval === '1mo') days = Math.max(days, 1825);
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - days);
+  const fromStr = from.toISOString().slice(0, 10);
+  const toStr = to.toISOString().slice(0, 10);
+
+  let bars = getBarsFromFile(symbol, fromStr, toStr, interval);
+  if (!bars) {
+    try {
+      bars = await getBars(symbol, fromStr, toStr, interval);
+      if (bars && bars.length > 0) saveBarsToFile(symbol, fromStr, toStr, bars, interval);
+    } catch (e) {
+      return res.status(502).json({ error: e.message, industry: industryName, symbol, results: [] });
+    }
+  }
+  const sorted = bars && bars.length ? [...bars].sort((a, b) => a.t - b.t) : [];
+  res.json({ industry: industryName, symbol, from: fromStr, to: toStr, interval, results: sorted });
 });
 
 // Industry summary with 3-month price trend. Groups scan-result tickers by industry, computes % change from bars.
@@ -872,6 +1020,19 @@ app.get('/api/all-industries', (req, res) => {
     }
     const data = JSON.parse(fs.readFileSync(ALL_INDUSTRIES_CACHE_FILE, 'utf8'));
     
+    // Build ticker → companyName map from fundamentals for hover tooltips on Industry page
+    let tickerNames = {};
+    try {
+      const fundamentals = loadFundamentals();
+      for (const [ticker, entry] of Object.entries(fundamentals)) {
+        const name = entry?.companyName && String(entry.companyName).trim();
+        if (name) tickerNames[ticker] = name;
+      }
+      data.tickerNames = tickerNames;
+    } catch (e) {
+      data.tickerNames = {};
+    }
+
     // Add tickers and industryRank from scan results to each industry
     if (fs.existsSync(RESULTS_FILE)) {
       try {
@@ -1027,6 +1188,132 @@ app.post('/api/all-industries/fetch', async (req, res) => {
     send({ done: true, error: e.message });
   }
   res.end();
+});
+
+// ---------- Industry (TradingView Scanner API) ----------
+// Fetches sector/industry from TradingView's scanner (scanner.tradingview.com/america/scan).
+// Columns 'sector' and 'industry' come from scanner.qf.json; we aggregate by industry and attach tickers.
+// No official REST API for "industry list" — we derive it from scanning stocks with sector/industry columns.
+const TRADINGVIEW_SCANNER_URL = 'https://scanner.tradingview.com/america/scan';
+const TV_SCAN_PAGE_SIZE = 250;
+const TV_SCAN_MAX_PAGES = 40; // 250*40 = 10k symbols max
+
+app.get('/api/industry-tradingview', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    const columns = [
+      'name', 'sector', 'industry', 'close', 'market_cap_basic',
+      'Perf.1M', 'Perf.3M', 'Perf.6M', 'Perf.YTD', 'Perf.Y',
+    ];
+    const allRows = [];
+    for (let page = 0; page < TV_SCAN_MAX_PAGES; page++) {
+      const start = page * TV_SCAN_PAGE_SIZE;
+      const body = {
+        filter: [
+          { left: 'type', operation: 'equal', right: 'stock' },
+          { left: 'exchange', operation: 'in_range', right: ['NASDAQ', 'NYSE', 'AMEX'] },
+        ],
+        options: { lang: 'en' },
+        symbols: { query: { types: [] }, tickers: [] },
+        columns,
+        range: [start, start + TV_SCAN_PAGE_SIZE],
+      };
+      const scanRes = await fetch(TRADINGVIEW_SCANNER_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!scanRes.ok) {
+        throw new Error(`TradingView scanner HTTP ${scanRes.status}`);
+      }
+      const scanJson = await scanRes.json();
+      const data = scanJson.data || [];
+      for (const row of data) {
+        const symbol = row.s;
+        const values = row.d;
+        if (!values || values.length < 5) continue;
+        const name = values[0];
+        const sector = values[1];
+        const industry = values[2];
+        const close = values[3];
+        const marketCap = values[4];
+        const toNum = (v) => (v != null && !Number.isNaN(Number(v)) ? Number(v) : null);
+        const perf1M = toNum(values[5]);
+        const perf3M = toNum(values[6]);
+        const perf6M = toNum(values[7]);
+        const perfYTD = toNum(values[8]);
+        const perf1Y = toNum(values[9]);
+        if (!industry || (typeof industry === 'string' && industry.trim() === '')) continue;
+        allRows.push({
+          symbol,
+          name: name ?? null,
+          sector: sector ?? null,
+          industry: industry ?? null,
+          close: close ?? null,
+          market_cap_basic: marketCap ?? null,
+          perf1M,
+          perf3M,
+          perf6M,
+          perfYTD,
+          perf1Y,
+        });
+      }
+      if (data.length < TV_SCAN_PAGE_SIZE) break;
+    }
+
+    // Aggregate by sector + industry: tickers + average performance (1M, 3M, 6M, YTD, 1Y)
+    const byKey = new Map();
+    for (const row of allRows) {
+      const sector = row.sector || 'Unknown';
+      const industry = row.industry || 'Unknown';
+      const key = `${sector}|${industry}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          sector,
+          industry,
+          tickers: [],
+          count: 0,
+          sum1M: 0, sum3M: 0, sum6M: 0, sumYTD: 0, sum1Y: 0,
+          n1M: 0, n3M: 0, n6M: 0, nYTD: 0, n1Y: 0,
+        });
+      }
+      const rec = byKey.get(key);
+      const ticker = row.symbol ? row.symbol.split(':').pop() : null;
+      if (ticker) rec.tickers.push(ticker);
+      rec.count++;
+      if (row.perf1M != null) { rec.sum1M += row.perf1M; rec.n1M++; }
+      if (row.perf3M != null) { rec.sum3M += row.perf3M; rec.n3M++; }
+      if (row.perf6M != null) { rec.sum6M += row.perf6M; rec.n6M++; }
+      if (row.perfYTD != null) { rec.sumYTD += row.perfYTD; rec.nYTD++; }
+      if (row.perf1Y != null) { rec.sum1Y += row.perf1Y; rec.n1Y++; }
+    }
+
+    const industries = Array.from(byKey.values())
+      .map((r) => ({
+        name: r.industry,
+        sector: r.sector,
+        tickers: r.tickers,
+        count: r.count,
+        url: 'https://www.tradingview.com/screener/',
+        perf1M: r.n1M > 0 ? Math.round(r.sum1M / r.n1M * 100) / 100 : null,
+        perf3M: r.n3M > 0 ? Math.round(r.sum3M / r.n3M * 100) / 100 : null,
+        perf6M: r.n6M > 0 ? Math.round(r.sum6M / r.n6M * 100) / 100 : null,
+        perfYTD: r.nYTD > 0 ? Math.round(r.sumYTD / r.nYTD * 100) / 100 : null,
+        perf1Y: r.n1Y > 0 ? Math.round(r.sum1Y / r.n1Y * 100) / 100 : null,
+      }))
+      .sort((a, b) => a.sector.localeCompare(b.sector) || a.name.localeCompare(b.name));
+
+    res.json({
+      industries,
+      source: 'tradingview',
+      fetchedAt: new Date().toISOString(),
+      totalSymbols: allRows.length,
+    });
+  } catch (e) {
+    console.error('TradingView industry fetch failed:', e);
+    res.status(500).json({ error: e.message, source: 'tradingview' });
+  }
 });
 
 // ---------- Sectors (11 sectors from https://finance.yahoo.com/sectors/) ----------
@@ -1193,12 +1480,13 @@ app.get('/api/industry-trend', (req, res) => {
   }
 });
 
-// VCP analysis for one ticker: bars from file cache or API, then compute VCP (not persisted separately)
+// VCP analysis for one ticker: bars from file cache or API, then VCP + enhanced score (same as scan).
+// Use 180 days to match the full scan so we have 60+ bars (required for scoring).
 app.get('/api/vcp/:ticker', async (req, res) => {
   const { ticker } = req.params;
   const to = new Date();
   const from = new Date(to);
-  from.setDate(from.getDate() - 90);
+  from.setDate(from.getDate() - 180);
   const fromStr = from.toISOString().slice(0, 10);
   const toStr = to.toISOString().slice(0, 10);
 
@@ -1209,7 +1497,22 @@ app.get('/api/vcp/:ticker', async (req, res) => {
       saveBarsToFile(ticker, fromStr, toStr, bars, '1d');
     }
     const vcp = checkVCP(bars);
-    res.json({ ticker, ...vcp, barCount: bars.length });
+    // Always attach enhanced score when we have fundamentals + industry data (same as scan)
+    let payload = { ticker, ...vcp, barCount: bars.length };
+    try {
+      const fundamentals = fs.existsSync(FUNDAMENTALS_FILE)
+        ? JSON.parse(fs.readFileSync(FUNDAMENTALS_FILE, 'utf8')) : {};
+      const industryReturns = fs.existsSync(INDUSTRY_YAHOO_RETURNS_FILE)
+        ? JSON.parse(fs.readFileSync(INDUSTRY_YAHOO_RETURNS_FILE, 'utf8')) : {};
+      const industryRanksMap = rankIndustries(industryReturns);
+      const fund = fundamentals[ticker] || null;
+      const industryData = fund?.industry && industryRanksMap[fund.industry] ? industryRanksMap[fund.industry] : null;
+      const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanksMap);
+      payload = { ...payload, ...enhanced };
+    } catch (enhanceErr) {
+      // Non-fatal: keep base vcp; enhanced fields omitted
+    }
+    res.json(payload);
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -1450,16 +1753,17 @@ app.get('/api/backtest/snapshot/:date', (req, res) => {
 
 // Run backtest for a specific snapshot
 app.post('/api/backtest/run', async (req, res) => {
-  const { scanDate, daysForward = 30 } = req.body;
+  const { scanDate, daysForward = 30, topN = null } = req.body;
   
   if (!scanDate) {
     return res.status(400).json({ error: 'scanDate is required' });
   }
   
   try {
-    console.log(`\n🧪 Starting backtest: ${scanDate}, ${daysForward} days forward`);
+    const portfolioMsg = topN ? ` (top ${topN} stocks)` : '';
+    console.log(`\n🧪 Starting backtest: ${scanDate}, ${daysForward} days forward${portfolioMsg}`);
     
-    const result = await runBacktest(scanDate, daysForward);
+    const result = await runBacktest(scanDate, daysForward, topN);
     
     if (result.error) {
       return res.json(result); // Return error info (like not enough time elapsed)
@@ -1468,6 +1772,873 @@ app.post('/api/backtest/run', async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error('Backtest error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== RETROSPECTIVE BACKTESTING ==========
+
+/**
+ * Run retrospective backtest - looks back in time to find when signals
+ * WOULD have triggered and measures actual forward returns.
+ * This allows immediate backtesting over any historical period.
+ */
+app.post('/api/backtest/retro', async (req, res) => {
+  const { 
+    lookbackMonths = 12,   // How many months to look back
+    holdingPeriod = 60,    // Max days to hold each trade
+    topN = 100             // Limit to top N tickers (null = all)
+  } = req.body;
+  
+  try {
+    console.log(`\n🔄 Starting retrospective backtest: ${lookbackMonths} months, ${holdingPeriod}-day hold, top ${topN || 'all'} tickers`);
+    
+    // Get tickers from scan results or tickers.txt
+    const tickers = getTickersForBacktest();
+    
+    if (tickers.length === 0) {
+      return res.status(400).json({ error: 'No tickers available. Run a scan first.' });
+    }
+    
+    console.log(`  Found ${tickers.length} tickers to analyze`);
+    
+    const result = await runRetroBacktest({
+      tickers,
+      lookbackMonths,
+      holdingPeriod,
+      topN
+    });
+    
+    res.json(result);
+  } catch (e) {
+    console.error('Retrospective backtest error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== OPUS4.5 SIGNAL ENDPOINTS ==========
+
+/**
+ * Compute Opus4.5 scores for all tickers and save to cache.
+ * Called after scan completes to pre-compute scores for instant dashboard load.
+ */
+async function computeAndSaveOpus45Scores() {
+  try {
+    if (!fs.existsSync(RESULTS_FILE)) {
+      console.log('Opus4.5: No scan results to score.');
+      return null;
+    }
+    
+    const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
+    let results = scanData.results || [];
+    
+    // Filter to only tickers in data/tickers.txt
+    if (fs.existsSync(TICKERS_FILE)) {
+      const raw = fs.readFileSync(TICKERS_FILE, 'utf8');
+      const tickerSet = new Set(
+        raw.split(/\r?\n/).map((s) => s.trim().toUpperCase()).filter(Boolean)
+      );
+      results = results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase()));
+    }
+    
+    const fundamentals = loadFundamentals();
+    const yahooReturns = loadIndustryYahooReturns();
+    const weights = loadOptimizedWeights();
+    
+    // Build bars map for each ticker (need 200+ days for Opus4.5)
+    const barsByTicker = {};
+    const to = new Date();
+    const from365 = new Date(to);
+    from365.setDate(from365.getDate() - 365);
+    const fromStr365 = from365.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+
+    const resultsToAnalyze = results;
+
+    // Collect tickers that need a bar fetch. Try Opus cache (_1d.json) first, then scan cache (.json).
+    const needFetch = [];
+    for (const r of resultsToAnalyze) {
+      try {
+        const safeTicker = r.ticker.replace(/[^A-Za-z0-9.-]/g, '_');
+        let bars = null;
+        // 1) Opus-style cache: bars/bars/GEV_1d.json
+        const opusPath = path.join(BARS_CACHE_DIR, `${safeTicker}_1d.json`);
+        if (fs.existsSync(opusPath)) {
+          try {
+            const raw = JSON.parse(fs.readFileSync(opusPath, 'utf8'));
+            if (raw.results && raw.results.length >= 200) {
+              bars = raw.results;
+              barsByTicker[r.ticker] = [...bars].sort((a, b) => a.t - b.t);
+            }
+          } catch { /* ignore */ }
+        }
+        // 2) Scan cache (written by scan.js): bars/GEV.json — reuse so Open Trade has bar data
+        if ((!bars || bars.length < 200) && fs.existsSync(path.join(BARS_CACHE_DIR, `${safeTicker}.json`))) {
+          try {
+            const raw = JSON.parse(fs.readFileSync(path.join(BARS_CACHE_DIR, `${safeTicker}.json`), 'utf8'));
+            if (raw.results && raw.results.length >= 200) {
+              bars = raw.results;
+              barsByTicker[r.ticker] = [...bars].sort((a, b) => a.t - b.t);
+            }
+          } catch { /* ignore */ }
+        }
+        if (!bars || bars.length < 200) needFetch.push(r);
+      } catch (e) {
+        console.error(`Error loading bars for ${r.ticker}:`, e.message);
+      }
+    }
+
+    // Fetch missing bars in batches
+    const BATCH_SIZE = 15;
+    for (let i = 0; i < needFetch.length; i += BATCH_SIZE) {
+      const chunk = needFetch.slice(i, i + BATCH_SIZE);
+      const chunkPromises = chunk.map((r) =>
+        getBars(r.ticker, fromStr365, toStr, '1d')
+          .then((fetchedBars) => {
+            if (fetchedBars && fetchedBars.length >= 200) {
+              barsByTicker[r.ticker] = [...fetchedBars].sort((a, b) => a.t - b.t);
+              saveBarsToFile(r.ticker, fromStr365, toStr, fetchedBars, '1d');
+            }
+          })
+          .catch((e) => console.error(`Fetch failed for ${r.ticker}:`, e.message))
+      );
+      await Promise.all(chunkPromises);
+      if (needFetch.length > BATCH_SIZE && i > 0 && i % 60 === 0) {
+        console.log(`Opus4.5: Fetched bars for ${Math.min(i + BATCH_SIZE, needFetch.length)}/${needFetch.length} tickers...`);
+      }
+    }
+
+    // Generate Opus4.5 signals and scores for every ticker
+    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, yahooReturns, weights);
+    const stats = getSignalStats(signals);
+
+    const cacheData = {
+      signals,
+      allScores,
+      total: signals.length,
+      stats,
+      scannedAt: scanData.scannedAt,
+      computedAt: new Date().toISOString(),
+      weightsVersion: weights._version || 'default',
+      analyzedTickers: resultsToAnalyze.length,
+      tickersWithBars: Object.keys(barsByTicker).length
+    };
+
+    // Save to cache file
+    fs.writeFileSync(OPUS45_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+    console.log(`Opus4.5: Cached ${signals.length} active signals; ${allScores.length} tickers scored.`);
+    
+    return cacheData;
+  } catch (e) {
+    console.error('Opus4.5 compute error:', e);
+    return null;
+  }
+}
+
+// Get all active Opus4.5 signals - reads from cache for instant load
+// Use ?force=true to recalculate (called after scan)
+app.get('/api/opus45/signals', async (req, res) => {
+  try {
+    const forceRecalc = req.query.force === 'true';
+    
+    // If not forcing recalculation and cache exists, return cached data instantly
+    if (!forceRecalc && fs.existsSync(OPUS45_CACHE_FILE)) {
+      try {
+        const cached = JSON.parse(fs.readFileSync(OPUS45_CACHE_FILE, 'utf8'));
+        // Return cached data immediately
+        return res.json({
+          ...cached,
+          fromCache: true
+        });
+      } catch (e) {
+        console.error('Error reading Opus45 cache:', e.message);
+        // Fall through to compute
+      }
+    }
+    
+    // No cache or force recalc - compute fresh
+    if (!fs.existsSync(RESULTS_FILE)) {
+      return res.json({ signals: [], total: 0, stats: null, error: 'No scan results. Run a scan first.' });
+    }
+    
+    const result = await computeAndSaveOpus45Scores();
+    if (result) {
+      res.json({ ...result, fromCache: false });
+    } else {
+      res.json({ signals: [], allScores: [], total: 0, stats: null, error: 'Failed to compute Opus4.5 scores' });
+    }
+  } catch (e) {
+    console.error('Opus4.5 signals error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Debug endpoint: Analyze why top stocks don't qualify for Opus4.5
+app.get('/api/opus45/debug', async (req, res) => {
+  try {
+    if (!fs.existsSync(RESULTS_FILE)) {
+      return res.json({ error: 'No scan results' });
+    }
+    
+    const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
+    const results = scanData.results || [];
+    const fundamentals = loadFundamentals();
+    const weights = loadOptimizedWeights();
+    
+    const to = new Date();
+    const from365 = new Date(to);
+    from365.setDate(from365.getDate() - 365);
+    const fromStr365 = from365.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    
+    const debugResults = [];
+    
+    // Analyze top 10 stocks
+    for (const r of results.slice(0, 10)) {
+      const debug = {
+        ticker: r.ticker,
+        enhancedScore: r.enhancedScore,
+        relativeStrength: r.relativeStrength,
+        contractions: r.contractions,
+        pattern: r.pattern,
+        patternConfidence: r.patternConfidence,
+        atMa10: r.atMa10,
+        atMa20: r.atMa20,
+        industryRank: r.industryRank,
+        barsLoaded: 0,
+        signalResult: null
+      };
+      
+      // Try to load bars from cache
+      const safeTicker = r.ticker.replace(/[^A-Za-z0-9.-]/g, '_');
+      const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}_1d.json`);
+      
+      let bars = null;
+      if (fs.existsSync(filePath)) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          bars = raw.results || [];
+          debug.barsLoaded = bars.length;
+          debug.barsCacheFrom = raw.from;
+          debug.barsCacheTo = raw.to;
+        } catch (e) {
+          debug.signalResult = { error: e.message };
+        }
+      }
+      
+      // Fetch fresh bars if cache is insufficient
+      if (!bars || bars.length < 200) {
+        try {
+          debug.fetchingBars = true;
+          bars = await getBars(r.ticker, fromStr365, toStr, '1d');
+          if (bars && bars.length > 0) {
+            debug.barsLoaded = bars.length;
+            debug.barsFetched = true;
+            // Cache for future
+            if (bars.length >= 200) {
+              saveBarsToFile(r.ticker, fromStr365, toStr, bars, '1d');
+            }
+          }
+        } catch (e) {
+          debug.fetchError = e.message;
+        }
+      }
+      
+      if (bars && bars.length >= 200) {
+        const sortedBars = [...bars].sort((a, b) => a.t - b.t);
+        const signal = generateOpus45Signal(r, sortedBars, fundamentals[r.ticker], null, weights);
+        debug.signalResult = {
+          signal: signal.signal,
+          confidence: signal.opus45Confidence,
+          mandatoryPassed: signal.mandatoryPassed,
+          failedCriteria: signal.mandatoryDetails?.failedCriteria,
+          passedCriteria: signal.mandatoryDetails?.passedCriteria
+        };
+      } else {
+        debug.signalResult = { error: `Only ${debug.barsLoaded} bars (need 200+)` };
+      }
+      
+      debugResults.push(debug);
+    }
+    
+    res.json({
+      analyzed: debugResults.length,
+      results: debugResults
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get Opus4.5 signal for a specific ticker
+app.get('/api/opus45/signal/:ticker', async (req, res) => {
+  const { ticker } = req.params;
+  
+  try {
+    const to = new Date();
+    const from365 = new Date(to);
+    from365.setDate(from365.getDate() - 365);
+    const fromStr365 = from365.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    
+    // Get bars (need 200+ days)
+    let bars = getBarsFromFile(ticker, fromStr365, toStr, '1d');
+    if (!bars) {
+      bars = await getBars(ticker, fromStr365, toStr, '1d');
+      saveBarsToFile(ticker, fromStr365, toStr, bars, '1d');
+    }
+    
+    if (!bars || bars.length < 200) {
+      return res.json({
+        ticker,
+        signal: false,
+        reason: 'Insufficient data (need 200+ days)',
+        opus45Confidence: 0
+      });
+    }
+    
+    // Get SPY bars for RS calculation
+    let spyBars = getBarsFromFile('^GSPC', fromStr365, toStr, '1d');
+    if (!spyBars) {
+      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
+      saveBarsToFile('^GSPC', fromStr365, toStr, spyBars, '1d');
+    }
+    
+    // Get VCP analysis
+    const vcpResult = checkVCP(bars, spyBars);
+    
+    // Get fundamentals
+    const fundamentals = loadFundamentals();
+    const tickerFundamentals = fundamentals[ticker] || null;
+    
+    // Get industry data
+    const yahooReturns = loadIndustryYahooReturns();
+    const industryData = tickerFundamentals?.industry 
+      ? yahooReturns[tickerFundamentals.industry] 
+      : null;
+    
+    // Load optimized weights
+    const weights = loadOptimizedWeights();
+    
+    // Generate Opus4.5 signal
+    const signal = generateOpus45Signal(vcpResult, bars, tickerFundamentals, industryData, weights);
+    
+    res.json({
+      ticker,
+      ...signal,
+      weightsVersion: weights._version || 'default'
+    });
+  } catch (e) {
+    console.error(`Opus4.5 signal error for ${ticker}:`, e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get historical Opus4.5 signals for chart overlay
+// Returns all buy/sell signals over the bar history for chart markers
+app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
+  const { ticker } = req.params;
+  
+  try {
+    const to = new Date();
+    const from365 = new Date(to);
+    from365.setDate(from365.getDate() - 365);
+    const fromStr365 = from365.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    
+    // Get bars (need 200+ days)
+    let bars = getBarsFromFile(ticker, fromStr365, toStr, '1d');
+    if (!bars) {
+      bars = await getBars(ticker, fromStr365, toStr, '1d');
+      saveBarsToFile(ticker, fromStr365, toStr, bars, '1d');
+    }
+    
+    if (!bars || bars.length < 200) {
+      return res.json({
+        ticker,
+        buySignals: [],
+        sellSignals: [],
+        currentStatus: 'no_position',
+        lastBuySignal: null,
+        lastSellSignal: null,
+        reason: 'Insufficient data (need 200+ days)'
+      });
+    }
+    
+    // Get SPY bars for RS calculation
+    let spyBars = getBarsFromFile('^GSPC', fromStr365, toStr, '1d');
+    if (!spyBars) {
+      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
+      saveBarsToFile('^GSPC', fromStr365, toStr, spyBars, '1d');
+    }
+    
+    // Load optimized weights
+    const weights = loadOptimizedWeights();
+    
+    // Sort bars by time
+    const sortedBars = [...bars].sort((a, b) => a.t - b.t);
+    
+    // Detect all buy/sell signals across bar history
+    const buySignals = [];
+    const sellSignals = [];
+    let inPosition = false;
+    let entryPrice = 0;
+    let lastBuySignal = null;
+    let lastSellSignal = null;
+    
+    // Need at least 200 bars before we can check signals
+    for (let i = 200; i < sortedBars.length; i++) {
+      const bar = sortedBars[i];
+      const barsToDate = sortedBars.slice(0, i + 1);
+      
+      if (!inPosition) {
+        // Check for buy signal
+        const vcpResult = checkVCP(barsToDate, spyBars);
+        const signal = generateOpus45Signal(vcpResult, barsToDate, null, null, weights);
+        
+        if (signal.signal) {
+          const buyMarker = {
+            time: Math.floor(bar.t / 1000), // Unix seconds
+            type: 'buy',
+            price: bar.c,
+            confidence: signal.opus45Confidence,
+            grade: signal.opus45Grade || null,
+            reason: signal.mandatoryDetails?.passedCriteria?.join(', ') || 'All criteria passed',
+            stopLoss: signal.stopLossPrice,
+            target: signal.targetPrice
+          };
+          buySignals.push(buyMarker);
+          lastBuySignal = buyMarker;
+          inPosition = true;
+          entryPrice = bar.c;
+        }
+      } else {
+        // Check for sell signal
+        const exitCheck = checkExitSignal({ entryPrice }, barsToDate);
+        
+        if (exitCheck.exitSignal) {
+          const sellMarker = {
+            time: Math.floor(bar.t / 1000),
+            type: 'sell',
+            price: bar.c,
+            reason: exitCheck.exitReason,
+            exitType: exitCheck.exitType
+          };
+          sellSignals.push(sellMarker);
+          lastSellSignal = sellMarker;
+          inPosition = false;
+          entryPrice = 0;
+        }
+      }
+    }
+    
+    // Calculate completed trades
+    const completedTrades = [];
+    const minLen = Math.min(buySignals.length, sellSignals.length);
+    for (let i = 0; i < minLen; i++) {
+      const buy = buySignals[i];
+      const sell = sellSignals[i];
+      const returnPct = ((sell.price - buy.price) / buy.price) * 100;
+      const daysInTrade = Math.round((sell.time - buy.time) / 86400);
+      completedTrades.push({
+        entryDate: new Date(buy.time * 1000).toISOString().slice(0, 10),
+        entryPrice: buy.price,
+        exitDate: new Date(sell.time * 1000).toISOString().slice(0, 10),
+        exitPrice: sell.price,
+        returnPct: Math.round(returnPct * 10) / 10,
+        daysInTrade,
+        profitDollars: Math.round((sell.price - buy.price) * 100) / 100
+      });
+    }
+    
+    // Calculate holding period
+    const holdingPeriod = inPosition && lastBuySignal 
+      ? Math.round((Date.now() / 1000 - lastBuySignal.time) / 86400) 
+      : null;
+    
+    // Only show as actionable BUY if the buy signal was within last 2 days
+    // Otherwise it's just "Holding" - the buy opportunity has passed
+    const MAX_DAYS_FOR_ACTIONABLE_BUY = 2;
+    const isActionableBuy = inPosition && holdingPeriod !== null && holdingPeriod <= MAX_DAYS_FOR_ACTIONABLE_BUY;
+    
+    res.json({
+      ticker,
+      buySignals,
+      sellSignals,
+      currentStatus: inPosition ? 'in_position' : 'no_position',
+      lastBuySignal,
+      lastSellSignal,
+      completedTrades,
+      holdingPeriod,
+      isActionableBuy,  // true only if buy signal triggered in last 2 days
+      weightsVersion: weights._version || 'default'
+    });
+  } catch (e) {
+    console.error(`Opus4.5 history error for ${ticker}:`, e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Check exit signal for a position
+app.post('/api/opus45/exit-check', async (req, res) => {
+  const { ticker, entryPrice, entryDate } = req.body;
+  
+  if (!ticker || !entryPrice) {
+    return res.status(400).json({ error: 'ticker and entryPrice are required' });
+  }
+  
+  try {
+    const to = new Date();
+    const from = new Date(entryDate || to);
+    from.setDate(from.getDate() - 30);
+    const fromStr = from.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+    
+    let bars = getBarsFromFile(ticker, fromStr, toStr, '1d');
+    if (!bars) {
+      bars = await getBars(ticker, fromStr, toStr, '1d');
+      saveBarsToFile(ticker, fromStr, toStr, bars, '1d');
+    }
+    
+    const exitCheck = checkExitSignal({ ticker, entryPrice, entryDate }, bars);
+    
+    res.json({
+      ticker,
+      entryPrice,
+      ...exitCheck
+    });
+  } catch (e) {
+    console.error(`Exit check error for ${ticker}:`, e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== OPUS4.5 LEARNING ENDPOINTS ==========
+
+// Get learning system status
+app.get('/api/opus45/learning/status', (req, res) => {
+  try {
+    const status = getLearningStatus();
+    res.json(status);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Run learning pipeline on a backtest
+app.post('/api/opus45/learning/run', async (req, res) => {
+  const { scanDate, daysForward = 30, topN = null, autoApply = false } = req.body;
+  
+  if (!scanDate) {
+    return res.status(400).json({ error: 'scanDate is required' });
+  }
+  
+  try {
+    console.log(`\n🧠 Running Opus4.5 learning on backtest ${scanDate}...`);
+    
+    // First run the backtest
+    const backtestResult = await runBacktest(scanDate, daysForward, topN);
+    
+    if (backtestResult.error) {
+      return res.json({ error: backtestResult.error, message: backtestResult.message });
+    }
+    
+    // Then run the learning pipeline
+    const learningResult = runLearningPipeline(backtestResult.backtestResults, autoApply);
+    
+    res.json({
+      backtest: backtestResult.analysis,
+      learning: learningResult
+    });
+  } catch (e) {
+    console.error('Learning error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Manually apply weight changes
+app.post('/api/opus45/learning/apply-weights', (req, res) => {
+  const { weights } = req.body;
+  
+  if (!weights || typeof weights !== 'object') {
+    return res.status(400).json({ error: 'weights object is required' });
+  }
+  
+  try {
+    const result = applyWeightChanges(weights);
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Reset weights to defaults
+app.post('/api/opus45/learning/reset', (req, res) => {
+  try {
+    const weights = resetWeightsToDefault();
+    res.json({ success: true, weights });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get current weights
+app.get('/api/opus45/weights', (req, res) => {
+  try {
+    const current = loadOptimizedWeights();
+    res.json({
+      current,
+      defaults: DEFAULT_WEIGHTS,
+      isOptimized: Object.keys(current).some(k => current[k] !== DEFAULT_WEIGHTS[k])
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== REGIME (HMM) ==========
+// Separate SPY and QQQ regime + forward predictions (run fetch-regime-data + regime:train first)
+app.get('/api/regime', (req, res) => {
+  try {
+    const data = loadCurrentRegime();
+    if (!data.spy && !data.qqq) {
+      return res.status(404).json({ error: 'Regime not trained. Run: npm run fetch-regime-data && npm run regime:train' });
+    }
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5-year regime backtest: prediction vs actual forward returns (correlation)
+app.get('/api/regime/backtest', (req, res) => {
+  try {
+    const data = loadRegimeBacktest();
+    if (!data.spy && !data.qqq) {
+      return res.status(404).json({ error: 'Regime backtest not found. Run: npm run regime:train' });
+    }
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 5-year OHLCV bars used for regime training (SPY or QQQ)
+app.get('/api/regime/bars/:ticker', (req, res) => {
+  try {
+    const ticker = (req.params.ticker || '').toUpperCase();
+    if (ticker !== 'SPY' && ticker !== 'QQQ') {
+      return res.status(400).json({ error: 'Ticker must be SPY or QQQ' });
+    }
+    const filePath = path.join(DATA_DIR, 'regime', `${ticker.toLowerCase()}_5y.json`);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: '5y data not found. Run: npm run fetch-regime-data' });
+    }
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    res.json({ ticker, results: raw.results || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== TRADE JOURNAL ENDPOINTS ==========
+// These endpoints manage the trade journal for logging entries and learning
+
+// Get all trades (with optional status filter)
+app.get('/api/trades', (req, res) => {
+  try {
+    const status = req.query.status;
+    const trades = status ? getTradesByStatus(status) : getAllTrades();
+    const stats = getTradeStats();
+    res.json({ trades, stats, total: trades.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get trade statistics only
+app.get('/api/trades/stats', (req, res) => {
+  try {
+    const stats = getTradeStats();
+    res.json(stats);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get a single trade by ID
+app.get('/api/trades/:id', (req, res) => {
+  try {
+    const trade = getTradeById(req.params.id);
+    if (!trade) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+    res.json(trade);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create a new trade entry
+// Body: { ticker, entryDate, entryPrice, conviction, notes, entryMetrics }
+app.post('/api/trades', async (req, res) => {
+  try {
+    const { ticker, entryDate, entryPrice, conviction, notes, companyName, entryMetrics } = req.body;
+    
+    if (!ticker || !entryPrice) {
+      return res.status(400).json({ error: 'ticker and entryPrice are required' });
+    }
+    
+    // If entryMetrics not provided, try to fetch current metrics for the ticker
+    let metrics = entryMetrics || {};
+    
+    if (!entryMetrics || Object.keys(entryMetrics).length === 0) {
+      try {
+        // Try to get metrics from latest scan results
+        if (fs.existsSync(RESULTS_FILE)) {
+          const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
+          const scanResult = scanData.results?.find(r => r.ticker === ticker.toUpperCase());
+          
+          if (scanResult) {
+            metrics = {
+              sma10: scanResult.sma10 || null,
+              sma20: scanResult.sma20 || null,
+              sma50: scanResult.sma50 || null,
+              sma150: null, // Not in scan results
+              sma200: null, // Not in scan results
+              contractions: scanResult.contractions || 0,
+              volumeDryUp: scanResult.volumeDryUp || false,
+              pattern: scanResult.pattern || 'VCP',
+              patternConfidence: scanResult.patternConfidence || null,
+              relativeStrength: scanResult.relativeStrength || null,
+              pctFromHigh: null, // Would need to calculate
+              pctAboveLow: null, // Would need to calculate
+              high52w: null, // Would need to calculate
+              low52w: null, // Would need to calculate
+              industryName: scanResult.industryName || null,
+              industryRank: scanResult.industryRank || null,
+              opus45Confidence: scanResult.opus45Confidence || null,
+              opus45Grade: scanResult.opus45Grade || null,
+              vcpScore: scanResult.score || null,
+              enhancedScore: scanResult.enhancedScore || null
+            };
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching metrics for trade:', e.message);
+      }
+    }
+    
+    const trade = createTrade(
+      { ticker, entryDate, entryPrice, conviction, notes, companyName },
+      metrics
+    );
+    
+    res.status(201).json(trade);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update a trade
+app.patch('/api/trades/:id', (req, res) => {
+  try {
+    const trade = updateTrade(req.params.id, req.body);
+    if (!trade) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+    res.json(trade);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Close a trade (exit)
+// Body: { exitPrice, exitDate, exitNotes }
+app.post('/api/trades/:id/close', (req, res) => {
+  try {
+    const { exitPrice, exitDate, exitNotes } = req.body;
+    
+    if (!exitPrice) {
+      return res.status(400).json({ error: 'exitPrice is required' });
+    }
+    
+    const trade = closeTrade(req.params.id, exitPrice, exitDate, exitNotes);
+    if (!trade) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+    res.json(trade);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete a trade
+app.delete('/api/trades/:id', (req, res) => {
+  try {
+    const deleted = deleteTrade(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Check all open trades for auto-exit signals
+// This can be called manually or set up on a schedule
+app.post('/api/trades/check-exits', async (req, res) => {
+  try {
+    const results = await checkAutoExits();
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Generate learning feedback from trade history
+// Returns analysis of which metrics correlate with winning trades
+app.get('/api/trades/learning', (req, res) => {
+  try {
+    const feedback = generateLearningFeedback();
+    res.json(feedback);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Apply learning feedback to Opus4.5 weights
+// This takes the suggested weights and applies them
+app.post('/api/trades/learning/apply', (req, res) => {
+  try {
+    const feedback = generateLearningFeedback();
+    
+    if (feedback.error) {
+      return res.status(400).json(feedback);
+    }
+    
+    // Apply suggested weights if any
+    if (feedback.suggestedWeights && Object.keys(feedback.suggestedWeights).length > 0) {
+      const newWeights = {};
+      for (const [key, data] of Object.entries(feedback.suggestedWeights)) {
+        newWeights[key] = data.suggested;
+      }
+      
+      const result = applyWeightChanges(newWeights);
+      res.json({
+        feedback,
+        applied: true,
+        weightsUpdated: result
+      });
+    } else {
+      res.json({
+        feedback,
+        applied: false,
+        message: 'No weight changes to apply'
+      });
+    }
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

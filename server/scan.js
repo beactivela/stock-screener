@@ -27,8 +27,9 @@ const RESULTS_FILE = path.join(DATA_DIR, 'scan-results.json');
 const FUNDAMENTALS_FILE = path.join(DATA_DIR, 'fundamentals.json');
 const INDUSTRY_YAHOO_RETURNS_FILE = path.join(DATA_DIR, 'industry-yahoo-returns.json');
 
-// Max tickers to scan (from file). Default 500 for full S&P 500.
-const TICKER_LIMIT = Number(process.env.SCAN_LIMIT) || 500;
+// Max tickers to scan. When reading from tickers.txt: 0 = use ALL tickers in file. Otherwise limit to this number.
+// Default 0 = scan entire data/tickers.txt (e.g. 899 tickers). Set SCAN_LIMIT=100 for faster tests.
+const TICKER_LIMIT = Number(process.env.SCAN_LIMIT) || 0;
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
 
 function ensureDataDir() {
@@ -99,7 +100,8 @@ async function getTickers() {
       .split(/\r?\n/)
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean);
-    return tickers.slice(0, TICKER_LIMIT);
+    // Use all tickers when TICKER_LIMIT=0; otherwise cap for faster test runs
+    return TICKER_LIMIT > 0 ? tickers.slice(0, TICKER_LIMIT) : tickers;
   }
   // Auto-populate from SPY if file doesn't exist
   console.log('tickers.txt not found. Fetching S&P 500 from SPY...');

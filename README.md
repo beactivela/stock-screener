@@ -36,6 +36,7 @@ Served from the same origin in dev (`http://localhost:5173/api/...`). Key routes
 - `POST /api/scan` — start a background scan (throttled).
 - `GET /api/bars/:ticker?days=180` — daily OHLC for chart.
 - `GET /api/vcp/:ticker` — VCP analysis for one ticker.
+- **Regime (HMM):** `GET /api/regime` — current market regime (bull/bear) from a 5-year SPY+QQQ Hidden Markov Model. Run `npm run fetch-regime-data` then `npm run regime:train` to populate; the Deepseek engine uses this for sector/regime scoring.
 
 Full API and data flow: see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
@@ -52,5 +53,4 @@ The app is compatible with Vercel: frontend and API run as serverless.
 ## Documentation
 
 - **[ARCHITECTURE.md](./ARCHITECTURE.md)** — System diagram, data flow, runtime (single port), scoring, deployment.
-- **[PLAN.md](./PLAN.md)** — VCP criteria, data sources, task breakdown.
-- **[BACKGROUND_SCAN_IMPLEMENTATION.md](./BACKGROUND_SCAN_IMPLEMENTATION.md)** — Background scan and progress polling.
+- **[docs/](docs/)** — Implementation notes (PLAN.md, BACKGROUND_SCAN_IMPLEMENTATION.md, backtest/signal notes, etc.).
