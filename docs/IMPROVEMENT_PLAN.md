@@ -17,7 +17,7 @@ This stock screener combines Mark Minervini's VCP (Volatility Contraction Patter
    - Ideal pullback pattern identification (5-10 day pullbacks with volume characteristics)
 
 2. **Good Data Architecture**
-   - File-based caching system (reduces API calls)
+   - Database-backed storage and cache (Supabase); all data and cache in DB
    - Streaming scan capability (real-time UI updates)
    - Yahoo Finance integration (free, no API key required)
    - Industry performance tracking (1Y, 6M, 3M, YTD)

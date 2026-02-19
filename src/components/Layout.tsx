@@ -1,4 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
+import MinerviniChat from './MinerviniChat'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -13,7 +14,7 @@ export default function Layout({ children }: LayoutProps) {
           <Link to="/" className="text-xl font-semibold text-sky-400 hover:text-sky-300">
             VCP Screener
           </Link>
-          <nav className="flex gap-6">
+          <nav className="flex items-center gap-6">
             <Link
               to="/"
               className={`text-sm ${location.pathname === '/' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
@@ -42,6 +43,8 @@ export default function Layout({ children }: LayoutProps) {
         </div>
       </header>
       <main className="flex-1 max-w-[2400px] w-full mx-auto px-4 py-8">{children}</main>
+      {/* Chat widget lives outside the main content flow so it overlays everything */}
+      <MinerviniChat />
     </div>
   )
 }

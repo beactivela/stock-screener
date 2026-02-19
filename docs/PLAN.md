@@ -42,7 +42,7 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
 
 - **Frontend:** React + Vite + Tailwind.  
 - **Backend:** Node (Express). Single process in dev: `npm run dev` serves both the app and API at **http://localhost:5173** (Express + Vite middleware). API routes proxy to Massive (apiKey server-side), run VCP scan, serve cached results.
-- **Storage:** JSON files in `data/` (scan-results, fundamentals, industry data, bars cache). No database.
+- **Storage:** Supabase (PostgreSQL). All data—scan results, fundamentals, industry data, bars cache—is stored in the database. Cache is saved in DB.
 - **Scheduler:** Optional 24h scan: `SCHEDULE_SCAN=1 npm run dev` (in-process interval).
 
 ---

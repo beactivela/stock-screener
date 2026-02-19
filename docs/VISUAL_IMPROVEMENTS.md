@@ -10,7 +10,7 @@
 - ✅ % Held by Institutions
 - ✅ Quarterly Earnings YoY
 - ✅ Profit/Operating Margins
-- ✅ Industry 1Y/6M/3M/YTD performance
+- ✅ Industry 1Y/6M/3M/YTD performance (TradingView)
 
 ### Current Top Performers
 Based on the screenshot, current top stocks include:

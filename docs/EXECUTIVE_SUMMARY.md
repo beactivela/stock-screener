@@ -36,7 +36,7 @@ Your stock screener has **excellent technical infrastructure** but the **scoring
 - ✅ 500 tickers scanned from S&P 500
 - ✅ VCP pattern detection working (contractions, volume dry-up)
 - ✅ Fundamental data collection (institutions, earnings, margins)
-- ✅ Industry performance tracking (1Y/6M/3M/YTD)
+- ✅ Industry performance (1Y/6M/3M/YTD) from TradingView Scanner API
 - ✅ Clean UI with sortable columns
 
 **Problems:**

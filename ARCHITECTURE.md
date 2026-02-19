@@ -33,16 +33,16 @@
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  📊 SCAN ENGINE (scan.js)                                       │
-│  ├─ Load 500 tickers from data/tickers.txt                     │
+│  ├─ Load tickers from DB (tickers table)                        │
 │  ├─ Fetch SPY bars once (for RS calculations)                  │
 │  ├─ For each ticker:                                            │
 │  │  ├─ Get 90-day OHLC bars (with caching)                     │
 │  │  ├─ Run VCP analysis (vcp.js)                               │
 │  │  ├─ Calculate Relative Strength vs SPY                      │
-│  │  ├─ Get fundamentals from cache                             │
-│  │  ├─ Lookup industry rank                                    │
+│  │  ├─ Get fundamentals from DB cache                          │
+│  │  ├─ Lookup industry rank (from DB)                           │
 │  │  └─ Compute enhanced score (enhancedScan.js)                │
-│  └─ Save results to data/scan-results.json                      │
+│  └─ Save results to database (scan_runs + scan_results)          │
 │                                                                  │
 │  🔍 VCP ANALYZER (vcp.js)                                       │
 │  ├─ Calculate 10/20/50 SMAs                                    │
@@ -79,12 +79,12 @@
 │     ├─ Top 80 industries: ×1.05 (+5%)                          │
 │     └─ Bottom 50%: ×0.90 (-10%)                                │
 │                                                                  │
-│  🏭 INDUSTRY ANALYZER (industrials.js)                          │
-│  ├─ Fetch Yahoo Finance industry pages                         │
-│  ├─ Parse 1Y/6M/3M/YTD returns                                 │
-│  ├─ Group tickers by industry                                  │
-│  ├─ Rank industries 1-136                                      │
-│  └─ Save to data/industry-yahoo-returns.json                   │
+│  🏭 INDUSTRY RETURNS (tradingViewIndustry.js)                   │
+│  ├─ Fetch TradingView Scanner API (scanner.tradingview.com)    │
+│  ├─ Aggregate 3M/6M/1Y/YTD by industry                         │
+│  ├─ Group tickers by industry (from fundamentals)             │
+│  ├─ Rank industries for enhanced / Opus45 scoring              │
+│  └─ No DB write; live fetch per request (or cached in memory)   │
 │                                                                  │
 │  📈 BACKTEST ENGINE (backtest.js) [NEW]                        │
 │  ├─ Save scan snapshots (date, tickers, scores, prices)       │
@@ -94,23 +94,23 @@
 │  ├─ Analyze win rates by score bucket                          │
 │  └─ Generate optimization recommendations                       │
 │                                                                  │
-│  💾 DATA CACHE (data/ folder)                                   │
-│  ├─ bars/ (OHLC cache by ticker)                              │
-│  ├─ scan-results.json (latest scan)                           │
-│  ├─ fundamentals.json (company data)                          │
-│  ├─ industry-yahoo-returns.json (industry perf)               │
-│  ├─ backtests/ (historical scan snapshots) [NEW]              │
-│  └─ tickers.txt (500 S&P tickers)                             │
+│  💾 DATA & CACHE (Supabase DB)                                 │
+│  ├─ bars_cache (OHLC by ticker)                               │
+│  ├─ scan_runs + scan_results (latest + history)               │
+│  ├─ fundamentals (company data)                               │
+│  ├─ industry_cache (sector/industry lists); returns = TradingView │
+│  ├─ backtest_snapshots (historical scan snapshots)             │
+│  └─ tickers (scan universe)                                    │
 │                                                                  │
 │  🌐 API ENDPOINTS                                               │
 │  ├─ GET  /api/scan-results         → Latest scan               │
 │  ├─ POST /api/scan                 → Run new scan (streaming)  │
 │  ├─ GET  /api/vcp/:ticker          → Analyze single ticker     │
 │  ├─ GET  /api/bars/:ticker         → OHLC data for charts      │
-│  ├─ GET  /api/fundamentals         → All cached fundamentals   │
+│  ├─ GET  /api/fundamentals         → Fundamentals from DB      │
 │  ├─ POST /api/fundamentals/fetch   → Fetch new fundamentals    │
-│  ├─ GET  /api/industry-trend       → Industry performance      │
-│  ├─ POST /api/industry-trend/fetch → Fetch Yahoo industries    │
+│  ├─ GET  /api/industry-trend       → Industry 3M/6M/1Y/YTD (TradingView) │
+│  ├─ POST /api/industry-trend/fetch → Fetch fundamentals + bars │
 │  └─ GET  /api/backtest/:date [NEW] → Backtest analysis         │
 │                                                                  │
 └────────────────┬────────────────────────────────────────────────┘
@@ -181,9 +181,9 @@ USER CLICKS "RUN SCAN NOW"
          ▼
 ┌────────────────────────────────────────────────┐
 │ 1. SERVER: Initialize Scan                     │
-│    ├─ Load 500 tickers from tickers.txt        │
+│    ├─ Load tickers from DB                     │
 │    ├─ Fetch SPY bars (90 days)                 │
-│    └─ Load cached fundamentals                 │
+│    └─ Load fundamentals from DB                │
 └────────────────┬───────────────────────────────┘
                  │
                  ▼
@@ -191,9 +191,9 @@ USER CLICKS "RUN SCAN NOW"
 │ 2. FOR EACH TICKER (500 iterations)            │
 │                                                 │
 │    Step A: Get Price Data                      │
-│    ├─ Check bars cache (data/bars/TICKER.json) │
+│    ├─ Check bars_cache in DB for TICKER        │
 │    ├─ If stale or missing: fetch from Yahoo    │
-│    └─ Save to cache                             │
+│    └─ Save to bars_cache in DB                 │
 │                                                 │
 │    Step B: VCP Analysis                         │
 │    ├─ Calculate 10/20/50 SMAs                   │
@@ -204,7 +204,7 @@ USER CLICKS "RUN SCAN NOW"
 │    └─ Output: vcpResult object                  │
 │                                                 │
 │    Step C: Get Fundamental Data                │
-│    ├─ Lookup ticker in fundamentals cache      │
+│    ├─ Lookup ticker in fundamentals table (DB) │
 │    ├─ Extract: industry, EPS, margins, inst %  │
 │    └─ If missing: mark for future fetch        │
 │                                                 │
@@ -232,8 +232,8 @@ USER CLICKS "RUN SCAN NOW"
 │ 3. FINALIZE SCAN                                │
 │    ├─ Sort all results by enhancedScore (desc) │
 │    ├─ Count vcpBullish tickers                 │
-│    ├─ Save to data/scan-results.json           │
-│    ├─ Save backtest snapshot [NEW]             │
+│    ├─ Save to DB (scan_runs, scan_results)     │
+│    ├─ Save backtest snapshot to DB             │
 │    └─ Send completion event to frontend        │
 └────────────────┬───────────────────────────────┘
                  │
@@ -417,7 +417,7 @@ SCAN COMPLETED
 ┌────────────────────────────────────┐
 │ Auto-Save Backtest Snapshot        │
 │                                     │
-│ data/backtests/scan-2026-02-15.json│
+│ DB: backtest_snapshots table       │
 │ {                                   │
 │   scanDate: "2026-02-15",          │
 │   tickers: [                       │
@@ -472,8 +472,7 @@ SCAN COMPLETED
 │ └─ RS <90:  38% win rate          │
 │                                     │
 │ Save to:                           │
-│ data/backtests/                    │
-│   analysis-2026-02-15-30d.json    │
+│ DB: backtest_results (and related) │
 └────────────────┬───────────────────┘
                  │
                  ▼
@@ -522,8 +521,8 @@ SCAN COMPLETED
 - **Runtime:** Node.js (ES modules)
 - **Server:** Express.js
 - **Data APIs:** Yahoo Finance (yahoo-finance2), Massive (optional)
-- **Storage:** File-based JSON cache (no database required)
-- **Caching:** In-memory + file cache (24hr TTL)
+- **Storage:** Supabase (PostgreSQL). All scan results, fundamentals, industry data, and caches live in the DB.
+- **Caching:** Cache is stored in the database (e.g. bars_cache, fundamentals, industry_cache). TTL applied when reading (e.g. 24hr for bars).
 
 ### Frontend
 - **Framework:** React 18
@@ -534,23 +533,22 @@ SCAN COMPLETED
 - **State:** React hooks (no Redux/Context needed)
 
 ### Data Storage
-- **Format:** JSON files
-- **Location:** `/data` folder
-- **Structure:**
+- **Backend:** Supabase (PostgreSQL). All data is read from and written to the database.
+- **Tables (summary):**
   ```
-  data/
-  ├─ bars/              # OHLC cache per ticker
-  ├─ backtests/         # Historical scan snapshots [NEW]
-  ├─ scan-results.json  # Latest scan
-  ├─ fundamentals.json  # Company fundamentals
-  ├─ industry-yahoo-returns.json  # Industry performance
-  └─ tickers.txt        # S&P 500 list
+  bars_cache              # OHLC cache per ticker
+  scan_runs, scan_results # Latest + historical scans
+  fundamentals            # Company fundamentals
+  industry_cache  # Sector/industry lists; performance from TradingView
+  backtest_snapshots, backtest_results    # Backtest data
+  tickers                  # Scan universe
   ```
+- **Cache:** All caches (bars, fundamentals, industry, opus45 signals, etc.) are persisted in the DB, not in JSON files.
 
 ### Deployment
 - **Development:** `npm run dev` — single process on **http://localhost:5173** (Express API + Vite HMR; app and `/api` on same origin).
 - **Production:** Build `npm run build`, then serve with `npm run serve` (static + API from same server).
-- **Vercel:** Both frontend and API deploy together. The `api/[[...path]].js` serverless handler forwards `/api/*` to the same Express app (with `VERCEL=1`, so no listen). **Limits:** (1) `data/` is not in the repo (gitignored), so deploy has no scan/fundamentals unless you commit a snapshot or use an external API. (2) Writes (POST scan, POST fundamentals/fetch) do not persist (read-only filesystem). For full scans and persistence, point **VITE_API_URL** to an external API (e.g. Railway) that runs `npm run server`.
+- **Vercel:** Both frontend and API deploy together. The `api/[[...path]].js` serverless handler forwards `/api/*` to the same Express app (with `VERCEL=1`, so no listen). All data and cache live in Supabase; set **SUPABASE_URL** and **SUPABASE_SERVICE_KEY** in Vercel. Writes (POST scan, POST fundamentals/fetch) persist in the DB. For long-running full scans, consider **VITE_API_URL** to an external API (e.g. Railway) that runs `npm run server`.
 
 ---
 
@@ -559,29 +557,28 @@ SCAN COMPLETED
 ### Scan Performance
 - **500 tickers:** ~2-3 minutes with cache
 - **First scan:** ~10-15 minutes (cold cache)
-- **Subsequent scans:** ~2-3 minutes (hot cache)
+- **Subsequent scans:** ~2-3 minutes (hot cache from DB)
 - **Rate limiting:** 150ms delay between tickers (avoid Yahoo throttle)
 - **Concurrency:** Sequential (to respect rate limits)
 
 ### Cache Strategy
-- **OHLC bars:** 24-hour TTL, file-based
-- **Fundamentals:** Manual refresh (Yahoo data changes rarely)
-- **Industry data:** Manual refresh (weekly/monthly)
-- **SPY bars:** Fetched once per scan, cached
+- **Cache is stored in the database.** Bars, fundamentals, industry data, and other caches are read from/written to Supabase (e.g. bars_cache, fundamentals, industry_cache).
+- **OHLC bars:** 24-hour TTL; stored in bars_cache table.
+- **Fundamentals:** Stored in fundamentals table; manual refresh when needed.
+- **Industry returns:** From TradingView Scanner API (live); industry_cache holds sector/industry lists where used.
+- **SPY bars:** Fetched once per scan, cached in DB.
 
 ### API Response Times
-- **GET /api/scan-results:** <50ms (file read)
+- **GET /api/scan-results:** <50ms (DB read)
 - **GET /api/vcp/:ticker:** 200-500ms (Yahoo API call)
 - **POST /api/scan:** 2-3 minutes streaming (full scan)
-- **GET /api/bars/:ticker:** <100ms (cache) or 200-500ms (Yahoo)
+- **GET /api/bars/:ticker:** <100ms (DB cache) or 200-500ms (Yahoo)
 
 ### Data Volume
-- **Per ticker cache:** ~5-10 KB (90 days OHLC)
-- **Total bars cache:** ~2.5-5 MB (500 tickers)
-- **Scan results:** ~500 KB
-- **Fundamentals:** ~200 KB
-- **Backtest snapshots:** ~100 KB per scan
-- **Total footprint:** <10 MB
+- **Per ticker in bars_cache:** ~5-10 KB (90 days OHLC)
+- **Total bars cache in DB:** ~2.5-5 MB (500 tickers)
+- **Scan results:** Stored in scan_runs + scan_results
+- **Fundamentals, industry, backtest snapshots:** All in DB; total footprint on the order of tens of MB
 
 ---
 
@@ -636,6 +633,6 @@ This architecture provides:
 ✅ Extensible scoring (easy to add new factors)
 ✅ Real-time UI updates (streaming scan results)
 ✅ Validation system (backtesting framework)
-✅ No database required (simple deployment)
+✅ Database-backed storage and cache (Supabase; simple deployment)
 
 The three proposed improvements integrate cleanly into this architecture without requiring major refactoring.

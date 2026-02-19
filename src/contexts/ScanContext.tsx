@@ -134,59 +134,86 @@ export function ScanProvider({ children }: { children: ReactNode }) {
   };
 
   const startScan = async () => {
+    // Optimistically mark as running so the progress bar appears immediately,
+    // even before the server confirms the scanId via SSE.
+    setScanState((prev) => ({
+      ...prev,
+      running: true,
+      progress: {
+        index: 0,
+        total: 0,
+        vcpBullishCount: 0,
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+      },
+    }));
+
     try {
       const response = await fetch(`${API_BASE}/api/scan`, { method: 'POST' });
       
       if (!response.ok) {
         const error = await response.json();
+        // Reset optimistic state on failure
+        setScanState((prev) => ({ ...prev, running: false }));
         throw new Error(error.error || 'Scan failed to start');
       }
 
       if (!response.body) {
+        setScanState((prev) => ({ ...prev, running: false }));
         throw new Error('No response body');
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let scanStarted = false;
 
-      // Read initial response to get scan ID
-      const { value } = await reader.read();
-      if (value) {
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        for (const line of lines) {
-          const idx = line.indexOf('data: ');
-          if (idx !== -1) {
-            try {
-              const msg = JSON.parse(line.slice(idx + 6).trim());
-              if (msg.scanId && msg.started) {
-                setScanState({
-                  scanId: msg.scanId,
-                  running: true,
-                  progress: {
-                    index: 0,
-                    total: 0,
-                    vcpBullishCount: 0,
-                    startedAt: msg.startedAt,
-                    completedAt: null,
-                  },
-                });
-                // Start polling for progress
-                startPolling();
-                break;
+      // Read chunks until we get the started event with the real scanId
+      while (!scanStarted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          for (const line of lines) {
+            const idx = line.indexOf('data: ');
+            if (idx !== -1) {
+              try {
+                const msg = JSON.parse(line.slice(idx + 6).trim());
+                if (msg.scanId && msg.started) {
+                  setScanState({
+                    scanId: msg.scanId,
+                    running: true,
+                    progress: {
+                      index: 0,
+                      total: 0,
+                      vcpBullishCount: 0,
+                      startedAt: msg.startedAt,
+                      completedAt: null,
+                    },
+                  });
+                  startPolling();
+                  scanStarted = true;
+                  break;
+                }
+              } catch {
+                // Skip malformed JSON
               }
-            } catch {
-              // Skip malformed JSON
             }
           }
         }
       }
 
-      // Close the stream - we'll poll for progress instead
+      // If we never got the started event, fall back to polling anyway
+      if (!scanStarted) {
+        startPolling();
+      }
+
+      // Close the stream - polling handles the rest
       reader.cancel();
     } catch (error) {
       console.error('Failed to start scan:', error);
+      setScanState((prev) => ({ ...prev, running: false }));
       throw error;
     }
   };

@@ -18,12 +18,20 @@ import fs from 'fs';
 import { getBars, getFundamentals, getQuoteInfo } from './yahoo.js';
 import { checkVCP } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
-import { fetchIndustrialsFromYahoo, fetchAllIndustriesFromYahoo, fetchSectorsFromYahoo, fetchIndustryReturns, fetchIndustry1YReturn, industryPageUrl } from './industrials.js';
+import { fetchIndustrialsFromYahoo, fetchAllIndustriesFromYahoo, fetchSectorsFromYahoo, fetchIndustryReturns, industryPageUrl } from './industrials.js';
+import { fetchTradingViewIndustryReturns, buildIndustryReturnsFromTVMap, normalizeIndustryName, getRequiredIndustries } from './tradingViewIndustry.js';
 import { listScanSnapshots, runBacktest, loadScanSnapshot } from './backtest.js';
 import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS } from './opus45Signal.js';
 import { loadOptimizedWeights, runLearningPipeline, getLearningStatus, applyWeightChanges, resetWeightsToDefault } from './opus45Learning.js';
 import { runRetroBacktest, getTickersForBacktest } from './retroBacktest.js';
 import { loadCurrentRegime, loadRegimeBacktest } from './regimeHmm.js';
+import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
+import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
+import { loadScanResults as loadScanResultsFromDb, saveScanResults as saveScanResultsToDb } from './db/scanResults.js';
+import { getBars as getBarsFromDb, saveBars as saveBarsToDb } from './db/bars.js';
+import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
+import { loadOpus45Signals as loadOpus45SignalsFromDb, saveOpus45Signals as saveOpus45SignalsToDb } from './db/opus45.js';
+import { isSupabaseConfigured } from './supabase.js';
 // Trade Journal system for logging and learning from real trades
 import { 
   loadTrades, 
@@ -38,19 +46,12 @@ import {
   generateLearningFeedback,
   getTradeStats 
 } from './trades.js';
+import { chatWithMinervini } from './minerviniAgent.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
-const TICKERS_FILE = path.join(DATA_DIR, 'tickers.txt');
-const RESULTS_FILE = path.join(DATA_DIR, 'scan-results.json');
-const FUNDAMENTALS_FILE = path.join(DATA_DIR, 'fundamentals.json');
-const INDUSTRIALS_CACHE_FILE = path.join(DATA_DIR, 'industrials.json');
-const ALL_INDUSTRIES_CACHE_FILE = path.join(DATA_DIR, 'all-industries.json');
-const SECTORS_CACHE_FILE = path.join(DATA_DIR, 'sectors.json');
-const INDUSTRY_YAHOO_RETURNS_FILE = path.join(DATA_DIR, 'industry-yahoo-returns.json');
-const OPUS45_CACHE_FILE = path.join(DATA_DIR, 'opus45-signals.json');
 
 // Cache TTL: how long to use saved bar data before refetching (default 24h)
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
@@ -75,74 +76,13 @@ function ensureDirs() {
 }
 ensureDirs();
 
-// In-memory cache for current process (avoids re-reading file on every request)
-const barsMemoryCache = new Map();
-
-/**
- * Get bars from file cache if present and not stale. File: data/bars/{TICKER}_{interval}.json
- * Format: { ticker, from, to, interval, fetchedAt, results }.
- */
-function getBarsFromFile(ticker, from, to, interval = '1d') {
-  const key = `${ticker}:${interval}:${from}:${to}`;
-  const mem = barsMemoryCache.get(key);
-  if (mem && Date.now() - mem.at < CACHE_TTL_MS) return mem.data;
-
-  const safeTicker = ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-  const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}_${interval}.json`);
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (raw.interval !== interval) return null;
-    const age = Date.now() - new Date(raw.fetchedAt).getTime();
-    if (age > CACHE_TTL_MS) return null;
-    const results = raw.results || [];
-    if (results.length === 0) return null;
-    if (raw.from === from && raw.to === to) {
-      barsMemoryCache.set(key, { data: results, at: Date.now() - age });
-      return results;
-    }
-    if (raw.from <= to && raw.to >= from) {
-      const filtered = results.filter((b) => {
-        const d = new Date(b.t).toISOString().slice(0, 10);
-        return d >= from && d <= to;
-      });
-      if (filtered.length > 0) {
-        barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
-        return filtered;
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+/** Wrappers that delegate to db layer (Supabase when configured, else files) */
+async function loadFundamentals() {
+  return loadFundamentalsFromDb();
 }
-
-/**
- * Save bars to data/bars/{TICKER}_{interval}.json and update in-memory cache.
- */
-function saveBarsToFile(ticker, from, to, results, interval = '1d') {
-  const safeTicker = ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-  const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}_${interval}.json`);
-  const payload = { ticker, from, to, interval, fetchedAt: new Date().toISOString(), results };
-  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
-  barsMemoryCache.set(`${ticker}:${interval}:${from}:${to}`, { data: results, at: Date.now() });
-}
-
-/** Load cached fundamentals. Returns full file content for GET /api/fundamentals display. */
-function loadFundamentals() {
-  if (!fs.existsSync(FUNDAMENTALS_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(FUNDAMENTALS_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
-}
-
-/** Load only entries with extended fields (industry, profitMargin, operatingMargin, companyName). Used for cache-hit check. */
-function loadFundamentalsFiltered() {
-  const raw = loadFundamentals();
+function loadFundamentalsFilteredSync(raw) {
   const filtered = {};
-  for (const [ticker, entry] of Object.entries(raw)) {
+  for (const [ticker, entry] of Object.entries(raw || {})) {
     const hasCompanyName = entry?.companyName && String(entry.companyName).trim();
     if (entry && 'industry' in entry && 'profitMargin' in entry && 'operatingMargin' in entry && hasCompanyName) {
       filtered[ticker] = entry;
@@ -151,47 +91,46 @@ function loadFundamentalsFiltered() {
   return filtered;
 }
 
-/** Save fundamentals to file. */
-function saveFundamentals(data) {
-  fs.writeFileSync(FUNDAMENTALS_FILE, JSON.stringify(data, null, 2), 'utf8');
-}
-
-/** Load Yahoo industry returns (1Y, 3M, YTD) keyed by industry name. */
-function loadIndustryYahooReturns() {
-  if (!fs.existsSync(INDUSTRY_YAHOO_RETURNS_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(INDUSTRY_YAHOO_RETURNS_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
-}
-
-/** Save Yahoo industry returns to file. */
-function saveIndustryYahooReturns(data) {
-  fs.writeFileSync(INDUSTRY_YAHOO_RETURNS_FILE, JSON.stringify(data, null, 2), 'utf8');
-}
-
 // ---------- API ----------
 
 // Cached fundamentals (% held by inst, qtr earnings YoY)
-app.get('/api/fundamentals', (req, res) => {
+app.get('/api/fundamentals', async (req, res) => {
   try {
-    res.json(loadFundamentals());
+    res.json(await loadFundamentals());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // Single-ticker fundamentals (from cache; use POST /api/fundamentals/fetch to populate)
-app.get('/api/fundamentals/:ticker', (req, res) => {
+app.get('/api/fundamentals/:ticker', async (req, res) => {
   try {
     const ticker = String(req.params.ticker || '').toUpperCase();
     if (!ticker) return res.status(400).json({ error: 'Ticker required.' });
-    const all = loadFundamentals();
+    const all = await loadFundamentals();
     const f = all[ticker] || null;
     res.json(f ? { ticker, ...f } : { ticker, pctHeldByInst: null, qtrEarningsYoY: null, profitMargin: null, operatingMargin: null, industry: null });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Minervini AI coach: chat with SEPA/CANSLIM expert persona. Body: { messages: [{ role, content }] }.
+app.post('/api/chat', async (req, res) => {
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(503).json({
+        error: 'Minervini coach is disabled. Set ANTHROPIC_API_KEY in .env to enable.',
+      });
+    }
+    const { messages } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: 'Request body must include messages: [{ role, content }].' });
+    }
+    const reply = await chatWithMinervini(messages);
+    res.json({ message: reply });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Chat failed.' });
   }
 });
 
@@ -220,8 +159,8 @@ app.post('/api/fundamentals/fetch', async (req, res) => {
   };
 
   // Always load full cache; forceRefresh only bypasses cache check for requested tickers (never wipes file)
-  const fullCache = loadFundamentals();
-  const filteredForCheck = loadFundamentalsFiltered();
+  const fullCache = await loadFundamentals();
+  const filteredForCheck = loadFundamentalsFilteredSync(fullCache);
   const CACHE_TTL_FUND = 24 * 60 * 60 * 1000; // 24h
 
   for (let i = 0; i < tickers.length; i++) {
@@ -261,7 +200,7 @@ app.post('/api/fundamentals/fetch', async (req, res) => {
       send({ ticker, error: e.message, index: i + 1, total: tickers.length });
     }
   }
-  saveFundamentals(fullCache);
+  await saveFundamentalsToDb(fullCache);
   send({ done: true, total: tickers.length });
   res.end();
 });
@@ -278,78 +217,77 @@ app.get('/api/quote/:ticker', async (req, res) => {
   }
 });
 
-/**
- * Build ticker -> industry data map for CANSLIM enhanced scoring.
- * Uses fundamentals (industry per ticker), industry-trend logic (1Y/6M returns), and ranks industries by 1Y return.
- * getBarsFn(ticker) returns bars for that ticker (365d range).
- */
-function buildIndustryDataForTickers(results, fundamentals, yahooReturns, getBarsFn) {
-  const byIndustry = new Map();
-  for (const r of results) {
-    const ind = fundamentals[r.ticker]?.industry ?? 'Unknown';
-    if (!byIndustry.has(ind)) byIndustry.set(ind, []);
-    byIndustry.get(ind).push(r);
-  }
-  const industriesWithMetrics = [];
-  for (const [industry, tickers] of byIndustry.entries()) {
-    const with6Mo = tickers
-      .map((r) => {
-        const bars = getBarsFn(r.ticker);
-        return bars ? computeChange6MoFrom1YBars(bars) : null;
-      })
-      .filter((v) => v != null);
-    const with1Y = tickers
-      .map((r) => {
-        const bars = getBarsFn(r.ticker);
-        return bars ? computePctChange(bars) : null;
-      })
-      .filter((v) => v != null);
-    const industryAvg6Mo =
-      with6Mo.length > 0 ? Math.round((with6Mo.reduce((s, v) => s + v, 0) / with6Mo.length) * 10) / 10 : null;
-    const barBased1Y =
-      with1Y.length > 0 ? Math.round((with1Y.reduce((s, v) => s + v, 0) / with1Y.length) * 10) / 10 : null;
-    const industryAvg1Y = yahooReturns[industry]?.return1Y ?? barBased1Y;
-    industriesWithMetrics.push({ industry, industryAvg1Y, industryAvg6Mo });
-  }
-  industriesWithMetrics.sort((a, b) => (b.industryAvg1Y ?? -999) - (a.industryAvg1Y ?? -999));
-  const industryRank = new Map();
-  industriesWithMetrics.forEach((ind, idx) => industryRank.set(ind.industry, idx + 1));
-  const tickerToIndustryData = new Map();
-  for (const [industry, tickers] of byIndustry.entries()) {
-    const metrics = industriesWithMetrics.find((m) => m.industry === industry);
-    const rank = industryRank.get(industry);
-    const return1Y = metrics?.industryAvg1Y ?? null;
-    const return6Mo = metrics?.industryAvg6Mo ?? null;
-    for (const r of tickers) {
-      tickerToIndustryData.set(r.ticker, { rank, return1Y, return6Mo });
-    }
-  }
-  return tickerToIndustryData;
+/** Load scan results (DB or file), optionally filtered by tickers. */
+async function loadScanData() {
+  const data = await loadScanResultsFromDb();
+  if (!data || !data.results?.length) return { ...data, results: data?.results ?? [], totalTickers: 0, vcpBullishCount: 0 };
+  const tickers = await loadTickersFromDb();
+  const tickerSet = new Set(tickers);
+  const results = tickerSet.size > 0 ? data.results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase())) : data.results;
+  const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
+  return { ...data, results, totalTickers: results.length, vcpBullishCount };
 }
 
-// Latest scan results (from file written by server/scan.js).
-// Filter results to only tickers in data/tickers.txt - ensures table uses tickers.txt as source of truth.
-app.get('/api/scan-results', (req, res) => {
+// Latest scan results. Filtered to tickers in tickers.txt (source of truth).
+// When ?includeOpus=true (default), merges Opus4.5 scores into each result for unified payload.
+app.get('/api/scan-results', async (req, res) => {
   try {
-    if (!fs.existsSync(RESULTS_FILE)) {
-      return res.json({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 });
+    const data = await loadScanData();
+    const includeOpus = req.query.includeOpus !== 'false';
+
+    if (!data.scannedAt || !data.results?.length) {
+      return res.json({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0, opus45Signals: [], opus45Stats: null });
     }
-    const data = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-    let results = data.results || [];
-    // Filter to only tickers present in data/tickers.txt (source of truth for scan universe)
-    if (fs.existsSync(TICKERS_FILE)) {
-      const raw = fs.readFileSync(TICKERS_FILE, 'utf8');
-      const tickerSet = new Set(
-        raw.split(/\r?\n/).map((s) => s.trim().toUpperCase()).filter(Boolean)
-      );
-      results = results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase()));
+
+    if (!includeOpus) {
+      return res.json(data);
     }
-    const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
+
+    // Load Opus4.5 cache and merge scores into each result
+    const cached = await loadOpus45SignalsFromDb();
+    let opus45Signals = [];
+    let opus45Stats = null;
+    const opusByTicker = new Map();
+
+    if (cached?.signals?.length >= 0) {
+      await enrichCachedSignalsWithCurrentPrice(cached.signals);
+      opus45Signals = cached.signals;
+      opus45Stats = cached.stats ?? getSignalStats(cached.signals);
+      const allScores = mapCachedSignalsToAllScores(cached.signals);
+      allScores.forEach((s) => opusByTicker.set(s.ticker, {
+        opus45Confidence: s.opus45Confidence,
+        opus45Grade: s.opus45Grade,
+        entryDate: s.entryDate,
+        daysSinceBuy: s.daysSinceBuy,
+        pctChange: s.pctChange,
+        entryPrice: s.entryPrice,
+        stopLossPrice: s.stopLossPrice,
+        riskRewardRatio: s.riskRewardRatio,
+      }));
+    }
+
+    const resultsWithOpus = data.results.map((r) => {
+      const opus = opusByTicker.get(r.ticker);
+      return {
+        ...r,
+        opus45Confidence: opus?.opus45Confidence ?? 0,
+        opus45Grade: opus?.opus45Grade ?? 'F',
+        ...(opus?.entryDate != null || opus?.daysSinceBuy != null ? {
+          entryDate: opus.entryDate,
+          daysSinceBuy: opus.daysSinceBuy,
+          pctChange: opus.pctChange,
+          entryPrice: opus.entryPrice,
+          stopLossPrice: opus.stopLossPrice,
+          riskRewardRatio: opus.riskRewardRatio,
+        } : {}),
+      };
+    });
+
     res.json({
       ...data,
-      results,
-      totalTickers: results.length,
-      vcpBullishCount
+      results: resultsWithOpus,
+      opus45Signals,
+      opus45Stats,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -458,14 +396,7 @@ app.post('/api/scan', async (req, res) => {
           const bE = b.enhancedScore ?? b.score ?? 0;
           return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
         });
-        fs.writeFileSync(
-          RESULTS_FILE,
-          JSON.stringify(
-            { scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: total, vcpBullishCount, results: sorted },
-            null,
-            2
-          )
-        );
+        await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: total, vcpBullishCount, results: sorted });
       }
     }
 
@@ -474,14 +405,15 @@ app.post('/api/scan', async (req, res) => {
       const bE = b.enhancedScore ?? b.score ?? 0;
       return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
     });
-    fs.writeFileSync(
-      RESULTS_FILE,
-      JSON.stringify(
-        { scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: results.length, vcpBullishCount, results: sorted },
-        null,
-        2
-      )
-    );
+    await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: results.length, vcpBullishCount, results: sorted });
+
+    // Save backtest snapshot for future learning (needs 30+ days to run backtest)
+    try {
+      const { saveScanSnapshot } = await import('./backtest.js');
+      await saveScanSnapshot(sorted, new Date());
+    } catch (e) {
+      console.warn('Could not save backtest snapshot:', e.message);
+    }
     
     // Compute and cache Opus4.5 scores immediately after scan completes
     // This runs in background so dashboard loads instantly
@@ -503,6 +435,93 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
+// Cron-only endpoint: trigger full scan (e.g. from Supabase Cron). Returns 202 immediately; scan runs in background.
+// Auth: set CRON_SECRET in .env; caller must send Authorization: Bearer <CRON_SECRET> or x-cron-secret: <CRON_SECRET>.
+// Schedule in Supabase: Database → Cron → New job → HTTP request → POST to https://YOUR_API_URL/api/cron/scan at 5 PM CST (23:00 UTC).
+app.post('/api/cron/scan', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  const authHeader = req.headers.authorization;
+  const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const headerSecret = req.headers['x-cron-secret'] || bearer;
+  if (secret && headerSecret !== secret) {
+    return res.status(401).json({ error: 'Invalid or missing cron secret' });
+  }
+  if (activeScan.running) {
+    return res.status(202).json({
+      ok: true,
+      message: 'Scan already in progress',
+      scanId: activeScan.id,
+      progress: activeScan.progress
+    });
+  }
+  if (Date.now() - lastScanStarted < SCAN_COOLDOWN_MS) {
+    return res.status(202).json({ ok: true, message: 'Scan run recently; skipped to avoid overlap' });
+  }
+  lastScanStarted = Date.now();
+  activeScan.id = generateScanId();
+  activeScan.running = true;
+  activeScan.progress = { index: 0, total: 0, vcpBullishCount: 0, startedAt: new Date().toISOString(), completedAt: null };
+  activeScan.results = [];
+
+  // Run full scan in background (same as /api/scan but no SSE)
+  (async () => {
+    try {
+      const { runScanStream } = await import('./scan.js');
+      const to = new Date();
+      const from = new Date(to);
+      from.setDate(from.getDate() - 180);
+      const fromStr = from.toISOString().slice(0, 10);
+      const toStr = to.toISOString().slice(0, 10);
+      const results = [];
+      let vcpBullishCount = 0;
+      for await (const { result, index, total } of runScanStream()) {
+        results.push(result);
+        activeScan.results.push(result);
+        if (result.vcpBullish) vcpBullishCount++;
+        activeScan.progress.index = index;
+        activeScan.progress.total = total;
+        activeScan.progress.vcpBullishCount = vcpBullishCount;
+        if (results.length % 25 === 0 || results.length === total) {
+          const sorted = [...results].sort((a, b) => {
+            const aE = a.enhancedScore ?? a.score ?? 0;
+            const bE = b.enhancedScore ?? b.score ?? 0;
+            return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
+          });
+          await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: total, vcpBullishCount, results: sorted });
+        }
+      }
+      const sorted = results.sort((a, b) => {
+        const aE = a.enhancedScore ?? a.score ?? 0;
+        const bE = b.enhancedScore ?? b.score ?? 0;
+        return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
+      });
+      await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: results.length, vcpBullishCount, results: sorted });
+      try {
+        const { saveScanSnapshot } = await import('./backtest.js');
+        await saveScanSnapshot(sorted, new Date());
+      } catch (e) {
+        console.warn('Could not save backtest snapshot:', e.message);
+      }
+      console.log('Opus4.5: Computing scores after cron scan...');
+      await computeAndSaveOpus45Scores();
+      activeScan.running = false;
+      activeScan.progress.completedAt = new Date().toISOString();
+      console.log('Cron scan completed:', results.length, 'tickers,', vcpBullishCount, 'VCP bullish');
+    } catch (e) {
+      console.error('Cron scan failed:', e);
+      activeScan.running = false;
+      activeScan.progress.completedAt = new Date().toISOString();
+    }
+  })();
+
+  res.status(202).json({
+    ok: true,
+    started: true,
+    scanId: activeScan.id,
+    message: 'Scan started in background (runs every 24h after 5 PM CST via Supabase Cron)'
+  });
+});
+
 // OHLC bars for a ticker. Query: days (default 180), interval (1d|1wk|1mo, default 1d).
 app.get('/api/bars/:ticker', async (req, res) => {
   const { ticker } = req.params;
@@ -521,11 +540,20 @@ app.get('/api/bars/:ticker', async (req, res) => {
   const fromStr = from.toISOString().slice(0, 10);
   const toStr = to.toISOString().slice(0, 10);
 
-  let bars = getBarsFromFile(ticker, fromStr, toStr, interval);
+  let bars = null;
+  try {
+    bars = await getBarsFromDb(ticker, fromStr, toStr, interval);
+  } catch (_) {
+    // Supabase not configured or DB error: fall back to Yahoo below
+  }
   if (!bars) {
     try {
       bars = await getBars(ticker, fromStr, toStr, interval);
-      saveBarsToFile(ticker, fromStr, toStr, bars, interval);
+      try {
+        await saveBarsToDb(ticker, fromStr, toStr, bars, interval);
+      } catch (_) {
+        // Save failed (e.g. no Supabase); response still valid
+      }
     } catch (e) {
       return res.status(502).json({ error: e.message });
     }
@@ -553,11 +581,11 @@ app.get('/api/spx/bars', async (req, res) => {
   const toStr = to.toISOString().slice(0, 10);
 
   const spxTicker = '^GSPC';
-  let bars = getBarsFromFile(spxTicker, fromStr, toStr, interval);
+  let bars = await getBarsFromDb(spxTicker, fromStr, toStr, interval);
   if (!bars) {
     try {
       bars = await getBars(spxTicker, fromStr, toStr, interval);
-      saveBarsToFile(spxTicker, fromStr, toStr, bars, interval);
+      await saveBarsToDb(spxTicker, fromStr, toStr, bars, interval);
     } catch (e) {
       return res.status(502).json({ error: e.message });
     }
@@ -569,25 +597,25 @@ app.get('/api/spx/bars', async (req, res) => {
 
 /**
  * Resolve industry name to Yahoo index symbol (e.g. "Semiconductors" -> "^YH31130020").
- * Uses all-industries.json; fallback: scan data/industries/*.json for industry name in saved metadata.
+ * Uses all-industries from DB; fallback: data/industries/*.json (not migrated).
  */
-function getIndustrySymbolByName(industryName) {
+async function getIndustrySymbolByName(industryName) {
   if (!industryName || typeof industryName !== 'string') return null;
   const name = industryName.trim();
   if (!name) return null;
-  // 1. Prefer all-industries cache (has name + symbol for all Yahoo industries)
-  if (fs.existsSync(ALL_INDUSTRIES_CACHE_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(ALL_INDUSTRIES_CACHE_FILE, 'utf8'));
-      const industries = data.industries || [];
+  // 1. Prefer all-industries from DB
+  try {
+    const data = await loadIndustryCache('all-industries');
+    if (data?.industries?.length) {
+      const industries = data.industries;
       const exact = industries.find((ind) => ind.name && ind.name.trim() === name);
       if (exact?.symbol) return exact.symbol;
       const lower = name.toLowerCase();
       const fuzzy = industries.find((ind) => ind.name && ind.name.trim().toLowerCase() === lower);
       if (fuzzy?.symbol) return fuzzy.symbol;
-    } catch (e) {
-      console.error('getIndustrySymbolByName: all-industries read failed', e.message);
     }
+  } catch (e) {
+    console.error('getIndustrySymbolByName: all-industries read failed', e.message);
   }
   // 2. Fallback: industry data files in data/industries (from industry-data/collect)
   if (fs.existsSync(INDUSTRY_DATA_DIR)) {
@@ -610,7 +638,7 @@ app.get('/api/industry-bars', async (req, res) => {
   if (!industryName) {
     return res.status(400).json({ error: 'Query "industry" (industry name) is required.' });
   }
-  const symbol = getIndustrySymbolByName(industryName);
+  const symbol = await getIndustrySymbolByName(industryName);
   if (!symbol) {
     return res.status(404).json({
       error: `No symbol found for industry "${industryName}". Run "Fetch all industries" from the Industry page to populate industry symbols.`,
@@ -631,11 +659,11 @@ app.get('/api/industry-bars', async (req, res) => {
   const fromStr = from.toISOString().slice(0, 10);
   const toStr = to.toISOString().slice(0, 10);
 
-  let bars = getBarsFromFile(symbol, fromStr, toStr, interval);
-  if (!bars) {
+  let bars = await getBarsFromDb(symbol, fromStr, toStr, interval);
+  if (!bars || bars.length === 0) {
     try {
       bars = await getBars(symbol, fromStr, toStr, interval);
-      if (bars && bars.length > 0) saveBarsToFile(symbol, fromStr, toStr, bars, interval);
+      if (bars && bars.length > 0) await saveBarsToDb(symbol, fromStr, toStr, bars, interval);
     } catch (e) {
       return res.status(502).json({ error: e.message, industry: industryName, symbol, results: [] });
     }
@@ -645,35 +673,20 @@ app.get('/api/industry-bars', async (req, res) => {
 });
 
 // Industry summary with 3-month price trend. Groups scan-result tickers by industry, computes % change from bars.
-function getBarsForTrend(ticker, fromStr, toStr) {
-  let bars = getBarsFromFile(ticker, fromStr, toStr, '1d');
+async function getBarsForTrend(ticker, fromStr, toStr) {
+  const bars = await getBarsFromDb(ticker, fromStr, toStr, '1d');
   if (bars && bars.length >= 2) return bars;
-  // Fallback: scan cache uses ticker.json (no interval suffix)
-  const safeTicker = ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-  const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}.json`);
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    const results = raw.results || [];
-    if (results.length < 2) return null;
-    const filtered = results.filter((b) => {
-      const d = new Date(b.t).toISOString().slice(0, 10);
-      return d >= fromStr && d <= toStr;
-    });
-    return filtered.length >= 2 ? filtered : null;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /** Fetch bars from Yahoo when file cache misses. Saves to file for future use. */
 async function fetchBarsForTrend(ticker, fromStr, toStr) {
-  let bars = getBarsForTrend(ticker, fromStr, toStr);
+  let bars = await getBarsForTrend(ticker, fromStr, toStr);
   if (bars && bars.length >= 2) return bars;
   try {
     bars = await getBars(ticker, fromStr, toStr, '1d');
     if (bars && bars.length >= 2) {
-      saveBarsToFile(ticker, fromStr, toStr, bars, '1d');
+      saveBarsToDb(ticker, fromStr, toStr, bars, '1d');
       return bars;
     }
   } catch {
@@ -733,11 +746,11 @@ function computeYtdFromBars(bars, year) {
 async function computeIndustrySymbolReturns(symbol, fromStr365, toStr) {
   if (!symbol || typeof symbol !== 'string') return { return6Mo: null, return1Y: null };
   try {
-    let bars = getBarsFromFile(symbol, fromStr365, toStr, '1d');
+    let bars = await getBarsFromDb(symbol, fromStr365, toStr, '1d');
     if (!bars || bars.length < 2) {
       bars = await getBars(symbol, fromStr365, toStr, '1d');
       if (bars && bars.length >= 2) {
-        saveBarsToFile(symbol, fromStr365, toStr, bars, '1d');
+        await saveBarsToDb(symbol, fromStr365, toStr, bars, '1d');
       }
     }
     if (!bars || bars.length < 2) return { return6Mo: null, return1Y: null };
@@ -760,7 +773,8 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
   }
   lastIndustryFetch = Date.now();
 
-  if (!fs.existsSync(RESULTS_FILE)) {
+  const scanData = await loadScanData();
+  if (!scanData.results?.length) {
     return res.status(400).json({ error: 'No scan results. Run a scan first.' });
   }
 
@@ -783,9 +797,8 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
   const toStr = to.toISOString().slice(0, 10);
   const fromStr365 = from365.toISOString().slice(0, 10);
 
-  const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
   const results = scanData.results || [];
-  const fundamentals = loadFundamentals();
+  const fundamentals = await loadFundamentals();
 
   // 1. Fetch fundamentals for ALL scan tickers (get industry + sector for every ticker)
   const needFundamentals = results.map((r) => r.ticker).filter(Boolean);
@@ -814,14 +827,18 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
       send({ phase: 'fundamentals', ticker, error: e.message });
     }
   }
-  saveFundamentals(fundamentals);
+  await saveFundamentalsToDb(fundamentals);
 
   const industriesCount = new Set(
     Object.values(fundamentals).filter((e) => e && e.industry).map((e) => e.industry)
   ).size;
 
   // 2. Fetch 365-day bars for tickers missing data (used for both 3M and 1Y return)
-  const needBars = results.filter((r) => !getBarsForTrend(r.ticker, fromStr365, toStr));
+  const needBars = [];
+  for (const r of results) {
+    const b = await getBarsForTrend(r.ticker, fromStr365, toStr);
+    if (!b) needBars.push(r);
+  }
   let barsFetched = 0;
   let barsFailed = 0;
   for (let i = 0; i < needBars.length; i++) {
@@ -838,40 +855,6 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
     }
   }
 
-  // Invalidate bars memory cache so GET /api/industry-trend reads fresh from file
-  for (const r of needBars) {
-    barsMemoryCache.delete(`${r.ticker}:1d:${fromStr365}:${toStr}`);
-  }
-
-  // 3. Fetch Yahoo Finance 1Y return for each industry (from industry sub-pages, e.g. aerospace-defense 50.60%)
-  const byIndustryForYahoo = new Map();
-  for (const r of results) {
-    const ind = fundamentals[r.ticker]?.industry ?? 'Unknown';
-    if (ind === 'Unknown') continue;
-    if (!byIndustryForYahoo.has(ind)) {
-      const sector = fundamentals[r.ticker]?.sector ?? null;
-      byIndustryForYahoo.set(ind, sector);
-    }
-  }
-  const yahooReturns = loadIndustryYahooReturns();
-  const YAHOO_INDUSTRY_DELAY_MS = 500;
-  const industryList = [...byIndustryForYahoo.entries()];
-  let yahooFetched = 0;
-  for (let i = 0; i < industryList.length; i++) {
-    await new Promise((r) => setTimeout(r, YAHOO_INDUSTRY_DELAY_MS));
-    const [industry, sector] = industryList[i];
-    try {
-      const return1Y = await fetchIndustry1YReturn(industry, sector);
-      if (return1Y != null) {
-        yahooReturns[industry] = { ...(yahooReturns[industry] || {}), return1Y, fetchedAt: new Date().toISOString() };
-        yahooFetched++;
-      }
-      send({ phase: 'yahoo', industry, return1Y, index: i + 1, total: industryList.length });
-    } catch (e) {
-      send({ phase: 'yahoo', industry, error: e.message });
-    }
-  }
-  saveIndustryYahooReturns(yahooReturns);
 
   send({
     done: true,
@@ -881,7 +864,6 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
     barsFetched,
     barsFailed,
     barsTotal: needBars.length,
-    yahooFetched,
     industriesCount,
   });
   res.end();
@@ -902,13 +884,13 @@ function filterIndustriesOnly(industries) {
 }
 
 // GET: return cached industrials industries (name, YTD, 6M)
-app.get('/api/industrials', (req, res) => {
+app.get('/api/industrials', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
-    if (!fs.existsSync(INDUSTRIALS_CACHE_FILE)) {
+    const data = await loadIndustryCache('industrials');
+    if (!data) {
       return res.json({ industries: [], fetchedAt: null, source: null });
     }
-    const data = JSON.parse(fs.readFileSync(INDUSTRIALS_CACHE_FILE, 'utf8'));
     data.industries = filterIndustriesOnly(data.industries);
     res.json(data);
   } catch (e) {
@@ -943,10 +925,11 @@ app.post('/api/industrials/fetch', async (req, res) => {
     // 2. Build 6M map from our bars (primary source - reliable)
     const industry6MoMap = new Map();
     const industry6MoMapNorm = new Map(); // normalized key for fuzzy match
-    if (fs.existsSync(RESULTS_FILE) && fs.existsSync(FUNDAMENTALS_FILE)) {
-      const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-      const results = scanData.results || [];
-      const fundamentals = loadFundamentals();
+    const scanDataIndustrials = await loadScanData();
+    const hasFundamentals = true; // DB has fundamentals when Supabase configured
+    if (scanDataIndustrials.results?.length && hasFundamentals) {
+      const results = scanDataIndustrials.results || [];
+      const fundamentals = await loadFundamentals();
       const to = new Date();
       const from365 = new Date(to);
       from365.setDate(from365.getDate() - 365);
@@ -960,12 +943,12 @@ app.post('/api/industrials/fetch', async (req, res) => {
       }
       const norm = (s) => (s || '').toLowerCase().replace(/\s*&\s*/g, ' and ').replace(/\s+/g, ' ').trim();
       for (const [industry, tickers] of byIndustry.entries()) {
-        const with6Mo = tickers
-          .map((r) => {
-            const bars = getBarsForTrend(r.ticker, fromStr365, toStr);
-            return bars ? computeChange6MoFrom1YBars(bars) : null;
-          })
-          .filter((v) => v != null);
+        const with6Mo = [];
+        for (const r of tickers) {
+          const bars = await getBarsForTrend(r.ticker, fromStr365, toStr);
+          const v = bars ? computeChange6MoFrom1YBars(bars) : null;
+          if (v != null) with6Mo.push(v);
+        }
         if (with6Mo.length > 0) {
           const avg = Math.round((with6Mo.reduce((s, v) => s + v, 0) / with6Mo.length) * 10) / 10;
           industry6MoMap.set(industry, avg);
@@ -1001,7 +984,7 @@ app.post('/api/industrials/fetch', async (req, res) => {
       fetchedAt: new Date().toISOString(),
       source,
     };
-    fs.writeFileSync(INDUSTRIALS_CACHE_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    await saveIndustryCache('industrials', payload);
     send({ done: true, payload });
   } catch (e) {
     console.error('Industrials fetch failed:', e);
@@ -1012,18 +995,17 @@ app.post('/api/industrials/fetch', async (req, res) => {
 
 // ---------- All Industries (all 11 sectors, ~145 industries) ----------
 // GET: return cached all industries with tickers from scan results
-app.get('/api/all-industries', (req, res) => {
+app.get('/api/all-industries', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
-    if (!fs.existsSync(ALL_INDUSTRIES_CACHE_FILE)) {
+    let data = await loadIndustryCache('all-industries');
+    if (!data) {
       return res.json({ industries: [], fetchedAt: null, source: null });
     }
-    const data = JSON.parse(fs.readFileSync(ALL_INDUSTRIES_CACHE_FILE, 'utf8'));
-    
     // Build ticker → companyName map from fundamentals for hover tooltips on Industry page
     let tickerNames = {};
     try {
-      const fundamentals = loadFundamentals();
+      const fundamentals = await loadFundamentals();
       for (const [ticker, entry] of Object.entries(fundamentals)) {
         const name = entry?.companyName && String(entry.companyName).trim();
         if (name) tickerNames[ticker] = name;
@@ -1034,15 +1016,15 @@ app.get('/api/all-industries', (req, res) => {
     }
 
     // Add tickers and industryRank from scan results to each industry
-    if (fs.existsSync(RESULTS_FILE)) {
+    const scanDataAllInd = await loadScanData();
+    if (scanDataAllInd.results?.length) {
       try {
-        const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
         const tickersByIndustry = {};
         const ranksByIndustry = {};
         
         // Group tickers and ranks by industry name
-        if (scanData.results && Array.isArray(scanData.results)) {
-          scanData.results.forEach((result) => {
+        if (scanDataAllInd.results && Array.isArray(scanDataAllInd.results)) {
+          scanDataAllInd.results.forEach((result) => {
             const industry = result.industryName;
             if (industry) {
               if (!tickersByIndustry[industry]) {
@@ -1139,11 +1121,11 @@ app.post('/api/all-industries/fetch', async (req, res) => {
     // Add tickers and industryRank from scan results to each industry
     const tickersByIndustry = {};
     const ranksByIndustry = {};
-    if (fs.existsSync(RESULTS_FILE)) {
-      try {
-        const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
+    try {
+      const scanData = await loadScanResultsFromDb();
         if (scanData.results && Array.isArray(scanData.results)) {
-          scanData.results.forEach((result) => {
+        if (scanData.results && Array.isArray(scanData.results)) {
+        scanData.results.forEach((result) => {
             const industry = result.industryName;
             if (industry) {
               if (!tickersByIndustry[industry]) {
@@ -1157,9 +1139,9 @@ app.post('/api/all-industries/fetch', async (req, res) => {
             }
           });
         }
-      } catch (scanErr) {
-        console.error('Error loading scan results for tickers:', scanErr);
       }
+    } catch (scanErr) {
+      console.error('Error loading scan results for tickers:', scanErr);
     }
 
     // Add tickers array and average industryRank to each industry
@@ -1181,7 +1163,7 @@ app.post('/api/all-industries/fetch', async (req, res) => {
       fetchedAt: new Date().toISOString(),
       source,
     };
-    fs.writeFileSync(ALL_INDUSTRIES_CACHE_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    await saveIndustryCache('all-industries', payload);
     send({ done: true, payload });
   } catch (e) {
     console.error('All industries fetch failed:', e);
@@ -1317,13 +1299,13 @@ app.get('/api/industry-tradingview', async (req, res) => {
 });
 
 // ---------- Sectors (11 sectors from https://finance.yahoo.com/sectors/) ----------
-app.get('/api/sectors', (req, res) => {
+app.get('/api/sectors', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
-    if (!fs.existsSync(SECTORS_CACHE_FILE)) {
+    const data = await loadIndustryCache('sectors');
+    if (!data) {
       return res.json({ sectors: [], fetchedAt: null, source: null });
     }
-    const data = JSON.parse(fs.readFileSync(SECTORS_CACHE_FILE, 'utf8'));
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1351,7 +1333,7 @@ app.post('/api/sectors/fetch', async (req, res) => {
     send({ phase: 'fetching', message: 'Fetching 11 sectors from Yahoo Finance…' });
     const { sectors, source } = await fetchSectorsFromYahoo();
     const payload = { sectors, fetchedAt: new Date().toISOString(), source };
-    fs.writeFileSync(SECTORS_CACHE_FILE, JSON.stringify(payload, null, 2), 'utf8');
+    await saveIndustryCache('sectors', payload);
     send({ done: true, payload });
   } catch (e) {
     console.error('Sectors fetch failed:', e);
@@ -1360,74 +1342,16 @@ app.post('/api/sectors/fetch', async (req, res) => {
   res.end();
 });
 
-// POST: fetch only Yahoo 1Y returns for industries (lightweight, no fundamentals/bars)
-app.post('/api/industry-trend/fetch-yahoo', async (req, res) => {
-  if (Date.now() - lastIndustryFetch < INDUSTRY_FETCH_COOLDOWN_MS) {
-    return res.status(429).json({ error: 'Wait 5 seconds between fetch requests.' });
-  }
-  lastIndustryFetch = Date.now();
-
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
-  const send = (obj) => {
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    res.flush?.();
-  };
-
-  const fundamentals = loadFundamentals();
-  const industries = [...new Set(Object.values(fundamentals).filter((e) => e?.industry).map((e) => e.industry))];
-
-  if (industries.length === 0) {
-    send({ done: true, total: 0, error: 'No industries in fundamentals. Run "Fetch fundamentals" first.' });
-    res.end();
-    return;
-  }
-
-  const yahooReturns = loadIndustryYahooReturns();
-  const YAHOO_DELAY_MS = 500;
-
-  for (let i = 0; i < industries.length; i++) {
-    await new Promise((r) => setTimeout(r, YAHOO_DELAY_MS));
-    const industry = industries[i];
-    const sector = Object.values(fundamentals).find((e) => e?.industry === industry)?.sector ?? null;
-    try {
-      const return1Y = await fetchIndustry1YReturn(industry, sector);
-      if (return1Y != null) {
-        yahooReturns[industry] = { ...(yahooReturns[industry] || {}), return1Y, fetchedAt: new Date().toISOString() };
-      }
-      send({ industry, return1Y, index: i + 1, total: industries.length });
-    } catch (e) {
-      send({ industry, error: e.message, index: i + 1, total: industries.length });
-    }
-  }
-  saveIndustryYahooReturns(yahooReturns);
-  send({ done: true, total: industries.length });
-  res.end();
-});
-
-// ---------- Industry trend (scan-based) ----------
-app.get('/api/industry-trend', (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
+// ---------- Industry trend (scan-based); returns from TradingView only ----------
+app.get('/api/industry-trend', async (req, res) => {
+  // Allow browser caching for 5 minutes (server uses stale-while-revalidate internally)
+  res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
   try {
-    const fundamentals = loadFundamentals();
-    const yahooReturns = loadIndustryYahooReturns();
-    if (!fs.existsSync(RESULTS_FILE)) {
-      return res.json({ industries: [], scannedAt: null });
+    const [fundamentals, scanData] = await Promise.all([loadFundamentals(), loadScanData()]);
+    if (!scanData.results?.length) {
+      return res.json({ industries: [], scannedAt: null, source: 'tradingview' });
     }
-    const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
     const results = scanData.results || [];
-    const to = new Date();
-    const from90 = new Date(to);
-    from90.setDate(from90.getDate() - 90);
-    const from365 = new Date(to);
-    from365.setDate(from365.getDate() - 365);
-    const fromStr90 = from90.toISOString().slice(0, 10);
-    const fromStr365 = from365.toISOString().slice(0, 10);
-    const toStr = to.toISOString().slice(0, 10);
 
     const byIndustry = new Map();
     for (const r of results) {
@@ -1436,45 +1360,62 @@ app.get('/api/industry-trend', (req, res) => {
       byIndustry.get(ind).push(r);
     }
 
-    const currentYear = to.getFullYear();
+    // Industry returns from TradingView scanner (3M, 6M, 1Y, YTD).
+    // OPTIMIZATION: Pass requiredIndustries for early exit - stops fetching when all needed industries found
+    const requiredIndustries = getRequiredIndustries(fundamentals);
+    const { 
+      returnsMap: tvReturnsByIndustry, 
+      tickerToTvIndustry, 
+      fromCache, 
+      cacheAge,
+      stale 
+    } = await fetchTradingViewIndustryReturns({ requiredIndustries });
+
     const industries = [];
     for (const [industry, tickers] of byIndustry.entries()) {
-      const withTrend = tickers.map((r) => {
-        let change3mo = null;
-        let change1y = null;
-        let ytd = null;
-        let change6mo = null;
-        const bars365 = getBarsForTrend(r.ticker, fromStr365, toStr);
-        if (bars365 && bars365.length >= 2) {
-          change1y = computePctChange(bars365);
-          change3mo = computeChange3MoFrom1YBars(bars365);
-          change6mo = computeChange6MoFrom1YBars(bars365);
-          ytd = computeYtdFromBars(bars365, currentYear);
-        }
-        if (change3mo == null) {
-          const bars90 = getBarsForTrend(r.ticker, fromStr90, toStr);
-          change3mo = computePctChange(bars90);
-        }
-        return { ticker: r.ticker, lastClose: r.lastClose, change3mo, change6mo, change1y, ytd, score: r.score };
-      });
-      const with3Mo = withTrend.filter((t) => t.change3mo != null);
-      const with6Mo = withTrend.filter((t) => t.change6mo != null);
-      const with1Y = withTrend.filter((t) => t.change1y != null);
-      const withYtd = withTrend.filter((t) => t.ytd != null);
-      const industryAvg3Mo =
-        with3Mo.length > 0 ? Math.round((with3Mo.reduce((s, t) => s + (t.change3mo ?? 0), 0) / with3Mo.length) * 10) / 10 : null;
-      const industryAvg6Mo =
-        with6Mo.length > 0 ? Math.round((with6Mo.reduce((s, t) => s + (t.change6mo ?? 0), 0) / with6Mo.length) * 10) / 10 : null;
-      const barBased1Y =
-        with1Y.length > 0 ? Math.round((with1Y.reduce((s, t) => s + (t.change1y ?? 0), 0) / with1Y.length) * 10) / 10 : null;
-      // Prefer Yahoo Finance industry 1Y (e.g. aerospace-defense 50.60%) when available
-      const industryAvg1Y = yahooReturns[industry]?.return1Y ?? barBased1Y;
-      const industryYtd =
-        withYtd.length > 0 ? Math.round((withYtd.reduce((s, t) => s + (t.ytd ?? 0), 0) / withYtd.length) * 10) / 10 : null;
+      // Accumulate returns by looking up each ticker's TradingView industry name,
+      // then averaging (handles many-to-one and one-to-many Yahoo↔TV mappings).
+      const acc = { s3M: 0, n3M: 0, s6M: 0, n6M: 0, s1Y: 0, n1Y: 0, sYTD: 0, nYTD: 0 };
+      for (const r of tickers) {
+        const tvIndName = tickerToTvIndustry.get(r.ticker);
+        const tv = tvIndName ? tvReturnsByIndustry.get(normalizeIndustryName(tvIndName)) : null;
+        if (!tv) continue;
+        if (tv.perf3M != null) { acc.s3M += tv.perf3M; acc.n3M++; }
+        if (tv.perf6M != null) { acc.s6M += tv.perf6M; acc.n6M++; }
+        if (tv.perf1Y != null) { acc.s1Y += tv.perf1Y; acc.n1Y++; }
+        if (tv.perfYTD != null) { acc.sYTD += tv.perfYTD; acc.nYTD++; }
+      }
+      // Fall back to exact name match for industries where Yahoo/TV names happen to match
+      const fallback = tvReturnsByIndustry.get(normalizeIndustryName(industry));
+      const round2 = (v) => Math.round(v * 100) / 100;
+      const industryAvg3Mo = acc.n3M > 0 ? round2(acc.s3M / acc.n3M) : (fallback?.perf3M ?? null);
+      const industryAvg6Mo = acc.n6M > 0 ? round2(acc.s6M / acc.n6M) : (fallback?.perf6M ?? null);
+      const industryAvg1Y  = acc.n1Y > 0 ? round2(acc.s1Y / acc.n1Y) : (fallback?.perf1Y ?? null);
+      const industryYtd    = acc.nYTD > 0 ? round2(acc.sYTD / acc.nYTD) : (fallback?.perfYTD ?? null);
+      const withTrend = tickers.map((r) => ({
+        ticker: r.ticker,
+        lastClose: r.lastClose,
+        change3mo: null,
+        change6mo: null,
+        change1y: null,
+        ytd: null,
+        score: r.score,
+      }));
       industries.push({ industry, tickers: withTrend, industryAvg3Mo, industryAvg6Mo, industryAvg1Y, industryYtd });
     }
     industries.sort((a, b) => a.industry.localeCompare(b.industry));
-    res.json({ industries, scannedAt: scanData.scannedAt });
+    
+    // Include cache metadata in response for debugging
+    const response = { 
+      industries, 
+      scannedAt: scanData.scannedAt, 
+      source: 'tradingview',
+      cached: fromCache,
+      cacheAge: cacheAge ?? 0,
+      stale: stale ?? false,
+    };
+    
+    res.json(response);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1491,21 +1432,21 @@ app.get('/api/vcp/:ticker', async (req, res) => {
   const toStr = to.toISOString().slice(0, 10);
 
   try {
-    let bars = getBarsFromFile(ticker, fromStr, toStr, '1d');
+    let bars = await getBarsFromDb(ticker, fromStr, toStr, '1d');
     if (!bars) {
       bars = await getBars(ticker, fromStr, toStr, '1d');
-      saveBarsToFile(ticker, fromStr, toStr, bars, '1d');
+      await saveBarsToDb(ticker, fromStr, toStr, bars, '1d');
     }
     const vcp = checkVCP(bars);
-    // Always attach enhanced score when we have fundamentals + industry data (same as scan)
+    // Always attach enhanced score when we have fundamentals + industry data (TradingView returns)
     let payload = { ticker, ...vcp, barCount: bars.length };
     try {
-      const fundamentals = fs.existsSync(FUNDAMENTALS_FILE)
-        ? JSON.parse(fs.readFileSync(FUNDAMENTALS_FILE, 'utf8')) : {};
-      const industryReturns = fs.existsSync(INDUSTRY_YAHOO_RETURNS_FILE)
-        ? JSON.parse(fs.readFileSync(INDUSTRY_YAHOO_RETURNS_FILE, 'utf8')) : {};
-      const industryRanksMap = rankIndustries(industryReturns);
+      const fundamentals = await loadFundamentals();
       const fund = fundamentals[ticker] || null;
+      const industryNames = fund?.industry ? [fund.industry] : [];
+      const { returnsMap: tvMap } = await fetchTradingViewIndustryReturns();
+      const industryReturns = buildIndustryReturnsFromTVMap(tvMap, industryNames);
+      const industryRanksMap = rankIndustries(industryReturns);
       const industryData = fund?.industry && industryRanksMap[fund.industry] ? industryRanksMap[fund.industry] : null;
       const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanksMap);
       payload = { ...payload, ...enhanced };
@@ -1563,10 +1504,8 @@ app.post('/api/industry-data/collect', async (req, res) => {
   // Load all industries data
   let industries = [];
   try {
-    if (fs.existsSync(ALL_INDUSTRIES_CACHE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(ALL_INDUSTRIES_CACHE_FILE, 'utf8'));
-      industries = data.industries || [];
-    }
+    const data = await loadIndustryCache('all-industries');
+    if (data?.industries?.length) industries = data.industries;
   } catch (error) {
     send({ error: 'Failed to load industries data' });
     res.end();
@@ -1634,10 +1573,10 @@ app.post('/api/industry-data/collect', async (req, res) => {
         });
 
         // Fetch 1 year of daily bars
-        let bars = getBarsFromFile(symbol, fromStr, toStr, '1d');
+        let bars = await getBarsFromDb(symbol, fromStr, toStr, '1d');
         if (!bars) {
           bars = await getBars(symbol, fromStr, toStr, '1d');
-          saveBarsToFile(symbol, fromStr, toStr, bars, '1d');
+          await saveBarsToDb(symbol, fromStr, toStr, bars, '1d');
         }
 
         if (!bars || bars.length === 0) {
@@ -1729,9 +1668,9 @@ app.post('/api/industry-data/collect', async (req, res) => {
 // ========== BACKTEST ENDPOINTS ==========
 
 // List available backtest snapshots
-app.get('/api/backtest/snapshots', (req, res) => {
+app.get('/api/backtest/snapshots', async (req, res) => {
   try {
-    const snapshots = listScanSnapshots();
+    const snapshots = await listScanSnapshots();
     res.json({ snapshots });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1794,7 +1733,7 @@ app.post('/api/backtest/retro', async (req, res) => {
     console.log(`\n🔄 Starting retrospective backtest: ${lookbackMonths} months, ${holdingPeriod}-day hold, top ${topN || 'all'} tickers`);
     
     // Get tickers from scan results or tickers.txt
-    const tickers = getTickersForBacktest();
+    const tickers = await getTickersForBacktest();
     
     if (tickers.length === 0) {
       return res.status(400).json({ error: 'No tickers available. Run a scan first.' });
@@ -1824,27 +1763,17 @@ app.post('/api/backtest/retro', async (req, res) => {
  */
 async function computeAndSaveOpus45Scores() {
   try {
-    if (!fs.existsSync(RESULTS_FILE)) {
+    const scanData = await loadScanData();
+    if (!scanData.results?.length) {
       console.log('Opus4.5: No scan results to score.');
       return null;
     }
-    
-    const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-    let results = scanData.results || [];
-    
-    // Filter to only tickers in data/tickers.txt
-    if (fs.existsSync(TICKERS_FILE)) {
-      const raw = fs.readFileSync(TICKERS_FILE, 'utf8');
-      const tickerSet = new Set(
-        raw.split(/\r?\n/).map((s) => s.trim().toUpperCase()).filter(Boolean)
-      );
-      results = results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase()));
-    }
-    
-    const fundamentals = loadFundamentals();
-    const yahooReturns = loadIndustryYahooReturns();
-    const weights = loadOptimizedWeights();
-    
+    const results = scanData.results || [];
+    const [fundamentals, weights] = await Promise.all([loadFundamentals(), loadOptimizedWeights()]);
+    const industryNames = [...new Set(results.map((r) => fundamentals[r.ticker]?.industry).filter(Boolean))];
+    const { returnsMap: tvMap } = await fetchTradingViewIndustryReturns();
+    const industryReturns = buildIndustryReturnsFromTVMap(tvMap, industryNames);
+
     // Build bars map for each ticker (need 200+ days for Opus4.5)
     const barsByTicker = {};
     const to = new Date();
@@ -1861,26 +1790,10 @@ async function computeAndSaveOpus45Scores() {
       try {
         const safeTicker = r.ticker.replace(/[^A-Za-z0-9.-]/g, '_');
         let bars = null;
-        // 1) Opus-style cache: bars/bars/GEV_1d.json
-        const opusPath = path.join(BARS_CACHE_DIR, `${safeTicker}_1d.json`);
-        if (fs.existsSync(opusPath)) {
-          try {
-            const raw = JSON.parse(fs.readFileSync(opusPath, 'utf8'));
-            if (raw.results && raw.results.length >= 200) {
-              bars = raw.results;
-              barsByTicker[r.ticker] = [...bars].sort((a, b) => a.t - b.t);
-            }
-          } catch { /* ignore */ }
-        }
-        // 2) Scan cache (written by scan.js): bars/GEV.json — reuse so Open Trade has bar data
-        if ((!bars || bars.length < 200) && fs.existsSync(path.join(BARS_CACHE_DIR, `${safeTicker}.json`))) {
-          try {
-            const raw = JSON.parse(fs.readFileSync(path.join(BARS_CACHE_DIR, `${safeTicker}.json`), 'utf8'));
-            if (raw.results && raw.results.length >= 200) {
-              bars = raw.results;
-              barsByTicker[r.ticker] = [...bars].sort((a, b) => a.t - b.t);
-            }
-          } catch { /* ignore */ }
+        // 1) DB cache
+        bars = await getBarsFromDb(r.ticker, fromStr365, toStr, '1d');
+        if (bars && bars.length >= 200) {
+          barsByTicker[r.ticker] = [...bars].sort((a, b) => a.t - b.t);
         }
         if (!bars || bars.length < 200) needFetch.push(r);
       } catch (e) {
@@ -1897,7 +1810,7 @@ async function computeAndSaveOpus45Scores() {
           .then((fetchedBars) => {
             if (fetchedBars && fetchedBars.length >= 200) {
               barsByTicker[r.ticker] = [...fetchedBars].sort((a, b) => a.t - b.t);
-              saveBarsToFile(r.ticker, fromStr365, toStr, fetchedBars, '1d');
+              saveBarsToDb(r.ticker, fromStr365, toStr, fetchedBars, '1d');
             }
           })
           .catch((e) => console.error(`Fetch failed for ${r.ticker}:`, e.message))
@@ -1909,11 +1822,18 @@ async function computeAndSaveOpus45Scores() {
     }
 
     // Generate Opus4.5 signals and scores for every ticker
-    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, yahooReturns, weights);
+    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, industryReturns, weights);
     const stats = getSignalStats(signals);
 
+    // Enrich each signal with currentPrice so when we serve from cache we can compute P/L for Open Trade column
+    const signalsToCache = signals.map((s) => {
+      const bars = barsByTicker[s.ticker];
+      const currentPrice = bars?.length ? bars[bars.length - 1].c : null;
+      return { ...s, currentPrice };
+    });
+
     const cacheData = {
-      signals,
+      signals: signalsToCache,
       allScores,
       total: signals.length,
       stats,
@@ -1924,8 +1844,7 @@ async function computeAndSaveOpus45Scores() {
       tickersWithBars: Object.keys(barsByTicker).length
     };
 
-    // Save to cache file
-    fs.writeFileSync(OPUS45_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+    await saveOpus45SignalsToDb({ signals: cacheData.signals, stats: cacheData.stats, total: cacheData.total, computedAt: cacheData.computedAt });
     console.log(`Opus4.5: Cached ${signals.length} active signals; ${allScores.length} tickers scored.`);
     
     return cacheData;
@@ -1935,29 +1854,83 @@ async function computeAndSaveOpus45Scores() {
   }
 }
 
+// Map cached signal objects (entryDate may be ms number) to allScores shape for Dashboard Open Trade column.
+// Dashboard expects entryDate as ISO date string and pctChange for P/L display.
+function mapCachedSignalsToAllScores(cachedSignals) {
+  if (!cachedSignals?.length) return [];
+  return cachedSignals.map((s) => {
+    const entryMs = s.entryDate != null
+      ? (s.entryDate < 1e12 ? s.entryDate * 1000 : s.entryDate)
+      : null;
+    const entryDateIso = entryMs != null ? new Date(entryMs).toISOString().slice(0, 10) : (typeof s.entryDate === 'string' ? s.entryDate : null);
+    let pctChange = s.pctChange;
+    if (pctChange == null && s.entryPrice != null && s.currentPrice != null && s.entryPrice > 0) {
+      pctChange = Math.round((s.currentPrice - s.entryPrice) / s.entryPrice * 1000) / 10;
+    }
+    return {
+      ticker: s.ticker,
+      opus45Confidence: s.opus45Confidence ?? 0,
+      opus45Grade: s.opus45Grade ?? 'F',
+      entryDate: entryDateIso,
+      daysSinceBuy: s.daysSinceBuy,
+      pctChange: pctChange ?? null,
+      entryPrice: s.entryPrice ?? null,
+      stopLossPrice: s.stopLossPrice ?? null,
+      riskRewardRatio: s.riskRewardRatio ?? null,
+    };
+  });
+}
+
+// When serving from cache, signals may lack currentPrice (old cache or never set). Fetch latest close from bars so we can show P/L.
+// Also set pctChange when we have entryPrice and currentPrice so Dashboard Open Trade column can display it.
+async function enrichCachedSignalsWithCurrentPrice(signals) {
+  const needPrice = signals.filter((s) => s.entryPrice != null && s.currentPrice == null && s.ticker);
+  if (needPrice.length > 0) {
+    const to = new Date();
+    const from = new Date(to);
+    from.setDate(from.getDate() - 30);
+    const toStr = to.toISOString().slice(0, 10);
+    const fromStr = from.toISOString().slice(0, 10);
+    await Promise.all(
+      needPrice.map(async (s) => {
+        try {
+          const bars = await getBarsFromDb(s.ticker, fromStr, toStr, '1d');
+          if (bars?.length) {
+            const sorted = [...bars].sort((a, b) => a.t - b.t);
+            s.currentPrice = sorted[sorted.length - 1].c;
+          }
+        } catch (e) {
+          // leave currentPrice null so P/L won't show for this ticker
+        }
+      })
+    );
+  }
+  // Ensure pctChange is set for Open Trade display when we have both prices
+  for (const s of signals) {
+    if (s.pctChange == null && s.entryPrice != null && s.currentPrice != null && s.entryPrice > 0) {
+      s.pctChange = Math.round((s.currentPrice - s.entryPrice) / s.entryPrice * 1000) / 10;
+    }
+  }
+}
+
 // Get all active Opus4.5 signals - reads from cache for instant load
 // Use ?force=true to recalculate (called after scan)
 app.get('/api/opus45/signals', async (req, res) => {
   try {
     const forceRecalc = req.query.force === 'true';
     
-    // If not forcing recalculation and cache exists, return cached data instantly
-    if (!forceRecalc && fs.existsSync(OPUS45_CACHE_FILE)) {
-      try {
-        const cached = JSON.parse(fs.readFileSync(OPUS45_CACHE_FILE, 'utf8'));
-        // Return cached data immediately
-        return res.json({
-          ...cached,
-          fromCache: true
-        });
-      } catch (e) {
-        console.error('Error reading Opus45 cache:', e.message);
-        // Fall through to compute
+    if (!forceRecalc) {
+      const cached = await loadOpus45SignalsFromDb();
+      if (cached && cached.signals?.length >= 0) {
+        await enrichCachedSignalsWithCurrentPrice(cached.signals);
+        const allScores = mapCachedSignalsToAllScores(cached.signals);
+        return res.json({ signals: cached.signals, allScores, total: cached.total ?? cached.signals?.length, stats: cached.stats, fromCache: true });
       }
     }
     
     // No cache or force recalc - compute fresh
-    if (!fs.existsSync(RESULTS_FILE)) {
+    const scanData = await loadScanData();
+  if (!scanData.results?.length) {
       return res.json({ signals: [], total: 0, stats: null, error: 'No scan results. Run a scan first.' });
     }
     
@@ -1976,14 +1949,12 @@ app.get('/api/opus45/signals', async (req, res) => {
 // Debug endpoint: Analyze why top stocks don't qualify for Opus4.5
 app.get('/api/opus45/debug', async (req, res) => {
   try {
-    if (!fs.existsSync(RESULTS_FILE)) {
+    const scanData = await loadScanData();
+    if (!scanData.results?.length) {
       return res.json({ error: 'No scan results' });
     }
-    
-    const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
     const results = scanData.results || [];
-    const fundamentals = loadFundamentals();
-    const weights = loadOptimizedWeights();
+    const [fundamentals, weights] = await Promise.all([loadFundamentals(), loadOptimizedWeights()]);
     
     const to = new Date();
     const from365 = new Date(to);
@@ -2036,7 +2007,7 @@ app.get('/api/opus45/debug', async (req, res) => {
             debug.barsFetched = true;
             // Cache for future
             if (bars.length >= 200) {
-              saveBarsToFile(r.ticker, fromStr365, toStr, bars, '1d');
+              saveBarsToDb(r.ticker, fromStr365, toStr, bars, '1d');
             }
           }
         } catch (e) {
@@ -2082,10 +2053,10 @@ app.get('/api/opus45/signal/:ticker', async (req, res) => {
     const toStr = to.toISOString().slice(0, 10);
     
     // Get bars (need 200+ days)
-    let bars = getBarsFromFile(ticker, fromStr365, toStr, '1d');
+    let bars = await getBarsFromDb(ticker, fromStr365, toStr, '1d');
     if (!bars) {
       bars = await getBars(ticker, fromStr365, toStr, '1d');
-      saveBarsToFile(ticker, fromStr365, toStr, bars, '1d');
+      await saveBarsToDb(ticker, fromStr365, toStr, bars, '1d');
     }
     
     if (!bars || bars.length < 200) {
@@ -2098,25 +2069,25 @@ app.get('/api/opus45/signal/:ticker', async (req, res) => {
     }
     
     // Get SPY bars for RS calculation
-    let spyBars = getBarsFromFile('^GSPC', fromStr365, toStr, '1d');
+    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
     if (!spyBars) {
       spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-      saveBarsToFile('^GSPC', fromStr365, toStr, spyBars, '1d');
+      await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
     }
     
     // Get VCP analysis
     const vcpResult = checkVCP(bars, spyBars);
     
     // Get fundamentals
-    const fundamentals = loadFundamentals();
+    const fundamentals = await loadFundamentals();
     const tickerFundamentals = fundamentals[ticker] || null;
-    
-    // Get industry data
-    const yahooReturns = loadIndustryYahooReturns();
-    const industryData = tickerFundamentals?.industry 
-      ? yahooReturns[tickerFundamentals.industry] 
-      : null;
-    
+
+    // Industry returns from TradingView (same shape as before for generateOpus45Signal)
+    const industryNames = tickerFundamentals?.industry ? [tickerFundamentals.industry] : [];
+    const { returnsMap: tvMap } = await fetchTradingViewIndustryReturns();
+    const industryReturns = buildIndustryReturnsFromTVMap(tvMap, industryNames);
+    const industryData = tickerFundamentals?.industry ? industryReturns[tickerFundamentals.industry] : null;
+
     // Load optimized weights
     const weights = loadOptimizedWeights();
     
@@ -2147,10 +2118,10 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
     const toStr = to.toISOString().slice(0, 10);
     
     // Get bars (need 200+ days)
-    let bars = getBarsFromFile(ticker, fromStr365, toStr, '1d');
+    let bars = await getBarsFromDb(ticker, fromStr365, toStr, '1d');
     if (!bars) {
       bars = await getBars(ticker, fromStr365, toStr, '1d');
-      saveBarsToFile(ticker, fromStr365, toStr, bars, '1d');
+      await saveBarsToDb(ticker, fromStr365, toStr, bars, '1d');
     }
     
     if (!bars || bars.length < 200) {
@@ -2166,10 +2137,10 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
     }
     
     // Get SPY bars for RS calculation
-    let spyBars = getBarsFromFile('^GSPC', fromStr365, toStr, '1d');
+    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
     if (!spyBars) {
       spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-      saveBarsToFile('^GSPC', fromStr365, toStr, spyBars, '1d');
+      await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
     }
     
     // Load optimized weights
@@ -2294,10 +2265,10 @@ app.post('/api/opus45/exit-check', async (req, res) => {
     const fromStr = from.toISOString().slice(0, 10);
     const toStr = to.toISOString().slice(0, 10);
     
-    let bars = getBarsFromFile(ticker, fromStr, toStr, '1d');
+    let bars = await getBarsFromDb(ticker, fromStr, toStr, '1d');
     if (!bars) {
       bars = await getBars(ticker, fromStr, toStr, '1d');
-      saveBarsToFile(ticker, fromStr, toStr, bars, '1d');
+      await saveBarsToDb(ticker, fromStr, toStr, bars, '1d');
     }
     
     const exitCheck = checkExitSignal({ ticker, entryPrice, entryDate }, bars);
@@ -2316,11 +2287,88 @@ app.post('/api/opus45/exit-check', async (req, res) => {
 // ========== OPUS4.5 LEARNING ENDPOINTS ==========
 
 // Get learning system status
-app.get('/api/opus45/learning/status', (req, res) => {
+app.get('/api/opus45/learning/status', async (req, res) => {
   try {
-    const status = getLearningStatus();
+    const status = await getLearningStatus();
     res.json(status);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Run learning pipeline on HISTORICAL retrospective backtest (no saved snapshots needed)
+// Looks back in time to find when signals would have triggered, measures outcomes, learns weights
+app.post('/api/opus45/learning/run-retro', async (req, res) => {
+  // Extend timeout to 10 min (retro backtest fetches bars per ticker, can take 5–15+ min)
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+
+  const {
+    lookbackMonths = 12,
+    holdingPeriod = 60,
+    topN = 100,
+    autoApply = false
+  } = req.body;
+
+  try {
+    console.log(`\n🔄 Opus4.5 Learning: Running retrospective backtest (${lookbackMonths}mo, ${holdingPeriod}d hold)...`);
+
+    const tickers = await getTickersForBacktest();
+    if (tickers.length === 0) {
+      return res.status(400).json({ error: 'No tickers. Run a scan first or ensure data/tickers.txt exists.' });
+    }
+
+    const retroResult = await runRetroBacktest({
+      tickers,
+      lookbackMonths,
+      holdingPeriod,
+      topN
+    });
+
+    const signals = retroResult.signals || [];
+    if (signals.length < 20) {
+      return res.json({
+        error: 'INSUFFICIENT_SIGNALS',
+        message: `Need 20+ signals for learning, found ${signals.length}`,
+        retro: retroResult
+      });
+    }
+
+    // Map retro signals to learning pipeline trade format
+    const tradesForLearning = signals.map((s) => ({
+      ticker: s.ticker,
+      outcome: s.outcome,
+      forwardReturn: s.returnPct,
+      contractions: s.contractions ?? 0,
+      volumeDryUp: s.volumeDryUp ?? false,
+      relativeStrength: s.rs ?? null,
+      atMa10: s.entryMA === '10 MA',
+      atMa20: s.entryMA === '20 MA',
+      industryRank: null,
+      institutionalOwnership: null,
+      epsGrowth: null,
+      enhancedScore: null,
+      patternConfidence: null
+    }));
+
+    const backtestResultsForLearning = {
+      scanDate: 'retro',
+      daysForward: holdingPeriod,
+      results: tradesForLearning
+    };
+
+    const learningResult = await runLearningPipeline(backtestResultsForLearning, autoApply);
+
+    res.json({
+      retro: {
+        config: retroResult.config,
+        summary: retroResult.summary,
+        signalsFound: signals.length
+      },
+      learning: learningResult
+    });
+  } catch (e) {
+    console.error('Retro learning error:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -2344,7 +2392,7 @@ app.post('/api/opus45/learning/run', async (req, res) => {
     }
     
     // Then run the learning pipeline
-    const learningResult = runLearningPipeline(backtestResult.backtestResults, autoApply);
+    const learningResult = await runLearningPipeline(backtestResult.backtestResults, autoApply);
     
     res.json({
       backtest: backtestResult.analysis,
@@ -2357,7 +2405,7 @@ app.post('/api/opus45/learning/run', async (req, res) => {
 });
 
 // Manually apply weight changes
-app.post('/api/opus45/learning/apply-weights', (req, res) => {
+app.post('/api/opus45/learning/apply-weights', async (req, res) => {
   const { weights } = req.body;
   
   if (!weights || typeof weights !== 'object') {
@@ -2365,7 +2413,7 @@ app.post('/api/opus45/learning/apply-weights', (req, res) => {
   }
   
   try {
-    const result = applyWeightChanges(weights);
+    const result = await applyWeightChanges(weights);
     res.json({ success: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2383,9 +2431,9 @@ app.post('/api/opus45/learning/reset', (req, res) => {
 });
 
 // Get current weights
-app.get('/api/opus45/weights', (req, res) => {
+app.get('/api/opus45/weights', async (req, res) => {
   try {
-    const current = loadOptimizedWeights();
+    const current = await loadOptimizedWeights();
     res.json({
       current,
       defaults: DEFAULT_WEIGHTS,
@@ -2445,11 +2493,11 @@ app.get('/api/regime/bars/:ticker', (req, res) => {
 // These endpoints manage the trade journal for logging entries and learning
 
 // Get all trades (with optional status filter)
-app.get('/api/trades', (req, res) => {
+app.get('/api/trades', async (req, res) => {
   try {
     const status = req.query.status;
-    const trades = status ? getTradesByStatus(status) : getAllTrades();
-    const stats = getTradeStats();
+    const trades = status ? await getTradesByStatus(status) : await getAllTrades();
+    const stats = await getTradeStats();
     res.json({ trades, stats, total: trades.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2457,9 +2505,9 @@ app.get('/api/trades', (req, res) => {
 });
 
 // Get trade statistics only
-app.get('/api/trades/stats', (req, res) => {
+app.get('/api/trades/stats', async (req, res) => {
   try {
-    const stats = getTradeStats();
+    const stats = await getTradeStats();
     res.json(stats);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2467,9 +2515,9 @@ app.get('/api/trades/stats', (req, res) => {
 });
 
 // Get a single trade by ID
-app.get('/api/trades/:id', (req, res) => {
+app.get('/api/trades/:id', async (req, res) => {
   try {
-    const trade = getTradeById(req.params.id);
+    const trade = await getTradeById(req.params.id);
     if (!trade) {
       return res.status(404).json({ error: 'Trade not found' });
     }
@@ -2495,9 +2543,9 @@ app.post('/api/trades', async (req, res) => {
     if (!entryMetrics || Object.keys(entryMetrics).length === 0) {
       try {
         // Try to get metrics from latest scan results
-        if (fs.existsSync(RESULTS_FILE)) {
-          const scanData = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-          const scanResult = scanData.results?.find(r => r.ticker === ticker.toUpperCase());
+        const scanData = await loadScanResultsFromDb();
+        if (scanData?.results?.length) {
+          const scanResult = scanData.results.find(r => r.ticker === ticker.toUpperCase());
           
           if (scanResult) {
             metrics = {
@@ -2529,7 +2577,7 @@ app.post('/api/trades', async (req, res) => {
       }
     }
     
-    const trade = createTrade(
+    const trade = await createTrade(
       { ticker, entryDate, entryPrice, conviction, notes, companyName },
       metrics
     );
@@ -2541,9 +2589,9 @@ app.post('/api/trades', async (req, res) => {
 });
 
 // Update a trade
-app.patch('/api/trades/:id', (req, res) => {
+app.patch('/api/trades/:id', async (req, res) => {
   try {
-    const trade = updateTrade(req.params.id, req.body);
+    const trade = await updateTrade(req.params.id, req.body);
     if (!trade) {
       return res.status(404).json({ error: 'Trade not found' });
     }
@@ -2555,7 +2603,7 @@ app.patch('/api/trades/:id', (req, res) => {
 
 // Close a trade (exit)
 // Body: { exitPrice, exitDate, exitNotes }
-app.post('/api/trades/:id/close', (req, res) => {
+app.post('/api/trades/:id/close', async (req, res) => {
   try {
     const { exitPrice, exitDate, exitNotes } = req.body;
     
@@ -2563,7 +2611,7 @@ app.post('/api/trades/:id/close', (req, res) => {
       return res.status(400).json({ error: 'exitPrice is required' });
     }
     
-    const trade = closeTrade(req.params.id, exitPrice, exitDate, exitNotes);
+    const trade = await closeTrade(req.params.id, exitPrice, exitDate, exitNotes);
     if (!trade) {
       return res.status(404).json({ error: 'Trade not found' });
     }
@@ -2574,9 +2622,9 @@ app.post('/api/trades/:id/close', (req, res) => {
 });
 
 // Delete a trade
-app.delete('/api/trades/:id', (req, res) => {
+app.delete('/api/trades/:id', async (req, res) => {
   try {
-    const deleted = deleteTrade(req.params.id);
+    const deleted = await deleteTrade(req.params.id);
     if (!deleted) {
       return res.status(404).json({ error: 'Trade not found' });
     }
@@ -2599,9 +2647,9 @@ app.post('/api/trades/check-exits', async (req, res) => {
 
 // Generate learning feedback from trade history
 // Returns analysis of which metrics correlate with winning trades
-app.get('/api/trades/learning', (req, res) => {
+app.get('/api/trades/learning', async (req, res) => {
   try {
-    const feedback = generateLearningFeedback();
+    const feedback = await generateLearningFeedback();
     res.json(feedback);
   } catch (e) {
     res.status(500).json({ error: e.message });

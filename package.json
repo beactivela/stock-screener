@@ -7,7 +7,6 @@
     "test": "node --test server/fundamentals.test.js server/backtest.test.js server/opus45Signal.test.js server/industrials.test.js",
     "verify-fundamentals": "node scripts/verify-fundamentals.js",
     "verify-industry-fetch": "node scripts/verify-industry-fetch.js",
-    "populate-industry-1y": "node scripts/populate-industry-1y.js",
     "dev": "NODE_ENV=development PORT=5173 node server/index.js",
     "dev:server": "NODE_ENV=development PORT=3001 node server/index.js",
     "build": "tsc -b && vite build",
@@ -21,9 +20,14 @@
     "fetch-regime-data": "node scripts/fetch-regime-data.js",
     "regime:train": "node scripts/train-regime-hmm.js",
     "test:supabase": "node scripts/test-supabase.js",
-    "migrate:supabase": "node scripts/migrate-supabase.js"
+    "check:supabase-env": "node scripts/check-supabase-env.js",
+    "migrate:supabase": "node scripts/migrate-supabase.js",
+    "import:supabase": "node scripts/import-json-to-supabase.js",
+    "verify:supabase": "node scripts/verify-db-migration.js",
+    "remove-json-after-migration": "node scripts/remove-json-after-migration.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.77.0",
     "@supabase/supabase-js": "^2.97.0",
     "@tensorflow/tfjs": "^4.22.0",
     "cheerio": "^1.2.0",
@@ -32,9 +36,11 @@
     "express": "^4.21.0",
     "hidden-markov-model-tf": "^4.0.0",
     "lightweight-charts": "^4.2.3",
+    "openai": "^6.22.0",
     "pg": "^8.18.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^6.28.0",
     "uuid": "^13.0.0",
     "yahoo-finance2": "^3.13.0"

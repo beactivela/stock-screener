@@ -15,6 +15,8 @@ import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { checkExitSignal, DEFAULT_WEIGHTS } from './opus45Signal.js';
 import { getBars } from './yahoo.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
+import { getBars as getBarsFromCache } from './db/bars.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -54,62 +56,135 @@ function initTradesFile() {
 }
 
 /**
- * Load trades from file
- * @returns {Object} Trades file content
+ * Load trades from DB or file
+ * @returns {Promise<Object>} Trades file content
  */
-export function loadTrades() {
-  ensureDir();
-  
-  if (!fs.existsSync(TRADES_FILE)) {
-    const initial = initTradesFile();
-    saveTrades(initial);
-    return initial;
-  }
-  
-  try {
-    return JSON.parse(fs.readFileSync(TRADES_FILE, 'utf8'));
-  } catch (e) {
-    console.error('Error loading trades:', e);
-    return initTradesFile();
-  }
+export async function loadTrades() {
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  const supabase = getSupabase();
+  const { data: rows, error } = await supabase.from('trades').select('*').order('created_at', { ascending: true });
+  if (error) throw new Error(error.message);
+  const trades = (rows || []).map((r) => ({
+      id: r.id,
+      ticker: r.ticker,
+      companyName: r.company_name,
+      entryDate: r.entry_date,
+      entryPrice: r.entry_price,
+      entryMetrics: r.entry_metrics,
+      conviction: r.conviction,
+      notes: r.notes,
+      exitDate: r.exit_date,
+      exitPrice: r.exit_price,
+      exitType: r.exit_type,
+      exitNotes: r.exit_notes,
+      status: r.status,
+      returnPct: r.return_pct,
+      holdingDays: r.holding_days,
+      stopLossPrice: r.stop_loss_price,
+      targetPrice: r.target_price,
+      lastCheckedDate: r.last_checked_date,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  const { data: statsRow } = await supabase.from('trade_stats').select('*').order('last_updated', { ascending: false }).limit(1).single();
+  const stats = statsRow?.stats_json || recalcStatsFromTrades(trades);
+  return { version: 1, trades, lastUpdated: new Date().toISOString(), stats };
+}
+
+function recalcStatsFromTrades(trades) {
+  const closed = trades.filter((t) => t.status !== 'open');
+  const winners = closed.filter((t) => t.returnPct != null && t.returnPct > 0);
+  const losers = closed.filter((t) => t.returnPct != null && t.returnPct <= 0);
+  return {
+    totalTrades: trades.length,
+    openTrades: trades.filter((t) => t.status === 'open').length,
+    closedTrades: closed.length,
+    winRate: closed.length > 0 ? Math.round((winners.length / closed.length) * 1000) / 10 : null,
+    avgReturn: closed.length > 0 ? closed.reduce((s, t) => s + (t.returnPct || 0), 0) / closed.length : null,
+    avgWin: winners.length > 0 ? winners.reduce((s, t) => s + (t.returnPct || 0), 0) / winners.length : null,
+    avgLoss: losers.length > 0 ? losers.reduce((s, t) => s + (t.returnPct || 0), 0) / losers.length : null,
+    bestTrade: winners.length ? winners.reduce((a, b) => ((a.returnPct || 0) > (b.returnPct || 0) ? a : b)) : null,
+    worstTrade: losers.length ? losers.reduce((a, b) => ((a.returnPct || 0) < (b.returnPct || 0) ? a : b)) : null,
+    byConviction: {},
+    byPattern: {},
+    byExitType: {},
+  };
 }
 
 /**
- * Save trades to file
+ * Save trades to DB or file
  * @param {Object} data - Trades file content
  */
-export function saveTrades(data) {
-  ensureDir();
+export async function saveTrades(data) {
   data.lastUpdated = new Date().toISOString();
-  fs.writeFileSync(TRADES_FILE, JSON.stringify(data, null, 2), 'utf8');
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  const supabase = getSupabase();
+  const rows = (data.trades || []).map((t) => ({
+      id: t.id,
+      ticker: t.ticker,
+      company_name: t.companyName ?? null,
+      entry_date: t.entryDate ?? null,
+      entry_price: t.entryPrice,
+      entry_metrics: t.entryMetrics ?? null,
+      conviction: t.conviction ?? null,
+      notes: t.notes ?? null,
+      exit_date: t.exitDate ?? null,
+      exit_price: t.exitPrice ?? null,
+      exit_type: t.exitType ?? null,
+      exit_notes: t.exitNotes ?? null,
+      status: t.status ?? 'open',
+      return_pct: t.returnPct ?? null,
+      holding_days: t.holdingDays ?? null,
+      stop_loss_price: t.stopLossPrice ?? null,
+      target_price: t.targetPrice ?? null,
+      last_checked_date: t.lastCheckedDate ?? null,
+      created_at: t.createdAt ?? null,
+      updated_at: t.updatedAt ?? new Date().toISOString(),
+  }));
+  if (rows.length > 0) {
+    const { error } = await supabase.from('trades').upsert(rows, { onConflict: 'id' });
+    if (error) throw new Error(error.message);
+  }
+  const stats = data.stats || recalcStatsFromTrades(data.trades || []);
+  await supabase.from('trade_stats').insert({
+    total_trades: stats.totalTrades ?? 0,
+    open_trades: stats.openTrades ?? 0,
+    closed_trades: stats.closedTrades ?? 0,
+    win_rate: stats.winRate ?? null,
+    avg_return: stats.avgReturn ?? null,
+    avg_win: stats.avgWin ?? null,
+    avg_loss: stats.avgLoss ?? null,
+    stats_json: stats,
+    last_updated: data.lastUpdated,
+  });
 }
 
 /**
  * Get all trades
- * @returns {Array} Array of trades
+ * @returns {Promise<Array>} Array of trades
  */
-export function getAllTrades() {
-  const data = loadTrades();
+export async function getAllTrades() {
+  const data = await loadTrades();
   return data.trades;
 }
 
 /**
  * Get trades by status
  * @param {string} status - 'open', 'closed', or 'stopped'
- * @returns {Array} Filtered trades
+ * @returns {Promise<Array>} Filtered trades
  */
-export function getTradesByStatus(status) {
-  const trades = getAllTrades();
+export async function getTradesByStatus(status) {
+  const trades = await getAllTrades();
   return trades.filter(t => t.status === status);
 }
 
 /**
  * Get a single trade by ID
  * @param {string} id - Trade ID
- * @returns {Object|null} Trade or null
+ * @returns {Promise<Object|null>} Trade or null
  */
-export function getTradeById(id) {
-  const trades = getAllTrades();
+export async function getTradeById(id) {
+  const trades = await getAllTrades();
   return trades.find(t => t.id === id) || null;
 }
 
@@ -117,10 +192,10 @@ export function getTradeById(id) {
  * Create a new trade
  * @param {Object} tradeData - Trade entry form data
  * @param {Object} entryMetrics - Technical indicators at entry
- * @returns {Object} Created trade
+ * @returns {Promise<Object>} Created trade
  */
-export function createTrade(tradeData, entryMetrics) {
-  const data = loadTrades();
+export async function createTrade(tradeData, entryMetrics) {
+  const data = await loadTrades();
   
   const trade = {
     // Generate unique ID
@@ -162,7 +237,7 @@ export function createTrade(tradeData, entryMetrics) {
   
   data.trades.push(trade);
   recalculateStats(data);
-  saveTrades(data);
+  await saveTrades(data);
   
   console.log(`📝 Trade created: ${trade.ticker} @ $${trade.entryPrice}`);
   
@@ -173,10 +248,10 @@ export function createTrade(tradeData, entryMetrics) {
  * Update an existing trade
  * @param {string} id - Trade ID
  * @param {Object} updates - Fields to update
- * @returns {Object|null} Updated trade or null
+ * @returns {Promise<Object|null>} Updated trade or null
  */
-export function updateTrade(id, updates) {
-  const data = loadTrades();
+export async function updateTrade(id, updates) {
+  const data = await loadTrades();
   const idx = data.trades.findIndex(t => t.id === id);
   
   if (idx === -1) return null;
@@ -202,7 +277,7 @@ export function updateTrade(id, updates) {
   
   data.trades[idx] = trade;
   recalculateStats(data);
-  saveTrades(data);
+  await saveTrades(data);
   
   console.log(`📝 Trade updated: ${trade.ticker}`);
   
@@ -215,9 +290,9 @@ export function updateTrade(id, updates) {
  * @param {number} exitPrice - Exit price
  * @param {string} exitDate - Exit date (ISO string)
  * @param {string} exitNotes - Optional notes
- * @returns {Object|null} Updated trade or null
+ * @returns {Promise<Object|null>} Updated trade or null
  */
-export function closeTrade(id, exitPrice, exitDate, exitNotes = null) {
+export async function closeTrade(id, exitPrice, exitDate, exitNotes = null) {
   return updateTrade(id, {
     exitPrice: Number(exitPrice),
     exitDate: exitDate || new Date().toISOString().slice(0, 10),
@@ -230,17 +305,32 @@ export function closeTrade(id, exitPrice, exitDate, exitNotes = null) {
 /**
  * Delete a trade
  * @param {string} id - Trade ID
- * @returns {boolean} True if deleted
+ * @returns {Promise<boolean>} True if deleted
  */
-export function deleteTrade(id) {
-  const data = loadTrades();
+export async function deleteTrade(id) {
+  const data = await loadTrades();
   const idx = data.trades.findIndex(t => t.id === id);
   
   if (idx === -1) return false;
   
   const deleted = data.trades.splice(idx, 1)[0];
-  recalculateStats(data);
-  saveTrades(data);
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    await supabase.from('trades').delete().eq('id', id);
+    const stats = recalcStatsFromTrades(data.trades);
+    await supabase.from('trade_stats').insert({
+      total_trades: stats.totalTrades ?? 0,
+      open_trades: stats.openTrades ?? 0,
+      closed_trades: stats.closedTrades ?? 0,
+      win_rate: stats.winRate ?? null,
+      avg_return: stats.avgReturn ?? null,
+      stats_json: stats,
+      last_updated: new Date().toISOString(),
+    });
+  } else {
+    recalculateStats(data);
+    await saveTrades(data);
+  }
   
   console.log(`🗑️ Trade deleted: ${deleted.ticker}`);
   
@@ -254,7 +344,7 @@ export function deleteTrade(id) {
  * @returns {Object} Results of auto-exit checks
  */
 export async function checkAutoExits() {
-  const data = loadTrades();
+  const data = await loadTrades();
   const openTrades = data.trades.filter(t => t.status === 'open');
   
   if (openTrades.length === 0) {
@@ -280,20 +370,10 @@ export async function checkAutoExits() {
       // Get recent bars for the ticker
       let bars = null;
       
-      // Try to load from cache first
-      const safeTicker = trade.ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-      const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}_1d.json`);
-      
-      if (fs.existsSync(filePath)) {
-        try {
-          const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          bars = raw.results || [];
-        } catch { /* ignore */ }
-      }
-      
-      // Fetch if cache miss or stale
+      // Try DB cache first, then fetch from API
+      bars = await getBarsFromCache(trade.ticker, fromStr, toStr, '1d');
       if (!bars || bars.length < 15) {
-        bars = await getBars(trade.ticker, fromStr, toStr, '1d');
+        bars = await getBars(trade.ticker, fromStr, toStr);
       }
       
       if (!bars || bars.length < 15) {
@@ -371,7 +451,7 @@ export async function checkAutoExits() {
   
   // Save updated trades
   recalculateStats(data);
-  saveTrades(data);
+  await saveTrades(data);
   
   console.log(`✅ Auto-exit check complete: ${results.closed}/${results.checked} trades closed`);
   
@@ -486,8 +566,8 @@ function recalculateStats(data) {
  * 
  * @returns {Object} Learning feedback data
  */
-export function generateLearningFeedback() {
-  const data = loadTrades();
+export async function generateLearningFeedback() {
+  const data = await loadTrades();
   const closedTrades = data.trades.filter(t => t.status !== 'open' && t.returnPct != null);
   
   if (closedTrades.length < 5) {
@@ -649,7 +729,7 @@ function generateRecommendation(correlations, weights) {
  * Get trade statistics
  * @returns {Object} Trade statistics
  */
-export function getTradeStats() {
-  const data = loadTrades();
+export async function getTradeStats() {
+  const data = await loadTrades();
   return data.stats;
 }

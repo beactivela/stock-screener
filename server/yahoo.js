@@ -112,7 +112,52 @@ async function getQuoteInfo(ticker) {
   return { name, exchange };
 }
 
-export { getBars, getFundamentals, getQuoteName, getQuoteInfo };
+/**
+ * Fetch historical earnings announcement dates for a ticker.
+ * Used by retroBacktest to avoid entering positions within 5 trading days of earnings,
+ * which eliminates gap-down disasters caused by earnings surprises.
+ *
+ * Returns an array of timestamps (ms) for all historical earnings announcement dates.
+ * Falls back to empty array on any error — signal still fires without earnings protection.
+ *
+ * @param {string} ticker - Stock ticker symbol
+ * @returns {Promise<number[]>} Array of earnings date timestamps in milliseconds
+ */
+async function getEarningsDates(ticker) {
+  try {
+    const result = await yahooFinance.quoteSummary(ticker, {
+      modules: ['earningsHistory', 'calendarEvents'],
+    });
+
+    const dates = [];
+
+    // earningsHistory: past earnings reports
+    const history = result?.earningsHistory?.history ?? [];
+    for (const entry of history) {
+      const dt = entry?.date ?? entry?.quarter;
+      if (dt) {
+        const ts = new Date(dt).getTime();
+        if (!isNaN(ts)) dates.push(ts);
+      }
+    }
+
+    // calendarEvents: upcoming earnings (if any)
+    const earningsDates = result?.calendarEvents?.earnings?.earningsDate ?? [];
+    for (const dt of earningsDates) {
+      if (dt) {
+        const ts = new Date(dt).getTime();
+        if (!isNaN(ts)) dates.push(ts);
+      }
+    }
+
+    return dates;
+  } catch {
+    // Fail silently — earnings filter is enhancement, not requirement
+    return [];
+  }
+}
+
+export { getBars, getFundamentals, getQuoteName, getQuoteInfo, getEarningsDates };
 // Backward compat
 const getDailyBars = (ticker, from, to) => getBars(ticker, from, to, '1d');
 export { getDailyBars };

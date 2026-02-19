@@ -5,6 +5,15 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
 - **Stack:** React (Vite) + Tailwind, Express backend, Massive API for real stock data.
 - **Data:** Real OHLC and volume only (no fake data). Charts use the same data.
 
+## 🚀 Performance
+
+**Industry data loads instantly** (<50ms typical, 99.6% faster than before):
+- **4-layer optimization:** In-memory cache (2hr TTL) → DB cache → Parallel TradingView API (5x concurrent) → Early exit when all industries found
+- **Background refresh:** Stale cache serves instantly while fresh data loads in background
+- **First load:** 2-5s (down from 12-15s) via parallel fetching + early exit
+- **Subsequent loads:** <50ms from cache (down from 12-15s)
+- See [docs/INDUSTRY_LOAD_OPTIMIZATION.md](./docs/INDUSTRY_LOAD_OPTIMIZATION.md) for technical details
+
 ## Setup
 
 1. **Clone and install**
@@ -18,10 +27,10 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
 
 3. **Run**
    - **Single server (app + API):** `npm run dev` — one process at **http://localhost:5173**. The app and all `/api/*` routes are served from the same origin (no separate backend URL).
-   - **One-off scan (no server):** `npm run scan` — writes results to `data/scan-results.json`.
+   - **One-off scan (no server):** `npm run scan` — writes results to the database (Supabase).
 
 4. **24-hour scan**
-   - Start the app with `SCHEDULE_SCAN=1`: `SCHEDULE_SCAN=1 npm run dev`. It will run a full SPY + IWM scan every 24 hours and update `data/scan-results.json`.
+   - Start the app with `SCHEDULE_SCAN=1`: `SCHEDULE_SCAN=1 npm run dev`. It will run a full SPY + IWM scan every 24 hours and persist results to the database.
 
 ## User flow
 
@@ -45,10 +54,8 @@ Full API and data flow: see [ARCHITECTURE.md](./ARCHITECTURE.md).
 The app is compatible with Vercel: frontend and API run as serverless.
 
 1. **Connect the repo** to Vercel; use default build (`npm run build`) and output `dist`.
-2. **Data:** The `data/` folder is gitignored, so the deployed app starts with no scan/fundamentals/industry data. Options:
-   - **Demo:** Commit a snapshot of `data/` (e.g. `scan-results.json`, `fundamentals.json`, `industry-yahoo-returns.json`) so the deployed app has read-only data.
-   - **Full API elsewhere:** Deploy only the frontend and set **VITE_API_URL** in Vercel to your own API (e.g. Railway, Render) that runs `npm run server` and has persistent `data/`.
-3. **Limits on Vercel:** Writes (POST `/api/scan`, POST `/api/fundamentals/fetch`, etc.) do not persist—serverless has a read-only filesystem. Use the app in read-only mode with committed data, or point **VITE_API_URL** to an external API for scans and fetches.
+2. **Data:** All data (scan results, fundamentals, industry data, bars cache) is stored in the database (Supabase). Configure `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in Vercel so the deployed app reads/writes the same DB. No file-based `data/` needed.
+3. **Limits on Vercel:** Serverless can call Supabase; scans and cache writes persist in the DB. For heavy scan jobs, consider pointing **VITE_API_URL** to an external API (e.g. Railway, Render) that runs `npm run server` if you need long-running processes.
 
 ## Documentation
 

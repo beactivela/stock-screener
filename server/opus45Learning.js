@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_WEIGHTS, MANDATORY_THRESHOLDS } from './opus45Signal.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -33,14 +34,16 @@ function ensureLearningDir() {
  * Load the current optimized weights
  * Falls back to default weights if no optimization exists
  */
-export function loadOptimizedWeights() {
+export async function loadOptimizedWeights() {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data, error } = await supabase.from('opus45_weights').select('*').eq('id', 'default').single();
+    if (error || !data || !data.weights) return { ...DEFAULT_WEIGHTS };
+    return { ...DEFAULT_WEIGHTS, ...data.weights };
+  }
   ensureLearningDir();
   const filepath = path.join(LEARNING_DIR, 'optimized-weights.json');
-  
-  if (!fs.existsSync(filepath)) {
-    return { ...DEFAULT_WEIGHTS };
-  }
-  
+  if (!fs.existsSync(filepath)) return { ...DEFAULT_WEIGHTS };
   try {
     const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
     return { ...DEFAULT_WEIGHTS, ...data.weights };
@@ -53,23 +56,36 @@ export function loadOptimizedWeights() {
 /**
  * Save optimized weights
  */
-function saveOptimizedWeights(weights, analysis) {
-  ensureLearningDir();
-  const filepath = path.join(LEARNING_DIR, 'optimized-weights.json');
-  
+async function saveOptimizedWeights(weights, analysis) {
   const data = {
     weights,
     lastOptimized: new Date().toISOString(),
     basedOnTrades: analysis.totalTrades,
     overallWinRate: analysis.overallWinRate,
     improvements: analysis.improvements || [],
-    version: (loadOptimizedWeights()._version || 0) + 1,
-    _version: 1
+    version: 1,
+    _version: 1,
   };
-  
-  fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data: existing } = await supabase.from('opus45_weights').select('version').eq('id', 'default').single();
+    data.version = (existing?.version || 0) + 1;
+    await supabase.from('opus45_weights').upsert(
+      { id: 'default', weights, last_optimized: data.lastOptimized, based_on_trades: analysis.totalTrades, overall_win_rate: analysis.overallWinRate, improvements: data.improvements, version: data.version, updated_at: new Date().toISOString() },
+      { onConflict: 'id' }
+    );
+  } else {
+    ensureLearningDir();
+    const filepath = path.join(LEARNING_DIR, 'optimized-weights.json');
+    if (fs.existsSync(filepath)) {
+      try {
+        const prev = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+        data.version = (prev.version || 0) + 1;
+      } catch { /* ignore */ }
+    }
+    fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
+  }
   console.log(`✅ Optimized weights saved (version ${data.version})`);
-  
   return data;
 }
 
@@ -428,7 +444,7 @@ export function optimizeThresholds(trades) {
  * @param {boolean} autoApply - Whether to automatically apply weight changes
  * @returns {Object} Complete learning analysis with recommendations
  */
-export function runLearningPipeline(backtestResults, autoApply = false) {
+export async function runLearningPipeline(backtestResults, autoApply = false) {
   console.log('\n🧠 Running Opus4.5 Learning Pipeline...\n');
   
   // Validate input
@@ -455,7 +471,7 @@ export function runLearningPipeline(backtestResults, autoApply = false) {
   console.log(`   Top Negative Factors: ${factorAnalysis.topNegativeFactors?.length || 0}`);
   
   // Step 2: Weight adjustments
-  const currentWeights = loadOptimizedWeights();
+  const currentWeights = await loadOptimizedWeights();
   const weightAdjustments = generateWeightAdjustments(factorAnalysis, currentWeights);
   console.log(`\n⚖️ Weight Adjustments:`);
   console.log(`   Total Adjustments: ${weightAdjustments.totalAdjustments}`);
@@ -507,7 +523,7 @@ export function runLearningPipeline(backtestResults, autoApply = false) {
     
     if (highConfidenceCount >= 2 && factorAnalysis.overallWinRate > 50) {
       console.log('\n✅ Auto-applying weight adjustments...');
-      saveOptimizedWeights(weightAdjustments.newWeights, summary);
+      await saveOptimizedWeights(weightAdjustments.newWeights, summary);
       summary.applied = true;
     } else {
       console.log('\n⚠️ Not enough confidence for auto-apply. Review manually.');
@@ -534,30 +550,31 @@ export function runLearningPipeline(backtestResults, autoApply = false) {
 /**
  * Manually apply weight changes after review
  */
-export function applyWeightChanges(newWeights) {
-  ensureLearningDir();
-  
+export async function applyWeightChanges(newWeights) {
   const analysis = {
     totalTrades: 0,
     overallWinRate: 0,
     improvements: ['Manual weight update'],
     applied: true
   };
-  
-  return saveOptimizedWeights(newWeights, analysis);
+  return await saveOptimizedWeights(newWeights, analysis);
 }
 
 /**
  * Reset weights to defaults
  */
-export function resetWeightsToDefault() {
-  ensureLearningDir();
-  
-  const filepath = path.join(LEARNING_DIR, 'optimized-weights.json');
-  if (fs.existsSync(filepath)) {
-    fs.unlinkSync(filepath);
+export async function resetWeightsToDefault() {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    await supabase.from('opus45_weights').upsert(
+      { id: 'default', weights: DEFAULT_WEIGHTS, version: 0, updated_at: new Date().toISOString() },
+      { onConflict: 'id' }
+    );
+  } else {
+    ensureLearningDir();
+    const filepath = path.join(LEARNING_DIR, 'optimized-weights.json');
+    if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
   }
-  
   console.log('✅ Weights reset to defaults');
   return DEFAULT_WEIGHTS;
 }
@@ -565,8 +582,8 @@ export function resetWeightsToDefault() {
 /**
  * Get learning system status
  */
-export function getLearningStatus() {
-  const weights = loadOptimizedWeights();
+export async function getLearningStatus() {
+  const weights = await loadOptimizedWeights();
   const history = loadLearningHistory();
   const lastOptimization = history.length > 0 ? history[history.length - 1] : null;
   

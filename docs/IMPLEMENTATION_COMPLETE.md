@@ -23,8 +23,8 @@
 - Middle tier: ×1.0 (neutral)
 
 #### Scan Engine (server/scan.js)
-- ✅ Loads `fundamentals.json` at scan start
-- ✅ Loads `industry-yahoo-returns.json` at scan start
+- ✅ Loads fundamentals from DB at scan start
+- ✅ Loads industry returns from TradingView Scanner API at scan start (see server/tradingViewIndustry.js)
 - ✅ Calls `rankIndustries()` to create industry rankings
 - ✅ For each ticker: looks up industry from fundamentals
 - ✅ Passes industry rank data to `computeEnhancedScore()`
@@ -196,15 +196,15 @@ Open http://localhost:5173/ and click "Run scan now"
 ```
 Fetching SPY bars for Relative Strength calculations...
 Loaded SPY bars: 90 days
-Scanning 500 tickers from data/tickers.txt (2025-11-17 to 2026-02-15)
-Loaded 450 fundamentals, 136 ranked industries
+Scanning 500 tickers from DB (tickers table) (date range in log)
+Loaded fundamentals and ranked industries from DB
   25 / 500
   50 / 500
   ...
 ```
 
 **Check Scan Results:**
-Open `data/scan-results.json` and look for:
+Query scan results from the DB (or use the dashboard); each result includes:
 ```json
 {
   "ticker": "OTIS",
@@ -233,7 +233,7 @@ Add to `.env`:
 # Scan settings
 SCAN_LIMIT=500              # Number of tickers to scan
 SCAN_DELAY_MS=150           # Delay between tickers (rate limiting)
-CACHE_TTL_HOURS=24          # Cache lifetime for bars
+CACHE_TTL_HOURS=24          # Cache lifetime for bars (cache is stored in DB)
 
 # Skip cache for testing
 SCAN_SKIP_CACHE=1           # Set to 1 to force fresh data fetch
@@ -252,16 +252,16 @@ SCAN_SKIP_CACHE=1           # Set to 1 to force fresh data fetch
 **Cause:** Industry data not loaded or fundamentals missing
 **Fix:** 
 1. Click "Fetch fundamentals" button in dashboard
-2. Click "Fetch industry 1Y" button
+2. Open Dashboard — industry 1Y/6M/3M/YTD load from TradingView (GET /api/industry-trend)
 3. Re-run scan
 
 ### Issue: Scores still all 100/100
-**Cause:** Old scan results cached
+**Cause:** Old scan results in DB or cached data
 **Fix:** Click "Run scan now" to generate fresh results with new scoring
 
 ### Issue: Multiplier not showing
 **Cause:** Industry rank not found for ticker
-**Fix:** Ensure stock has industry in fundamentals.json
+**Fix:** Ensure stock has industry in fundamentals (DB)
 **Solution:** Run "Fetch fundamentals" then re-scan
 
 ---

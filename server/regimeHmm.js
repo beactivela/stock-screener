@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
 import { loadRegimeData, REGIME_DIR } from './regimeData.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
 
 const require = createRequire(import.meta.url);
 const tf = require('@tensorflow/tfjs');
@@ -260,7 +261,7 @@ function computeBacktestMetrics(bars, dates, states, stateToLabel) {
  * Train separate SPY and QQQ models, save model_*.json, current_*.json, and backtest_*.json.
  */
 export async function trainAndSave(options = {}) {
-  const data = loadRegimeData();
+  const data = await loadRegimeData();
   if (!data?.spy?.length || !data?.qqq?.length) {
     throw new Error('Regime data not found. Run: npm run fetch-regime-data');
   }
@@ -280,9 +281,7 @@ export async function trainAndSave(options = {}) {
     const currentPath = path.join(REGIME_DIR, `current_${ticker.toLowerCase()}.json`);
     const backtestPath = path.join(REGIME_DIR, `backtest_${ticker.toLowerCase()}.json`);
 
-    fs.writeFileSync(
-      modelPath,
-      JSON.stringify({
+    const modelJson = {
         numStates: NUM_STATES,
         dimensions: DIMENSIONS_SINGLE,
         volWindow: VOL_WINDOW,
@@ -292,9 +291,12 @@ export async function trainAndSave(options = {}) {
         mu: r.mu,
         Sigma: r.Sigma,
         trainedAt: new Date().toISOString(),
-      }, null, 2),
-      'utf8'
-    );
+      };
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      await supabase.from('regime_models').upsert({ ticker, model_json: modelJson, trained_at: modelJson.trainedAt, updated_at: new Date().toISOString() }, { onConflict: 'ticker' });
+    }
+    fs.writeFileSync(modelPath, JSON.stringify(modelJson, null, 2), 'utf8');
 
     const prediction = predictRegimeForward(r.A, r.currentState, r.stateToLabel);
     const lastN = 21;
@@ -305,30 +307,27 @@ export async function trainAndSave(options = {}) {
       regime: recentLabels[i],
     }));
 
-    fs.writeFileSync(
-      currentPath,
-      JSON.stringify({
+    const currentJson = { ticker, regime: r.currentRegime, regimeIndex: r.currentState, updatedAt: new Date().toISOString(), history, prediction };
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      await supabase.from('regime_current').upsert({
         ticker,
-        regime: r.currentRegime,
-        regimeIndex: r.currentState,
-        updatedAt: new Date().toISOString(),
-        history,
-        prediction,
-      }, null, 2),
-      'utf8'
-    );
+        state_labels: r.states?.map((s) => r.stateToLabel[s]) ?? null,
+        predictions: currentJson.prediction,
+        current_state: r.currentState,
+        state_to_label: r.stateToLabel ?? null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'ticker' });
+    }
+    fs.writeFileSync(currentPath, JSON.stringify(currentJson, null, 2), 'utf8');
 
     const backtest = computeBacktestMetrics(r.bars, r.dates, r.states, r.stateToLabel);
-    fs.writeFileSync(
-      backtestPath,
-      JSON.stringify({
-        ticker,
-        updatedAt: new Date().toISOString(),
-        fullHistory: backtest.fullHistory,
-        metrics: backtest.metrics,
-      }, null, 2),
-      'utf8'
-    );
+    const backtestJson = { ticker, updatedAt: new Date().toISOString(), fullHistory: backtest.fullHistory, metrics: backtest.metrics };
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      await supabase.from('regime_backtest').upsert({ ticker, backtest_json: backtestJson, updated_at: new Date().toISOString() }, { onConflict: 'ticker' });
+    }
+    fs.writeFileSync(backtestPath, JSON.stringify(backtestJson, null, 2), 'utf8');
   }
 
   return {
@@ -339,19 +338,33 @@ export async function trainAndSave(options = {}) {
 
 /**
  * Load current regime and predictions for both SPY and QQQ.
- * @returns {{ spy: object | null, qqq: object | null }}
+ * @returns {Promise<{ spy: object | null, qqq: object | null }>}
  */
-export function loadCurrentRegime() {
+export async function loadCurrentRegime() {
   const out = { spy: null, qqq: null };
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    for (const key of ['SPY', 'QQQ']) {
+      const { data } = await supabase.from('regime_current').select('*').eq('ticker', key).single();
+      if (data) {
+        const k = key.toLowerCase();
+        out[k] = {
+          ticker: key,
+          regime: data.state_to_label?.[data.current_state] ?? null,
+          regimeIndex: data.current_state,
+          updatedAt: data.updated_at,
+          prediction: data.predictions,
+        };
+      }
+    }
+    if (out.spy || out.qqq) return out;
+  }
   for (const key of ['spy', 'qqq']) {
     const p = path.join(REGIME_DIR, `current_${key}.json`);
     if (fs.existsSync(p)) {
-      try {
-        out[key] = JSON.parse(fs.readFileSync(p, 'utf8'));
-      } catch (_) {}
+      try { out[key] = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) {}
     }
   }
-  // Backward compat: if old current.json exists and both new files missing, return legacy shape
   const legacyPath = path.join(REGIME_DIR, 'current.json');
   if (!out.spy && !out.qqq && fs.existsSync(legacyPath)) {
     try {
@@ -365,16 +378,22 @@ export function loadCurrentRegime() {
 
 /**
  * Load 5-year backtest analysis (full history + metrics) for SPY and QQQ.
- * @returns {{ spy: object | null, qqq: object | null }}
+ * @returns {Promise<{ spy: object | null, qqq: object | null }>}
  */
-export function loadRegimeBacktest() {
+export async function loadRegimeBacktest() {
   const out = { spy: null, qqq: null };
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    for (const key of ['SPY', 'QQQ']) {
+      const { data } = await supabase.from('regime_backtest').select('*').eq('ticker', key).single();
+      if (data?.backtest_json) out[key.toLowerCase()] = data.backtest_json;
+    }
+    if (out.spy || out.qqq) return out;
+  }
   for (const key of ['spy', 'qqq']) {
     const p = path.join(REGIME_DIR, `backtest_${key}.json`);
     if (fs.existsSync(p)) {
-      try {
-        out[key] = JSON.parse(fs.readFileSync(p, 'utf8'));
-      } catch (_) {}
+      try { out[key] = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) {}
     }
   }
   return out;

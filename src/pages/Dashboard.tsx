@@ -44,7 +44,7 @@ interface ScanResult {
   patternDetails?: string
 }
 
-// Opus4.5 Signal from API
+// Opus4.5 Signal from API (entryDate/daysSinceBuy/pctChange used for Open Trade column)
 interface Opus45Signal {
   ticker: string
   signal: boolean
@@ -56,6 +56,9 @@ interface Opus45Signal {
   stopLossPercent: number
   targetPrice: number
   riskRewardRatio: number
+  entryDate?: string | number
+  daysSinceBuy?: number
+  pctChange?: number
   metrics?: {
     relativeStrength?: number
     contractions?: number
@@ -152,72 +155,117 @@ export default function Dashboard() {
   const [opus45AllScores, setOpus45AllScores] = useState<Array<{ ticker: string; opus45Confidence: number; opus45Grade: string }>>([])
   const [opus45Loading, setOpus45Loading] = useState(false)
   const [opus45Stats, setOpus45Stats] = useState<{ total: number; strong: number; moderate: number; weak: number; avgConfidence: number; avgRiskReward: number } | null>(null)
-  /** When false, only first 12 Opus4.5 signals are shown; "more" button expands to show all. */
-  const [showAllOpus45Signals, setShowAllOpus45Signals] = useState(false)
 
-  // Load scan-results and Opus4.5 signals in parallel so both can appear as soon as ready
-  // (Opus is often cached on server → instant; table uses scan-results → no extra delay)
+  // Load scan-results (includes Opus4.5 when ?includeOpus=true) — single fetch for unified payload
   useEffect(() => {
     let cancelled = false
-    const ok = (d: ScanPayload) => {
-      if (!cancelled) {
-        setData(d)
-        setApiError(null)
-      }
-    }
-    const fail = (err: unknown) => {
-      if (!cancelled) {
-        setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
-        setApiError(err instanceof Error ? err.message : 'Cannot reach app')
-      }
-    }
-    fetch(`${API_BASE}/api/scan-results`)
+    setOpus45Loading(true)
+    fetch(`${API_BASE}/api/scan-results`, { cache: 'no-store' })
       .then((r) => {
         if (!r.ok) throw new Error(`API ${r.status}`)
         return r.json()
       })
-      .then(ok)
-      .catch(fail)
-      .finally(() => { if (!cancelled) setLoading(false) })
-
-    // Opus fetch in parallel — no longer waits for scan-results
-    setOpus45Loading(true)
-    fetch(`${API_BASE}/api/opus45/signals`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d) => {
+      .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
         if (!cancelled) {
-          setOpus45Signals(d.signals || [])
-          setOpus45AllScores(d.allScores || [])
-          setOpus45Stats(d.stats || null)
+          setData(d)
+          setApiError(null)
+          // Opus merged into scan-results: use embedded signals/stats, derive allScores from results
+          if (d.opus45Signals != null) {
+            setOpus45Signals(d.opus45Signals)
+            setOpus45Stats(d.opus45Stats ?? null)
+            const byTicker = (d.opus45Signals as Opus45Signal[]).reduce<Record<string, Opus45Signal>>((acc, s) => {
+              acc[s.ticker] = s
+              return acc
+            }, {})
+            setOpus45AllScores(
+              (d.results || []).map((r) => {
+                const sig = byTicker[r.ticker]
+                const res = r as { opus45Confidence?: number; opus45Grade?: string; entryDate?: string | number; daysSinceBuy?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
+                const base = {
+                  ticker: r.ticker,
+                  opus45Confidence: res.opus45Confidence ?? sig?.opus45Confidence ?? 0,
+                  opus45Grade: res.opus45Grade ?? sig?.opus45Grade ?? 'F',
+                }
+                const openTrade = res.entryDate != null || res.daysSinceBuy != null || res.pctChange != null
+                  ? { entryDate: res.entryDate, daysSinceBuy: res.daysSinceBuy, pctChange: res.pctChange, entryPrice: res.entryPrice, stopLossPrice: res.stopLossPrice, riskRewardRatio: res.riskRewardRatio }
+                  : (sig?.entryDate != null || sig?.daysSinceBuy != null || sig?.pctChange != null)
+                    ? { entryDate: sig.entryDate, daysSinceBuy: sig.daysSinceBuy, pctChange: sig.pctChange, entryPrice: sig.entryPrice, stopLossPrice: sig.stopLossPrice, riskRewardRatio: sig.riskRewardRatio }
+                    : null
+                return openTrade ? { ...base, ...openTrade } : base
+              })
+            )
+          } else {
+            // Fallback: fetch Opus separately (older API)
+            fetch(`${API_BASE}/api/opus45/signals`, { cache: 'no-store' })
+              .then((r) => r.json())
+              .then((od) => {
+                if (!cancelled) {
+                  setOpus45Signals(od.signals || [])
+                  setOpus45AllScores(od.allScores || [])
+                  setOpus45Stats(od.stats ?? null)
+                }
+              })
+              .catch(() => {
+                if (!cancelled) {
+                  setOpus45Signals([])
+                  setOpus45AllScores([])
+                  setOpus45Stats(null)
+                }
+              })
+          }
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!cancelled) {
+          setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
+          setApiError(err instanceof Error ? err.message : 'Cannot reach app')
           setOpus45Signals([])
           setOpus45AllScores([])
           setOpus45Stats(null)
         }
       })
-      .finally(() => { if (!cancelled) setOpus45Loading(false) })
-
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+          setOpus45Loading(false)
+        }
+      })
     return () => { cancelled = true }
   }, [])
 
-  // Reload data when scan completes (refresh both scan-results and Opus so new scan is reflected)
+  // Reload data when scan completes (scan-results includes Opus from updated cache)
   useEffect(() => {
     if (!scanState.running && scanState.progress.completedAt) {
-      fetch(`${API_BASE}/api/scan-results`)
-        .then((r) => r.json())
-        .then((d) => setData(d))
-        .catch(() => {})
-      // Refresh Opus signals after scan (server may have updated cache during/after scan)
       setOpus45Loading(true)
-      fetch(`${API_BASE}/api/opus45/signals?force=true`, { cache: 'no-store' })
+      fetch(`${API_BASE}/api/scan-results`, { cache: 'no-store' })
         .then((r) => r.json())
-        .then((d) => {
-          setOpus45Signals(d.signals || [])
-          setOpus45AllScores(d.allScores || [])
-          setOpus45Stats(d.stats || null)
+        .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
+          setData(d)
+          if (d.opus45Signals != null) {
+            setOpus45Signals(d.opus45Signals)
+            setOpus45Stats(d.opus45Stats ?? null)
+            const byTicker = (d.opus45Signals as Opus45Signal[]).reduce<Record<string, Opus45Signal>>((acc, s) => {
+              acc[s.ticker] = s
+              return acc
+            }, {})
+            setOpus45AllScores(
+              (d.results || []).map((r) => {
+                const sig = byTicker[r.ticker]
+                const res = r as { opus45Confidence?: number; opus45Grade?: string; entryDate?: string | number; daysSinceBuy?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
+                const base = {
+                  ticker: r.ticker,
+                  opus45Confidence: res.opus45Confidence ?? sig?.opus45Confidence ?? 0,
+                  opus45Grade: res.opus45Grade ?? sig?.opus45Grade ?? 'F',
+                }
+                const openTrade = res.entryDate != null || res.daysSinceBuy != null || res.pctChange != null
+                  ? { entryDate: res.entryDate, daysSinceBuy: res.daysSinceBuy, pctChange: res.pctChange, entryPrice: res.entryPrice, stopLossPrice: res.stopLossPrice, riskRewardRatio: res.riskRewardRatio }
+                  : (sig?.entryDate != null || sig?.daysSinceBuy != null || sig?.pctChange != null)
+                    ? { entryDate: sig.entryDate, daysSinceBuy: sig.daysSinceBuy, pctChange: sig.pctChange, entryPrice: sig.entryPrice, stopLossPrice: sig.stopLossPrice, riskRewardRatio: sig.riskRewardRatio }
+                    : null
+                return openTrade ? { ...base, ...openTrade } : base
+              })
+            )
+          }
         })
         .catch(() => {})
         .finally(() => setOpus45Loading(false))
@@ -397,15 +445,19 @@ export default function Dashboard() {
   const results = data?.results ?? []
   // Map ticker -> Opus score for table column (all 800+ when API returns allScores, else only active signals)
   const opus45ByTicker = useMemo(() => {
-    const m: Record<string, { opus45Confidence: number; opus45Grade: string; entryDate?: string; daysSinceBuy?: number; pctChange?: number }> = {}
+    type Score = { opus45Confidence: number; opus45Grade: string; entryDate?: string | number; daysSinceBuy?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
+    const m: Record<string, Score> = {}
     if (opus45AllScores.length > 0) {
-      opus45AllScores.forEach((s: { ticker: string; opus45Confidence: number; opus45Grade: string; entryDate?: string; daysSinceBuy?: number; pctChange?: number }) => {
+      opus45AllScores.forEach((s: Score & { ticker: string }) => {
         m[s.ticker] = {
           opus45Confidence: s.opus45Confidence,
           opus45Grade: s.opus45Grade,
           entryDate: s.entryDate,
           daysSinceBuy: s.daysSinceBuy,
-          pctChange: s.pctChange
+          pctChange: s.pctChange,
+          entryPrice: s.entryPrice,
+          stopLossPrice: s.stopLossPrice,
+          riskRewardRatio: s.riskRewardRatio
         }
       })
     } else {
@@ -593,87 +645,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Opus4.5 High-Confidence Signals Panel */}
-      {opus45Signals.length > 0 && (
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
-          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
-            <div className="flex items-center gap-3">
-              <h2 className="text-lg font-bold text-emerald-400">Opus4.5 Buy Signals</h2>
-              <span className="px-3 py-1 rounded-full text-sm font-semibold bg-emerald-500 text-white">
-                {opus45Stats?.total || opus45Signals.length} Active
-              </span>
-              {opus45Stats && (
-                <span className="text-slate-400 text-sm">
-                  {opus45Stats.strong} Strong · {opus45Stats.moderate} Moderate · Avg {opus45Stats.avgConfidence}% conf
-                </span>
-              )}
-            </div>
-            <div className="text-slate-400 text-sm">
-              Exit: Below 10 MA or -4% stop
-            </div>
-          </div>
-          <p className="text-xs text-slate-500 mb-3" title="Stocks in the table can show 100% Opus if they are in an open position from an older buy; this section only lists entries from the last 2 days.">
-            Only stocks with a <strong>buy signal in the last 2 days</strong> appear here (actionable entries). The table Opus column shows signal strength for <strong>any</strong> open position, so tickers like CMI, NOC, TER may show 100% in the table but not here if their buy was more than 2 days ago (holding, not a new entry).
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {(showAllOpus45Signals ? opus45Signals : opus45Signals.slice(0, 12)).map((sig) => (
-              <Link
-                key={sig.ticker}
-                to={`/stock/${sig.ticker}`}
-                className="block p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 transition-colors"
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-bold text-slate-100">{sig.ticker}</span>
-                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                    sig.signalType === 'STRONG' ? 'bg-emerald-500/30 text-emerald-300' :
-                    sig.signalType === 'MODERATE' ? 'bg-yellow-500/30 text-yellow-300' :
-                    'bg-slate-600 text-slate-300'
-                  }`} title="Opus4.5 signal strength (entry quality, pattern, volume)">
-                    {sig.opus45Confidence}% {sig.opus45Grade}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-2 text-xs">
-                  <div>
-                    <div className="text-slate-500">Entry</div>
-                    <div className="text-slate-200 font-mono">${sig.entryPrice?.toFixed(2)}</div>
-                  </div>
-                  <div>
-                    <div className="text-slate-500">Stop</div>
-                    <div className="text-red-400 font-mono">${sig.stopLossPrice?.toFixed(2)}</div>
-                  </div>
-                  <div>
-                    <div className="text-slate-500">R:R</div>
-                    <div className="text-emerald-400 font-mono">{sig.riskRewardRatio?.toFixed(1)}:1</div>
-                  </div>
-                </div>
-                <div className="mt-2 text-xs text-slate-500">
-                  {sig.metrics?.pattern || 'VCP'} · RS {sig.metrics?.relativeStrength?.toFixed(0) || '–'} · {sig.metrics?.entryPoint?.atWhichMA || '–'}
-                </div>
-              </Link>
-            ))}
-          </div>
-          {opus45Signals.length > 12 && (
-            <div className="mt-3 text-center">
-              <button
-                type="button"
-                onClick={() => setShowAllOpus45Signals((prev) => !prev)}
-                className="text-sm text-emerald-400 hover:text-emerald-300 font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/50 rounded px-2 py-1"
-              >
-                {showAllOpus45Signals
-                  ? 'Show less'
-                  : `+${opus45Signals.length - 12} more signals available`}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      
-      {opus45Loading && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-center text-slate-400">
-          Analyzing Opus4.5 signals...
-        </div>
-      )}
-
       {/* Evaluation result (if any) */}
       {evaluateResult && (
         <div className="rounded-lg bg-slate-800/80 border border-slate-700 p-4">
@@ -852,34 +823,90 @@ export default function Dashboard() {
                           {fundamentals[r.ticker].companyName ?? fundamentals[r.ticker].industry}
                         </div>
                       )}
+                      {(() => {
+                        const ot = opus45ByTicker[r.ticker]
+                        const hasTrade = ot && (ot.entryDate != null || ot.entryPrice != null || ot.stopLossPrice != null || ot.riskRewardRatio != null)
+                        if (!hasTrade) return null
+                        const raw = ot!.entryDate
+                        const longDate =
+                          raw == null
+                            ? ''
+                            : typeof raw === 'number'
+                              ? new Date(raw < 1e12 ? raw * 1000 : raw).toISOString().slice(0, 10)
+                              : String(raw)
+                        const entry = ot!.entryPrice != null ? `$${ot!.entryPrice.toFixed(2)}` : ''
+                        const stop = ot!.stopLossPrice != null ? `$${ot!.stopLossPrice.toFixed(2)}` : ''
+                        const rr = ot!.riskRewardRatio != null ? `${ot!.riskRewardRatio.toFixed(1)}:1` : ''
+                        const parts = [longDate, entry, stop, rr].filter(Boolean)
+                        if (parts.length === 0) return null
+                        return (
+                          <div className="text-slate-500 mt-0.5 truncate text-[10pt]">
+                            {parts.join(' · ')}
+                          </div>
+                        )
+                      })()}
                     </td>
-                    {/* Opus: primary strength (not constrained to 2-day buy) */}
+                    {/* Opus: primary strength with card-style green/yellow color coding */}
                     <td className="sticky left-[10rem] z-10 min-w-[5rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3 font-mono tabular-nums text-right">
                       {opus45ByTicker[r.ticker] ? (
-                        <span
-                          className={opus45ByTicker[r.ticker].opus45Confidence > 0 ? 'text-slate-300' : 'text-slate-500'}
-                          title="Opus4.5 signal strength (entry quality, pattern, volume)"
-                        >
-                          {opus45ByTicker[r.ticker].opus45Confidence}% {opus45ByTicker[r.ticker].opus45Grade}
-                        </span>
+                        (() => {
+                          const o = opus45ByTicker[r.ticker]
+                          const conf = o.opus45Confidence ?? 0
+                          const grade = o.opus45Grade ?? 'F'
+                          const isStrong = grade === 'A+' || grade === 'A' || conf >= 80
+                          const isModerate = grade === 'B+' || grade === 'B' || (conf >= 60 && conf < 80)
+                          const badgeClass = isStrong
+                            ? 'bg-emerald-500/30 text-emerald-300'
+                            : isModerate
+                              ? 'bg-yellow-500/30 text-yellow-300'
+                              : conf > 0
+                                ? 'bg-slate-600 text-slate-300'
+                                : 'text-slate-500'
+                          return (
+                            <span
+                              className={`inline-block whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium ${badgeClass}`}
+                              title="Opus4.5 signal strength (entry quality, pattern, volume)"
+                            >
+                              {o.opus45Confidence}% {o.opus45Grade}
+                            </span>
+                          )
+                        })()
                       ) : (
                         <span className="text-slate-500">–</span>
                       )}
                     </td>
-                    {/* Open Trade: date long, days, P/L % (only when in position) */}
-                    <td className="px-4 py-3 font-mono text-right text-sm">
-                      {opus45ByTicker[r.ticker]?.entryDate != null && opus45ByTicker[r.ticker].daysSinceBuy != null ? (
-                        <span className="text-slate-300">
-                          {opus45ByTicker[r.ticker].entryDate} · {opus45ByTicker[r.ticker].daysSinceBuy}d
-                          {opus45ByTicker[r.ticker].pctChange != null && (
-                            <span className={opus45ByTicker[r.ticker].pctChange! >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                              {' '}{opus45ByTicker[r.ticker].pctChange! >= 0 ? '+' : ''}{opus45ByTicker[r.ticker].pctChange}%
+                    {/* Open Trade: line1 = date + days (nowrap), line2 = P/L % + $ (nowrap) */}
+                    <td className="px-4 py-3 font-mono text-right text-sm min-w-[10rem]">
+                      {(() => {
+                        const ot = opus45ByTicker[r.ticker];
+                        if (ot?.daysSinceBuy == null) return <span className="text-slate-500">–</span>;
+                        // entryDate may come from cache as number (ms); normalize to YYYY-MM-DD for display
+                        const raw = ot.entryDate;
+                        const entryDateStr =
+                          raw == null
+                            ? null
+                            : typeof raw === 'number'
+                              ? new Date(raw < 1e12 ? raw * 1000 : raw).toISOString().slice(0, 10)
+                              : String(raw);
+                        if (entryDateStr == null) return <span className="text-slate-500">–</span>;
+                        // P/L on $1000 assumed position: 1000 * (pctChange/100)
+                        const pnlDollar = ot.pctChange != null ? (1000 * ot.pctChange) / 100 : null;
+                        return (
+                          <div className="flex flex-col items-end gap-0">
+                            <span className="text-slate-300 whitespace-nowrap">
+                              {entryDateStr} {ot.daysSinceBuy}d
                             </span>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="text-slate-500">–</span>
-                      )}
+                            {ot.pctChange != null && (
+                              <span className={`whitespace-nowrap ${ot.pctChange >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {ot.pctChange >= 0 ? '+' : ''}{ot.pctChange}%
+                                {pnlDollar != null && (
+                                  <> ({(ot.pctChange >= 0 ? '+' : '−')}${(pnlDollar >= 0 ? pnlDollar : -pnlDollar).toFixed(2)})</>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     {/* Pattern/Setup */}
                     <td className="px-4 py-3">

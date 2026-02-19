@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDailyBars } from './yahoo.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -86,35 +87,39 @@ export async function fetchAndSaveRegimeData(asOfDate = new Date()) {
     fetchBarsChunked('QQQ', from, to),
   ]);
 
-  const spyPath = path.join(REGIME_DIR, 'spy_5y.json');
-  const qqqPath = path.join(REGIME_DIR, 'qqq_5y.json');
-  const payload = (ticker, bars) => ({
-    ticker,
-    from,
-    to,
-    fetchedAt: new Date().toISOString(),
-    results: bars,
-  });
-  fs.writeFileSync(spyPath, JSON.stringify(payload('SPY', spyBars), null, 2), 'utf8');
-  fs.writeFileSync(qqqPath, JSON.stringify(payload('QQQ', qqqBars), null, 2), 'utf8');
-
+  const fetchedAt = new Date().toISOString();
+  const payload = (ticker, bars) => ({ ticker, from, to, fetchedAt, results: bars });
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    await supabase.from('regime_bars').upsert(
+      [{ ticker: 'SPY', date_from: from, date_to: to, fetched_at: fetchedAt, results: spyBars, updated_at: fetchedAt }, { ticker: 'QQQ', date_from: from, date_to: to, fetched_at: fetchedAt, results: qqqBars, updated_at: fetchedAt }],
+      { onConflict: 'ticker' }
+    );
+  }
+  ensureRegimeDir();
+  fs.writeFileSync(path.join(REGIME_DIR, 'spy_5y.json'), JSON.stringify(payload('SPY', spyBars), null, 2), 'utf8');
+  fs.writeFileSync(path.join(REGIME_DIR, 'qqq_5y.json'), JSON.stringify(payload('QQQ', qqqBars), null, 2), 'utf8');
   return { spy: spyBars, qqq: qqqBars };
 }
 
 /**
- * Load cached 5y bars from data/regime (if present).
- * @returns {{ spy: Array, qqq: Array } | null} - null if either file missing
+ * Load cached 5y bars from DB or data/regime (if present).
+ * @returns {Promise<{ spy: Array, qqq: Array } | null>} - null if either missing
  */
-export function loadRegimeData() {
+export async function loadRegimeData() {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data: spyRow } = await supabase.from('regime_bars').select('*').eq('ticker', 'SPY').single();
+    const { data: qqqRow } = await supabase.from('regime_bars').select('*').eq('ticker', 'QQQ').single();
+    if (!spyRow || !qqqRow) return null;
+    return { spy: spyRow.results || [], qqq: qqqRow.results || [] };
+  }
   const spyPath = path.join(REGIME_DIR, 'spy_5y.json');
   const qqqPath = path.join(REGIME_DIR, 'qqq_5y.json');
   if (!fs.existsSync(spyPath) || !fs.existsSync(qqqPath)) return null;
   const spy = JSON.parse(fs.readFileSync(spyPath, 'utf8'));
   const qqq = JSON.parse(fs.readFileSync(qqqPath, 'utf8'));
-  return {
-    spy: spy.results || [],
-    qqq: qqq.results || [],
-  };
+  return { spy: spy.results || [], qqq: qqq.results || [] };
 }
 
 export { REGIME_DIR, fiveYearRange };

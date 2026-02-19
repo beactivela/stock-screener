@@ -1,5 +1,7 @@
 # Quick Start: Top 3 Improvements for Immediate Impact
 
+**Note:** The application now uses the database (Supabase) for all data and cache. Some code examples below may reference the legacy file-based approach; in production, data is read from and written to the DB.
+
 Based on my comprehensive review of your VCP + CANSLIM stock screener, here are the **three most impactful improvements** you can implement right away, along with step-by-step implementation guides.
 
 ---
@@ -127,8 +129,9 @@ async function runScan() {
   const { from, to } = dateRange(90);
   const tickers = await getTickers();
   
-  // Load industry returns and rank them
-  const industryReturns = loadIndustryYahooReturns(); // from index.js
+  // Load industry returns (TradingView) and rank them
+  const fundamentals = await loadFundamentals();
+  const industryReturns = await loadIndustryReturns(fundamentals); // TradingView via tradingViewIndustry.js
   const industryRanks = rankIndustries(industryReturns);
   
   console.log(`Scanning ${tickers.length} tickers with ${Object.keys(industryRanks).length} ranked industries`);

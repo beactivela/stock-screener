@@ -23,6 +23,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDailyBars } from './yahoo.js';
 import { sma, findPullbacks, nearMA } from './vcp.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -1196,45 +1197,47 @@ export function applyLearning(currentParams, adjustments) {
 /**
  * Save learned parameters
  */
-export function saveLearning(params, stats) {
+export async function saveLearning(params, stats) {
+  const data = { params, learnedAt: new Date().toISOString(), basedOnStats: stats, version: 1 };
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data: existing } = await supabase.from('adaptive_strategy_params').select('*').eq('id', 'default').single();
+    data.version = existing?.params?.version ? existing.params.version + 1 : 1;
+    await supabase.from('adaptive_strategy_params').upsert(
+      { id: 'default', params: data, updated_at: new Date().toISOString() },
+      { onConflict: 'id' }
+    );
+    console.log(`✅ Saved learned parameters (version ${data.version})`);
+    return data;
+  }
   ensureStrategyDir();
   const filepath = path.join(STRATEGY_DIR, 'learned-params.json');
-  
-  const data = {
-    params,
-    learnedAt: new Date().toISOString(),
-    basedOnStats: stats,
-    version: 1
-  };
-  
-  // Load existing to increment version
   if (fs.existsSync(filepath)) {
     try {
       const existing = JSON.parse(fs.readFileSync(filepath, 'utf8'));
       data.version = (existing.version || 0) + 1;
-    } catch (e) { /* ignore */ }
+    } catch { /* ignore */ }
   }
-  
   fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
   console.log(`✅ Saved learned parameters (version ${data.version})`);
-  
   return data;
 }
 
 /**
  * Load learned parameters (or defaults)
  */
-export function loadLearnedParams() {
-  const filepath = path.join(STRATEGY_DIR, 'learned-params.json');
-  
-  if (!fs.existsSync(filepath)) {
-    return { ...DEFAULT_PARAMS };
+export async function loadLearnedParams() {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data, error } = await supabase.from('adaptive_strategy_params').select('*').eq('id', 'default').single();
+    if (!error && data?.params?.params) return { ...DEFAULT_PARAMS, ...data.params.params };
   }
-  
+  const filepath = path.join(STRATEGY_DIR, 'learned-params.json');
+  if (!fs.existsSync(filepath)) return { ...DEFAULT_PARAMS };
   try {
     const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
     return { ...DEFAULT_PARAMS, ...data.params };
-  } catch (e) {
+  } catch {
     return { ...DEFAULT_PARAMS };
   }
 }

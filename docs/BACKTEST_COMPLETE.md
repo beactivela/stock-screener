@@ -29,7 +29,7 @@ I've successfully implemented **Improvement #3: Backtesting Foundation** with a 
 - Outcome: WIN / LOSS / NEUTRAL
 
 #### **2. Auto-Save Integration** (`server/scan.js`)
-- ✅ Every scan automatically saves snapshot to `data/backtests/scan-YYYY-MM-DD.json`
+- ✅ Every scan automatically saves snapshot to the database (`backtest_snapshots` table)
 - ✅ Snapshot includes all 500+ tickers with full scoring details
 - ✅ Happens transparently - no user action needed
 
@@ -70,7 +70,7 @@ I've successfully implemented **Improvement #3: Backtesting Foundation** with a 
 ### Flow
 
 ```
-1. User runs scan → Auto-saves to data/backtests/scan-2026-02-15.json
+1. User runs scan → Auto-saves to DB (backtest_snapshots)
    
 2. Wait 30+ days...
 
@@ -135,8 +135,7 @@ npm run dev       # Single server at http://localhost:5173/
 For a 30-day backtest, you need to wait 30 days. For testing, you can:
 
 **Option A: Use Old Data** (if you have it)
-- Manually create a snapshot from an old scan
-- Copy to `data/backtests/scan-2026-01-15.json`
+- Manually create a snapshot from an old scan and store in DB, or use an existing snapshot in `backtest_snapshots`
 
 **Option B: Test with Recent Data** (partial results)
 - Select a scan from a few days ago
@@ -214,13 +213,7 @@ The modal shows insights like:
 ## 📁 Data Storage
 
 ### Snapshots Location
-```
-data/backtests/
-  scan-2026-02-15.json    (today's scan)
-  scan-2026-02-14.json    (yesterday)
-  scan-2026-01-15.json    (30 days ago)
-  ...
-```
+Snapshots are stored in the database in the **backtest_snapshots** table (keyed by scan date). The API returns available scan dates from the DB; no JSON files are used.
 
 ### Snapshot Format
 ```json
@@ -247,12 +240,7 @@ data/backtests/
 ```
 
 ### Backtest Results
-```
-data/backtests/
-  backtest-2026-01-15-30d.json    (results saved here)
-  backtest-2026-01-15-60d.json
-  backtest-2026-01-15-90d.json
-```
+Backtest results are stored in the database (e.g. **backtest_results** and related tables), not in JSON files.
 
 ---
 

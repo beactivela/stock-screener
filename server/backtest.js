@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDailyBars } from './yahoo.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -31,71 +32,75 @@ function ensureBacktestDir() {
  * 
  * @param {Array} scanResults - Array of scan result objects
  * @param {Date} scanDate - Date of the scan (defaults to now)
- * @returns {Object} Saved snapshot metadata
+ * @returns {Promise<Object>} Saved snapshot metadata
  */
-export function saveScanSnapshot(scanResults, scanDate = new Date()) {
-  ensureBacktestDir();
-  
+export async function saveScanSnapshot(scanResults, scanDate = new Date()) {
   const dateStr = scanDate.toISOString().slice(0, 10);
-  const snapshot = {
-    scanDate: dateStr,
-    scanTime: scanDate.toISOString(),
-    tickerCount: scanResults.length,
-    tickers: scanResults
-      .filter(r => r.lastClose != null && !r.error) // Only valid results
-      .map(r => ({
-        ticker: r.ticker,
-        score: r.score || 0,
-        enhancedScore: r.enhancedScore || r.score || 0,
-        baseScore: r.baseScore || r.score || 0,
-        vcpScore: r.vcpScore || 0,
-        canslimScore: r.canslimScore || 0,
-        industryScore: r.industryScore || 0,
-        industryRank: r.industryRank || null,
-        industryMultiplier: r.industryMultiplier || 1.0,
-        relativeStrength: r.relativeStrength || null,
-        price: r.lastClose,
-        contractions: r.contractions,
-        vcpBullish: r.vcpBullish,
-        volumeDryUp: r.volumeDryUp,
-        atMa10: r.atMa10,
-        atMa20: r.atMa20,
-        atMa50: r.atMa50,
-      }))
-  };
-  
-  const filename = `scan-${dateStr}.json`;
-  const filepath = path.join(BACKTEST_DIR, filename);
-  
-  fs.writeFileSync(filepath, JSON.stringify(snapshot, null, 2), 'utf8');
-  console.log(`📊 Backtest snapshot saved: ${filename} (${snapshot.tickers.length} tickers)`);
-  
-  return {
-    filename,
-    scanDate: dateStr,
-    tickerCount: snapshot.tickers.length
-  };
+  const tickers = scanResults
+    .filter(r => r.lastClose != null && !r.error)
+    .map(r => ({
+      ticker: r.ticker,
+      score: r.score || 0,
+      enhancedScore: r.enhancedScore || r.score || 0,
+      baseScore: r.baseScore || r.score || 0,
+      vcpScore: r.vcpScore || 0,
+      canslimScore: r.canslimScore || 0,
+      industryScore: r.industryScore || 0,
+      industryRank: r.industryRank || null,
+      industryMultiplier: r.industryMultiplier || 1.0,
+      relativeStrength: r.relativeStrength || null,
+      price: r.lastClose,
+      contractions: r.contractions,
+      vcpBullish: r.vcpBullish,
+      volumeDryUp: r.volumeDryUp,
+      atMa10: r.atMa10,
+      atMa20: r.atMa20,
+      atMa50: r.atMa50,
+    }));
+  const snapshot = { scanDate: dateStr, scanTime: scanDate.toISOString(), tickerCount: tickers.length, tickers };
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { error } = await supabase.from('backtest_snapshots').upsert(
+      { scan_date: dateStr, scan_time: snapshot.scanTime, ticker_count: tickers.length, tickers },
+      { onConflict: 'scan_date' }
+    );
+    if (error) throw new Error(error.message);
+  } else {
+    ensureBacktestDir();
+    const filepath = path.join(BACKTEST_DIR, `scan-${dateStr}.json`);
+    fs.writeFileSync(filepath, JSON.stringify(snapshot, null, 2), 'utf8');
+  }
+  console.log(`📊 Backtest snapshot saved: scan-${dateStr}.json (${tickers.length} tickers)`);
+  return { filename: `scan-${dateStr}.json`, scanDate: dateStr, tickerCount: tickers.length };
 }
 
 /**
  * Load a previous scan snapshot
  * 
  * @param {string|Date} scanDate - Date of the scan to load
- * @returns {Object|null} Snapshot object or null if not found
+ * @returns {Promise<Object|null>} Snapshot object or null if not found
  */
-export function loadScanSnapshot(scanDate) {
-  ensureBacktestDir();
-  
+export async function loadScanSnapshot(scanDate) {
   const dateStr = typeof scanDate === 'string' ? scanDate : scanDate.toISOString().slice(0, 10);
-  const filename = `scan-${dateStr}.json`;
-  const filepath = path.join(BACKTEST_DIR, filename);
-  
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data, error } = await supabase.from('backtest_snapshots').select('*').eq('scan_date', dateStr).single();
+    if (error || !data) return null;
+    return {
+      scanDate: data.scan_date,
+      scanTime: data.scan_time,
+      tickerCount: data.ticker_count,
+      tickers: data.tickers || [],
+    };
+  }
+  ensureBacktestDir();
+  const filepath = path.join(BACKTEST_DIR, `scan-${dateStr}.json`);
   if (!fs.existsSync(filepath)) return null;
-  
   try {
     return JSON.parse(fs.readFileSync(filepath, 'utf8'));
   } catch (e) {
-    console.error(`Error loading snapshot ${filename}:`, e.message);
+    console.error(`Error loading snapshot scan-${dateStr}.json:`, e.message);
     return null;
   }
 }
@@ -103,31 +108,31 @@ export function loadScanSnapshot(scanDate) {
 /**
  * List all available scan snapshots
  * 
- * @returns {Array} Array of {date, filename, tickerCount}
+ * @returns {Promise<Array>} Array of {date, filename, tickerCount}
  */
-export function listScanSnapshots() {
+export async function listScanSnapshots() {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    const { data, error } = await supabase.from('backtest_snapshots').select('scan_date, scan_time, ticker_count').order('scan_date', { ascending: false });
+    if (error) return [];
+    return (data || []).map(r => ({
+      date: r.scan_date,
+      filename: `scan-${r.scan_date}.json`,
+      tickerCount: r.ticker_count,
+      scanTime: r.scan_time,
+    }));
+  }
   ensureBacktestDir();
-  
   if (!fs.existsSync(BACKTEST_DIR)) return [];
-  
   const files = fs.readdirSync(BACKTEST_DIR)
     .filter(f => f.startsWith('scan-') && f.endsWith('.json'))
     .sort()
-    .reverse(); // Most recent first
-  
+    .reverse();
   return files.map(filename => {
     try {
-      const filepath = path.join(BACKTEST_DIR, filename);
-      const snapshot = JSON.parse(fs.readFileSync(filepath, 'utf8'));
-      return {
-        date: snapshot.scanDate,
-        filename,
-        tickerCount: snapshot.tickerCount,
-        scanTime: snapshot.scanTime
-      };
-    } catch (e) {
-      return null;
-    }
+      const snapshot = JSON.parse(fs.readFileSync(path.join(BACKTEST_DIR, filename), 'utf8'));
+      return { date: snapshot.scanDate, filename, tickerCount: snapshot.tickerCount, scanTime: snapshot.scanTime };
+    } catch { return null; }
   }).filter(Boolean);
 }
 
@@ -160,9 +165,10 @@ function isPriceNearMA(price, ma) {
 /**
  * Calculate forward returns using 10 MA exit strategy
  * 
- * NEW STRATEGY:
+ * EXIT STRATEGY (aligned with opus45Signal.js and retroBacktest.js):
  * - Entry: First time price is at/near 10 MA after scan date (buy signal)
- * - Exit: When price closes below 10 MA OR -8% stop loss hit
+ * - Exit: 2 CONSECUTIVE closes below 10 MA (prevents whipsaw)
+ * - Exit: -4% hard stop loss (aligned with opus45Signal.EXIT_THRESHOLDS, was -8%)
  * - Max hold: daysForward parameter (e.g., 30, 60, 90 days)
  * - Portfolio filtering: Optional topN to test only highest scoring stocks
  * 
@@ -304,10 +310,13 @@ export async function calculateForwardReturns(snapshot, daysForward = 30, topN =
       let maxPrice = entryPrice;
       let minPrice = entryPrice;
       
+      // Track consecutive closes below 10 MA (2-day rule prevents whipsaw exits)
+      let consecutiveBelowCount = 0;
+
       // Look for exit signal after entry
       for (let i = entryIdx + 1; i < Math.min(entryIdx + daysForward, bars.length); i++) {
         const bar = bars[i];
-        const closes = bars.slice(0, i + 1).map(b => b.c);
+        const allCloses = bars.slice(0, i + 1).map(b => b.c);
         
         // Update MFE and MAE
         maxPrice = Math.max(maxPrice, bar.h || bar.c);
@@ -316,8 +325,8 @@ export async function calculateForwardReturns(snapshot, daysForward = 30, topN =
         // Calculate current return
         const currentReturn = ((bar.c - entryPrice) / entryPrice) * 100;
         
-        // Exit Rule 1: -8% stop loss hit
-        if (currentReturn <= -8) {
+        // Exit Rule 1: -4% hard stop loss (aligned with opus45Signal.EXIT_THRESHOLDS)
+        if (currentReturn <= -4) {
           exitIdx = i;
           exitPrice = bar.c;
           exitDate = bar.t;
@@ -325,16 +334,19 @@ export async function calculateForwardReturns(snapshot, daysForward = 30, topN =
           break;
         }
         
-        // Calculate 10 MA at this point (need at least 10 bars for MA)
-        const ma10 = calculateSMA(closes, 10);
-        
-        // Exit Rule 2: Price closes below 10 MA
+        // Exit Rule 2: 2 CONSECUTIVE closes below 10 MA (prevents whipsaw exits)
+        const ma10 = calculateSMA(allCloses, 10);
         if (ma10 && bar.c < ma10) {
-          exitIdx = i;
-          exitPrice = bar.c;
-          exitDate = bar.t;
-          exitReason = 'BELOW_10MA';
-          break;
+          consecutiveBelowCount++;
+          if (consecutiveBelowCount >= 2) {
+            exitIdx = i;
+            exitPrice = bar.c;
+            exitDate = bar.t;
+            exitReason = 'BELOW_10MA_2DAY';
+            break;
+          }
+        } else {
+          consecutiveBelowCount = 0; // Reset if price recovers above 10 MA
         }
       }
       
@@ -359,14 +371,14 @@ export async function calculateForwardReturns(snapshot, daysForward = 30, topN =
       const mfe = ((maxPrice - entryPrice) / entryPrice) * 100;
       const mae = ((minPrice - entryPrice) / entryPrice) * 100;
       
-      // Classify outcome
-      // WIN: +20% gain OR +15% with <-8% drawdown
-      // LOSS: -8% stop loss hit OR negative return
-      // NEUTRAL: Positive but below win threshold
+      // Classify outcome (aligned with retroBacktest.js)
+      // WIN:     +10%+ gain (realistic for swing trades averaging 5-15 day holds)
+      // LOSS:    negative return OR -4%+ drawdown hit stop
+      // NEUTRAL: positive but below 10% (still profitable, just not a "big win")
       let outcome = 'NEUTRAL';
-      if (returnPct >= 20 || (returnPct >= 15 && mae > -8)) {
+      if (returnPct >= 10) {
         outcome = 'WIN';
-      } else if (returnPct < 0 || mae <= -8) {
+      } else if (returnPct < 0 || mae <= -4) {
         outcome = 'LOSS';
       }
       
@@ -428,8 +440,15 @@ export async function calculateForwardReturns(snapshot, daysForward = 30, topN =
   
   const portfolioSuffix = topN ? `-top${topN}` : '';
   const outputFilename = `backtest-${snapshot.scanDate}-${daysForward}d-10ma${portfolioSuffix}.json`;
-  const outputPath = path.join(BACKTEST_DIR, outputFilename);
-  fs.writeFileSync(outputPath, JSON.stringify(backtestResult, null, 2), 'utf8');
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabase();
+    await supabase.from('backtest_results').upsert(
+      { scan_date: snapshot.scanDate, holding_days: daysForward, result: backtestResult },
+      { onConflict: 'scan_date,holding_days' }
+    );
+  }
+  ensureBacktestDir();
+  fs.writeFileSync(path.join(BACKTEST_DIR, outputFilename), JSON.stringify(backtestResult, null, 2), 'utf8');
   console.log(`✅ Backtest results saved: ${outputFilename}`);
   
   return backtestResult;
@@ -530,9 +549,10 @@ export function analyzeBacktestResults(backtestResults) {
     ? Math.round(validTrades.reduce((sum, t) => sum + (t.daysHeld || 0), 0) / validTrades.length * 10) / 10
     : 0;
   
-  // Calculate exit reason breakdown
+  // Calculate exit reason breakdown (updated for 2-day exit rule)
   const exitReasons = {
-    BELOW_10MA: validTrades.filter(t => t.exitReason === 'BELOW_10MA').length,
+    BELOW_10MA_2DAY: validTrades.filter(t => t.exitReason === 'BELOW_10MA_2DAY').length,
+    BELOW_10MA: validTrades.filter(t => t.exitReason === 'BELOW_10MA').length,  // Legacy
     STOP_LOSS: validTrades.filter(t => t.exitReason === 'STOP_LOSS').length,
     MAX_HOLD: validTrades.filter(t => t.exitReason === 'MAX_HOLD').length
   };
@@ -570,7 +590,7 @@ export async function runBacktest(scanDate, daysForward = 30, topN = null) {
   console.log(`\n🧪 Running backtest for ${scanDate}, ${daysForward} days forward${portfolioMsg}...\n`);
   
   // Load snapshot
-  const snapshot = loadScanSnapshot(scanDate);
+  const snapshot = await loadScanSnapshot(scanDate);
   if (!snapshot) {
     throw new Error(`No scan snapshot found for ${scanDate}`);
   }

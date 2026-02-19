@@ -156,9 +156,9 @@ node server/runBacktest360.js --top=500 --learn
 
 ### Learning Output
 
-After running, check the adjustments:
-- `/data/adaptive-strategy/learned-params.json` - Current optimized parameters
-- `/data/adaptive-strategy/backtest-360d-full.json` - Full backtest results
+After running, check the adjustments (stored in the database):
+- **adaptive_strategy_params** table - Current optimized parameters
+- Backtest results are stored in the DB (e.g. backtest_results / related tables)
 
 ---
 
@@ -211,12 +211,12 @@ After running, check the adjustments:
 
 ## Files Reference
 
-| File | Purpose |
-|------|---------|
+| File / Location | Purpose |
+|----------------|---------|
 | `server/adaptiveStrategy.js` | Core strategy engine |
 | `server/runBacktest360.js` | Backtest runner script |
-| `data/adaptive-strategy/learned-params.json` | Optimized parameters |
-| `data/adaptive-strategy/backtest-360d-full.json` | Full backtest results |
+| DB: `adaptive_strategy_params` | Optimized parameters (stored in DB) |
+| DB: backtest-related tables | Full backtest results (stored in DB) |
 
 ---
 

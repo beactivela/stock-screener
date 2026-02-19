@@ -14,8 +14,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import { getEtfConstituents } from './massive.js';
+import { saveTickers } from './db/tickers.js';
+
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const TICKERS_FILE = path.join(DATA_DIR, 'tickers.txt');
 
 const SP500_CSV_URL = 'https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv';
 
@@ -50,8 +51,8 @@ async function populate() {
     }
   }
 
-  fs.writeFileSync(TICKERS_FILE, tickers.join('\n'), 'utf8');
-  console.log(`Wrote ${tickers.length} tickers to ${TICKERS_FILE}`);
+  await saveTickers(tickers);
+  console.log(`Wrote ${tickers.length} tickers to DB`);
   return tickers;
 }
 

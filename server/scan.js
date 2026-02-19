@@ -19,13 +19,14 @@ import { getEtfConstituents } from './massive.js';
 import { checkVCP } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { saveScanSnapshot } from './backtest.js';
+import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
+import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
+import { fetchTradingViewIndustryReturns, buildIndustryReturnsFromTVMap, normalizeIndustryName } from './tradingViewIndustry.js';
+import { saveScanResults as saveScanResultsToDb } from './db/scanResults.js';
+import { getBars as getBarsFromDb, saveBars as saveBarsToDb } from './db/bars.js';
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
-const TICKERS_FILE = path.join(DATA_DIR, 'tickers.txt');
-const RESULTS_FILE = path.join(DATA_DIR, 'scan-results.json');
-const FUNDAMENTALS_FILE = path.join(DATA_DIR, 'fundamentals.json');
-const INDUSTRY_YAHOO_RETURNS_FILE = path.join(DATA_DIR, 'industry-yahoo-returns.json');
 
 // Max tickers to scan. When reading from tickers.txt: 0 = use ALL tickers in file. Otherwise limit to this number.
 // Default 0 = scan entire data/tickers.txt (e.g. 899 tickers). Set SCAN_LIMIT=100 for faster tests.
@@ -37,38 +38,14 @@ function ensureDataDir() {
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
 }
 
-/** Get bars from file cache if present and not stale. Same format as server. */
-function getBarsFromCache(ticker, from, to) {
-  const safeTicker = ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-  const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}.json`);
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (raw.from !== from || raw.to !== to) return null;
-    const age = Date.now() - new Date(raw.fetchedAt).getTime();
-    if (age > CACHE_TTL_MS) return null;
-    return raw.results || [];
-  } catch {
-    return null;
-  }
-}
-
-/** Save bars to cache (same format as server). */
-function saveBarsToCache(ticker, from, to, results) {
-  const safeTicker = ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-  const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}.json`);
-  const payload = { ticker, from, to, fetchedAt: new Date().toISOString(), results };
-  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
-}
-
-/** Get bars: cache first, then API. Reduces rate-limit hits. Set SCAN_SKIP_CACHE=1 to force API. */
+/** Get bars: DB cache first, then API. Set SCAN_SKIP_CACHE=1 to force API. */
 async function getBarsForScan(ticker, from, to) {
   if (!process.env.SCAN_SKIP_CACHE) {
-    const cached = getBarsFromCache(ticker, from, to);
+    const cached = await getBarsFromDb(ticker, from, to, '1d');
     if (cached && cached.length > 0) return cached;
   }
   const bars = await getDailyBars(ticker, from, to);
-  if (bars.length > 0) saveBarsToCache(ticker, from, to, bars);
+  if (bars.length > 0) await saveBarsToDb(ticker, from, to, bars, '1d');
   return bars;
 }
 
@@ -91,58 +68,42 @@ const FALLBACK_TICKERS = [
   'QCOM', 'INTU', 'TXN', 'SBUX', 'AXP', 'BLK', 'C', 'GS', 'AMD', 'AMAT',
 ];
 
-/** Read tickers from flat file. If missing, fetch SPY (or use fallback) and create file. */
+/** Read tickers from DB. If empty, fetch SPY (or fallback) and save to DB. */
 async function getTickers() {
-  ensureDataDir();
-  if (fs.existsSync(TICKERS_FILE)) {
-    const raw = fs.readFileSync(TICKERS_FILE, 'utf8');
-    const tickers = raw
-      .split(/\r?\n/)
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean);
-    // Use all tickers when TICKER_LIMIT=0; otherwise cap for faster test runs
-    return TICKER_LIMIT > 0 ? tickers.slice(0, TICKER_LIMIT) : tickers;
-  }
-  // Auto-populate from SPY if file doesn't exist
-  console.log('tickers.txt not found. Fetching S&P 500 from SPY...');
+  let tickers = await loadTickersFromDb();
+  if (tickers.length > 0) return TICKER_LIMIT > 0 ? tickers.slice(0, TICKER_LIMIT) : tickers;
+  console.log('No tickers in DB. Fetching S&P 500 from SPY...');
   let list;
   try {
     const constituents = await getEtfConstituents('SPY');
     list = constituents
       .map((r) => r.constituent_ticker)
       .filter(Boolean)
-      .slice(0, TICKER_LIMIT);
+      .slice(0, TICKER_LIMIT || 500);
   } catch (e) {
     if (e.message?.includes('403') || e.message?.includes('NOT_AUTHORIZED')) {
       console.warn('ETF API not available. Using built-in S&P 500 list.');
-      list = FALLBACK_TICKERS.slice(0, TICKER_LIMIT);
+      list = FALLBACK_TICKERS.slice(0, TICKER_LIMIT || 50);
     } else {
       throw e;
     }
   }
-  fs.writeFileSync(TICKERS_FILE, list.join('\n'), 'utf8');
-  console.log(`Created ${TICKERS_FILE} with ${list.length} tickers`);
-  return list;
+  await saveTickersToDb(list);
+  console.log(`Created tickers with ${list.length} entries`);
+  return TICKER_LIMIT > 0 ? list.slice(0, TICKER_LIMIT) : list;
 }
 
-/** Load fundamentals from cache. */
-function loadFundamentals() {
-  if (!fs.existsSync(FUNDAMENTALS_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(FUNDAMENTALS_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+/** Load fundamentals and industry returns from DB. */
+async function loadFundamentals() {
+  return loadFundamentalsFromDb();
 }
-
-/** Load Yahoo industry returns (1Y, 6M, 3M, YTD) keyed by industry name. */
-function loadIndustryYahooReturns() {
-  if (!fs.existsSync(INDUSTRY_YAHOO_RETURNS_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(INDUSTRY_YAHOO_RETURNS_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+/** Load industry returns from TradingView (3M, 6M, 1Y, YTD) for fundamentals' industries. */
+async function loadIndustryReturns(fundamentals) {
+  const industryNames = [...new Set(Object.values(fundamentals || {}).map((e) => e?.industry).filter(Boolean))];
+  // Pass requiredIndustries for early exit optimization
+  const requiredIndustries = new Set(industryNames.map((name) => normalizeIndustryName(name)));
+  const { returnsMap: tvMap } = await fetchTradingViewIndustryReturns({ requiredIndustries });
+  return buildIndustryReturnsFromTVMap(tvMap, industryNames);
 }
 
 async function runScan() {
@@ -150,9 +111,9 @@ async function runScan() {
   const { from, to } = dateRange(180); // Changed from 90 to 180 to ensure 120+ trading days for RS calculation
   const tickers = await getTickers();
   
-  // Load fundamentals and industry data for enhanced scoring
-  const fundamentals = loadFundamentals();
-  const industryReturns = loadIndustryYahooReturns();
+  // Load fundamentals and industry returns (TradingView) for enhanced scoring
+  const fundamentals = await loadFundamentals();
+  const industryReturns = await loadIndustryReturns(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
   
   // Fetch SPY bars once for RS calculations (NEW)
@@ -165,7 +126,7 @@ async function runScan() {
     console.warn(`Could not fetch SPY bars: ${e.message}. RS will be null for all stocks.`);
   }
   
-  console.log(`Scanning ${tickers.length} tickers from ${TICKERS_FILE} (${from} to ${to})`);
+  console.log(`Scanning ${tickers.length} tickers (${from} to ${to})`);
   console.log(`Loaded ${Object.keys(fundamentals).length} fundamentals, ${Object.keys(industryRanks).length} ranked industries`);
 
   const results = [];
@@ -214,16 +175,16 @@ async function runScan() {
     results,
   };
 
-  fs.writeFileSync(RESULTS_FILE, JSON.stringify(payload, null, 2));
-  
-  // Save backtest snapshot for future analysis (NEW)
+  await saveScanResultsToDb(payload);
+
+  // Save backtest snapshot for future analysis
   try {
-    saveScanSnapshot(results, new Date());
+    await saveScanSnapshot(results, new Date());
   } catch (e) {
     console.warn('Could not save backtest snapshot:', e.message);
   }
   
-  console.log(`Done. Scored ${results.length} tickers (${vcpBullishCount} VCP bullish). Written to ${RESULTS_FILE}`);
+  console.log(`Done. Scored ${results.length} tickers (${vcpBullishCount} VCP bullish). Saved to DB.`);
   return payload;
 }
 
@@ -240,9 +201,9 @@ async function* runScanStream() {
   const tickers = await getTickers();
   const delayMs = Number(process.env.SCAN_DELAY_MS) || 150;
   
-  // Load fundamentals and industry data
-  const fundamentals = loadFundamentals();
-  const industryReturns = loadIndustryYahooReturns();
+  // Load fundamentals and industry returns (TradingView)
+  const fundamentals = await loadFundamentals();
+  const industryReturns = await loadIndustryReturns(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
   
   // Fetch SPY bars once for RS calculations (NEW)

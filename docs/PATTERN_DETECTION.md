@@ -161,7 +161,7 @@ Ran full scan on 500 tickers:
 1. **server/patternDetection.js** (NEW) - Pattern detection logic
 2. **server/vcp.js** - Added pattern detection integration
 3. **src/pages/Dashboard.tsx** - Added Setup column with pattern display
-4. **data/scan-results.json** - Updated with pattern data
+4. **Scan results (DB)** - Updated with pattern data (stored in scan_results)
 
 ## Next Steps (Future Enhancements)
 

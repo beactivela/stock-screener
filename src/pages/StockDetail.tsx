@@ -523,11 +523,13 @@ export default function StockDetail() {
     const w = chartWrapperRef.current?.clientWidth ?? 0
     if (w <= 0) return
 
+    // Left price scale so VCP high/low labels appear on the left (not right)
     const mainChart = createChart(chartContainerRef.current, {
       ...CHART_OPTIONS,
       width: w,
       height: 380,
-      rightPriceScale: { borderColor: '#334155', minimumWidth: 60 },
+      leftPriceScale: { visible: true, borderColor: '#334155', minimumWidth: 60 },
+      rightPriceScale: { visible: false },
     })
     const rsiChart = createChart(rsiChartRef.current, {
       ...CHART_OPTIONS,
@@ -570,7 +572,7 @@ export default function StockDetail() {
         return acc
       }, [])
     }
-    const candle = mainChart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false })
+    const candle = mainChart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, priceScaleId: 'left' })
     const candleSorted = dedupeByTime(candleData)
     candle.setData(candleSorted)
 
@@ -599,10 +601,10 @@ export default function StockDetail() {
     const allMarkers = [...blueMarkers, ...yellowMarkers, ...opus45Markers].sort((a, b) => (a.time as number) - (b.time as number))
     candle.setMarkers(allMarkers as any)
 
-    const ma10Series = mainChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma20Series = mainChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma50Series = mainChart.addLineSeries({ color: '#8b5cf6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma150Series = mainChart.addLineSeries({ color: '#ec4899', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma10Series = mainChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false, priceScaleId: 'left' })
+    const ma20Series = mainChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false, priceScaleId: 'left' })
+    const ma50Series = mainChart.addLineSeries({ color: '#8b5cf6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false, priceScaleId: 'left' })
+    const ma150Series = mainChart.addLineSeries({ color: '#ec4899', lineWidth: 1, lastValueVisible: false, priceLineVisible: false, priceScaleId: 'left' })
     ma10Series.setData(dedupeByTime(ma10Data))
 
     // Volume histogram (overlay at bottom) + 20 MA volume line
@@ -642,6 +644,7 @@ export default function StockDetail() {
         lineStyle: 2,
         lastValueVisible: false,
         priceLineVisible: false,
+        priceScaleId: 'left',
       })
       vcpLine.setData([
         { time: (pb.highTimeUtc ?? Math.floor(new Date(pb.highTime).getTime() / 1000)) as any, value: pb.highPrice },
@@ -1039,24 +1042,35 @@ export default function StockDetail() {
                 </thead>
                 <tbody>
                   {/* Current open position (buy signal in last 2 days or holding) */}
-                  {opus45History.currentStatus === 'in_position' && opus45History.lastBuySignal && (
-                    <tr className="border-t border-slate-700/50 bg-slate-800/50">
-                      <td className="py-1.5 pr-3">
-                        <span className="text-emerald-400 font-medium">BUY</span>
-                        {opus45History.lastBuySignal.grade && (
-                          <span className="ml-1 text-slate-500 text-xs">{opus45History.lastBuySignal.grade}</span>
-                        )}
-                      </td>
-                      <td className="py-1.5 pr-3 text-slate-300">
-                        {new Date(opus45History.lastBuySignal.time * 1000).toISOString().slice(0, 10)}
-                      </td>
-                      <td className="py-1.5 pr-3 font-mono text-slate-200">${opus45History.lastBuySignal.price.toFixed(2)}</td>
-                      <td className="py-1.5 pr-3 text-slate-500">—</td>
-                      <td className="py-1.5 pr-3 text-slate-500">—</td>
-                      <td className="py-1.5 pr-3 text-slate-300">{opus45History.holdingPeriod ?? '—'}</td>
-                      <td className="py-1.5 font-mono text-right text-amber-400">open</td>
-                    </tr>
-                  )}
+                  {opus45History.currentStatus === 'in_position' && opus45History.lastBuySignal && (() => {
+                    const entryPrice = opus45History.lastBuySignal!.price
+                    // Current price: VCP last close, or latest bar close from chart data
+                    const currentPrice = displayVcp?.lastClose ?? (bars.length ? Number(bars[bars.length - 1].c) : null)
+                    const unrealizedReturnPct = currentPrice != null ? ((currentPrice - entryPrice) / entryPrice) * 100 : null
+                    const unrealizedDollars = currentPrice != null ? currentPrice - entryPrice : null
+                    return (
+                      <tr className="border-t border-slate-700/50 bg-slate-800/50">
+                        <td className="py-1.5 pr-3">
+                          <span className="text-emerald-400 font-medium">BUY</span>
+                          {opus45History.lastBuySignal!.grade && (
+                            <span className="ml-1 text-slate-500 text-xs">{opus45History.lastBuySignal!.grade}</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-3 text-slate-300">
+                          {new Date(opus45History.lastBuySignal!.time * 1000).toISOString().slice(0, 10)}
+                        </td>
+                        <td className="py-1.5 pr-3 font-mono text-slate-200">${entryPrice.toFixed(2)}</td>
+                        <td className="py-1.5 pr-3 text-slate-500">—</td>
+                        <td className="py-1.5 pr-3 text-slate-500">—</td>
+                        <td className="py-1.5 pr-3 text-slate-300">{opus45History.holdingPeriod ?? '—'}</td>
+                        <td className={`py-1.5 font-mono text-right font-medium ${unrealizedReturnPct != null ? (unrealizedReturnPct >= 0 ? 'text-emerald-400' : 'text-red-400') : 'text-amber-400'}`}>
+                          {unrealizedReturnPct != null && unrealizedDollars != null
+                            ? `${unrealizedReturnPct >= 0 ? '+' : ''}${unrealizedReturnPct.toFixed(1)}% ($${unrealizedDollars >= 0 ? '+' : ''}${unrealizedDollars.toFixed(0)})`
+                            : 'open'}
+                        </td>
+                      </tr>
+                    )
+                  })()}
                   {/* Last sell (if we're not in position, show most recent sell for context) */}
                   {opus45History.currentStatus === 'no_position' && opus45History.lastSellSignal && (
                     <tr className="border-t border-slate-700/50">

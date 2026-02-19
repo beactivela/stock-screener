@@ -22,6 +22,7 @@ import {
   loadLearnedParams,
   DEFAULT_PARAMS
 } from './adaptiveStrategy.js';
+import { loadTickers } from './db/tickers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -52,21 +53,13 @@ for (const arg of process.argv.slice(2)) {
 // LOAD TICKERS
 // ============================================================================
 
-function loadTickers() {
-  const tickersPath = path.join(DATA_DIR, 'tickers.txt');
-  
-  if (!fs.existsSync(tickersPath)) {
-    console.error('❌ No tickers.txt found in data directory');
+async function loadTickersFromSource() {
+  const tickers = await loadTickers();
+  if (!tickers.length) {
+    console.error('❌ No tickers in DB. Run populate-tickers.js first.');
     process.exit(1);
   }
-  
-  const tickers = fs.readFileSync(tickersPath, 'utf8')
-    .split('\n')
-    .map(t => t.trim())
-    .filter(t => t && !t.startsWith('#') && !t.includes('/'));
-  
-  console.log(`📋 Loaded ${tickers.length} tickers from tickers.txt`);
-  
+  console.log(`📋 Loaded ${tickers.length} tickers from DB`);
   return tickers;
 }
 
@@ -81,7 +74,7 @@ async function main() {
   console.log('═'.repeat(60) + '\n');
   
   // Load tickers
-  let tickers = loadTickers();
+  let tickers = await loadTickersFromSource();
   
   // Limit if requested
   if (CONFIG.maxTickers) {
@@ -90,7 +83,7 @@ async function main() {
   }
   
   // Load learned parameters (or defaults)
-  const params = loadLearnedParams();
+  const params = await loadLearnedParams();
   const isLearned = JSON.stringify(params) !== JSON.stringify(DEFAULT_PARAMS);
   
   if (isLearned) {
@@ -143,7 +136,7 @@ async function main() {
       
       // Apply and save
       const newParams = applyLearning(params, learning);
-      saveLearning(newParams, results.summary);
+      await saveLearning(newParams, results.summary);
       console.log('\n✅ Applied and saved parameter adjustments');
     } else {
       console.log(`\n⚠️ ${learning.reason || 'No adjustments needed'}`);

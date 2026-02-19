@@ -1,6 +1,6 @@
-# Supabase Migration
+# Supabase (Database)
 
-This directory contains schema and instructions for migrating flat JSON storage to Supabase.
+All application data and cache are stored in Supabase. The app reads from and writes to the database; there is no file-based JSON storage for runtime data. This directory contains the schema and setup instructions.
 
 ## Quick start
 
@@ -35,28 +35,159 @@ This directory contains schema and instructions for migrating flat JSON storage 
    });
    ```
 
-## Schema overview
+## Schema overview (data in DB)
 
-| Table | Source JSON | Purpose |
-|-------|-------------|---------|
-| `tickers` | tickers.txt | Scan universe (one row per ticker) |
-| `fundamentals` | fundamentals.json | Cached Yahoo fundamentals per ticker |
-| `scan_runs` + `scan_results` | scan-results.json | Scan metadata + per-ticker results |
-| `bars_cache` | bars/{TICKER}_1d.json | OHLCV time series per ticker |
-| `opus45_signals_cache` | opus45-signals.json | Cached Opus4.5 signal output |
-| `trades` | trades.json | Trade journal |
-| `trade_stats` | trades.json stats | Denormalized trade stats |
-| `industry_cache` | industrials.json, all-industries.json, sectors.json | Industry caches (keyed) |
-| `industry_yahoo_returns` | industry-yahoo-returns.json | Returns by industry name |
-| `backtest_snapshots` | backtests/scan-{date}.json | Historical scan snapshots |
-| `backtest_results` | runBacktest output | Forward return backtest results |
-| `regime_bars` | regime/spy_5y.json, qqq_5y.json | Regime bar data |
-| `regime_models`, `regime_current`, `regime_backtest` | regime/model_*.json, etc. | HMM regime state |
-| `opus45_weights` | opus45-learning/optimized-weights.json | Learned signal weights |
-| `adaptive_strategy_params` | adaptive-strategy/learned-params.json | Strategy params |
+| Table | Purpose |
+|-------|---------|
+| `tickers` | Scan universe (one row per ticker) |
+| `fundamentals` | Cached Yahoo fundamentals per ticker (cache in DB) |
+| `scan_runs` + `scan_results` | Scan metadata + per-ticker results |
+| `bars_cache` | OHLCV time series per ticker (cache in DB) |
+| `opus45_signals_cache` | Cached Opus4.5 signal output (cache in DB) |
+| `trades` | Trade journal |
+| `trade_stats` | Denormalized trade stats |
+| `industry_cache` | Industry caches (keyed); cache in DB |
+| `industry_yahoo_returns` | Legacy (unused); industry returns now from TradingView API |
+| `backtest_snapshots` | Historical scan snapshots |
+| `backtest_results` | Forward return backtest results |
+| `regime_bars` | Regime bar data |
+| `regime_models`, `regime_current`, `regime_backtest` | HMM regime state |
+| `opus45_weights` | Learned signal weights |
+| `adaptive_strategy_params` | Strategy params |
 
-## Next steps
+All caches (bars, fundamentals, industry, opus45 signals, etc.) are persisted in these tables; nothing is stored in JSON files at runtime.
 
-- Implement data-access layer in `server/db/` that reads/writes Supabase when configured, falls back to files otherwise
-- Add migration script to bulk-import existing JSON into Supabase
-- Wire API routes to use DB when `isSupabaseConfigured()` is true
+## Scheduled scan (Supabase Cron)
+
+To run the full VCP scan **every 24 hours after 5 PM CST**, use Supabase’s Cron to call your API.
+
+1. **Deploy your API** somewhere that can run the scan (e.g. Railway, Render, or a Vercel serverless that forwards to an external API). Note the base URL (e.g. `https://your-app.railway.app`).
+
+2. **Set a cron secret** in your app’s env (and in Supabase if you store it there):
+   ```bash
+   CRON_SECRET=your-random-secret-string
+   ```
+
+3. **Create the Cron job in Supabase**  
+   Dashboard → **Integrations** → **Cron** → **Create a new job** (or [Cron Jobs](https://supabase.com/dashboard/project/_/integrations/cron/jobs)).
+
+   - **Schedule:** 5 PM CST = **23:00 UTC** → cron expression: `0 23 * * *`  
+     (CST is UTC-6; during CDT use the same 23:00 UTC for “after market close”.)
+   - **Type:** HTTP request  
+   - **URL:** `https://YOUR_API_BASE_URL/api/cron/scan`  
+   - **Method:** POST  
+   - **Headers:**  
+     - `Content-Type: application/json`  
+     - `Authorization: Bearer YOUR_CRON_SECRET`  
+       (Use the same value as `CRON_SECRET` in your app.)
+
+   If your Supabase project has **pg_net** enabled, you can instead define the job in SQL:
+
+   ```sql
+   select cron.schedule(
+     'daily-scan-5pm-cst',
+     '0 23 * * *',
+     $$
+     select net.http_post(
+       url := 'https://YOUR_API_BASE_URL/api/cron/scan',
+       headers := jsonb_build_object(
+         'Content-Type', 'application/json',
+         'Authorization', 'Bearer ' || current_setting('app.cron_secret', true)
+       ),
+       body := '{}',
+       timeout_milliseconds := 10000
+     ) as request_id;
+     $$
+   );
+   ```
+   (Store the secret in Vault or an `app.cron_secret` setting instead of hardcoding.)
+
+4. **Optional:** Leave `CRON_SECRET` unset in development if you want to call `POST /api/cron/scan` without auth (not recommended in production).
+
+The `/api/cron/scan` endpoint returns **202 Accepted** immediately and runs the scan in the background so the Cron request does not time out.
+
+### Option B: Edge Function (paste into Dashboard)
+
+Use an Edge Function so the API URL and secret live only in Supabase secrets. Create the function in the Dashboard, then schedule it with Cron.
+
+1. **Dashboard** → **Edge Functions** → **Create a new function** → name it `trigger-scan`.
+
+2. **Set secrets** (Dashboard → Project Settings → Edge Functions → Secrets):
+   - `SCAN_API_URL` = your API base URL, e.g. `https://your-app.railway.app` (no trailing slash)
+   - `CRON_SECRET` = same value as `CRON_SECRET` in your app’s env
+
+3. **Paste this code** as the function body (replace the default):
+
+```ts
+/**
+ * Trigger daily VCP scan. Set secrets: SCAN_API_URL, CRON_SECRET
+ */
+const SCAN_API_URL = Deno.env.get("SCAN_API_URL");
+const CRON_SECRET = Deno.env.get("CRON_SECRET");
+
+Deno.serve(async (_req: Request) => {
+  if (!SCAN_API_URL?.trim()) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "SCAN_API_URL not set. Add it in Edge Function secrets.",
+      }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  const base = SCAN_API_URL.replace(/\/$/, "");
+  const url = `${base}/api/cron/scan`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(CRON_SECRET ? { Authorization: `Bearer ${CRON_SECRET}` } : {}),
+      },
+      body: JSON.stringify({ triggeredAt: new Date().toISOString() }),
+    });
+
+    const status = res.status;
+    let body: unknown;
+    const text = await res.text();
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { raw: text };
+    }
+
+    return new Response(
+      JSON.stringify({
+        ok: status >= 200 && status < 400,
+        status,
+        apiResponse: body,
+      }),
+      {
+        status: status >= 400 ? status : 200,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "Failed to call scan API",
+        detail: message,
+      }),
+      { status: 502, headers: { "Content-Type": "application/json" } }
+    );
+  }
+});
+```
+
+4. **Deploy** the function (Dashboard or `supabase functions deploy trigger-scan`).
+
+5. **Schedule it:** Dashboard → **Integrations** → **Cron** → **Create job**  
+   - **Schedule:** `0 23 * * *` (5 PM CST = 23:00 UTC)  
+   - **Type:** Supabase Edge Function  
+   - **Function:** `trigger-scan`
+
+The same code lives in `supabase/functions/trigger-scan/index.ts` in this repo.
