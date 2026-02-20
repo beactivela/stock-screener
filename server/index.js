@@ -59,11 +59,11 @@ const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 100
 app.use(cors());
 app.use(express.json());
 
-// On Vercel, writes (POST) cannot persist; return clear error instead of filesystem failure
+// On Vercel without Supabase, writes cannot persist (read-only filesystem). With Supabase, POSTs write to DB.
 app.use((req, res, next) => {
-  if (process.env.VERCEL && req.method === 'POST' && req.path.startsWith('/api')) {
+  if (process.env.VERCEL && !isSupabaseConfigured() && req.method === 'POST' && req.path.startsWith('/api')) {
     return res.status(503).json({
-      error: 'Writes are disabled on Vercel (read-only filesystem). Run the API locally or set VITE_API_URL to an external API for scans and fetches.',
+      error: 'Writes are disabled on Vercel (read-only filesystem). Set SUPABASE_URL and SUPABASE_SERVICE_KEY in Vercel env vars, or run the API locally / set VITE_API_URL to an external API.',
     });
   }
   next();

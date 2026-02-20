@@ -2,11 +2,9 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": null,
-  "rewrites": [
-    { "source": "/((?!api).*)", "destination": "/index.html" }
-  ],
+  "rewrites": [{ "source": "/((?!api).*)", "destination": "/index.html" }],
   "functions": {
-    "api/*.js": { "maxDuration": 30, "runtime": "nodejs20.x" },
-    "api/scan/*.js": { "maxDuration": 30, "runtime": "nodejs20.x" }
+    "api/*.js": { "maxDuration": 30 },
+    "api/scan/*.js": { "maxDuration": 30 }
   }
 }
