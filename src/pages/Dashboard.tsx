@@ -153,7 +153,7 @@ export default function Dashboard() {
   const [opus45Signals, setOpus45Signals] = useState<Opus45Signal[]>([])
   /** Per-ticker Opus score for every analyzed ticker (800+); used for table column. */
   const [opus45AllScores, setOpus45AllScores] = useState<Array<{ ticker: string; opus45Confidence: number; opus45Grade: string }>>([])
-  const [opus45Loading, setOpus45Loading] = useState(false)
+  const [, setOpus45Loading] = useState(false)
   const [opus45Stats, setOpus45Stats] = useState<{ total: number; strong: number; moderate: number; weak: number; avgConfidence: number; avgRiskReward: number } | null>(null)
 
   // Load scan-results (includes Opus4.5 when ?includeOpus=true) — single fetch for unified payload

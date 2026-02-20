@@ -83,7 +83,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
     }
   }, [scanState.running, scanState.scanId, scanState.progress.startedAt]);
 
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollIntervalRef = useRef<number | null>(null);
 
   const startPolling = () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
