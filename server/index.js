@@ -31,7 +31,7 @@ import { loadScanResults as loadScanResultsFromDb, saveScanResults as saveScanRe
 import { getBars as getBarsFromDb, saveBars as saveBarsToDb } from './db/bars.js';
 import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
 import { loadOpus45Signals as loadOpus45SignalsFromDb, saveOpus45Signals as saveOpus45SignalsToDb } from './db/opus45.js';
-import { isSupabaseConfigured } from './supabase.js';
+import { getSupabase, isSupabaseConfigured } from './supabase.js';
 // Trade Journal system for logging and learning from real trades
 import { 
   loadTrades, 
@@ -1496,7 +1496,10 @@ app.post('/api/industry-data/collect', async (req, res) => {
     res.flush?.();
   };
 
-  // Ensure industries directory exists
+  // Vercel: no persistent filesystem; skip industry file writes
+  if (process.env.VERCEL) {
+    return res.status(503).json({ error: 'Industry data collection writes to disk. Run locally or use VITE_API_URL to an external API.' });
+  }
   if (!fs.existsSync(INDUSTRY_DATA_DIR)) {
     fs.mkdirSync(INDUSTRY_DATA_DIR, { recursive: true });
   }
@@ -2471,12 +2474,18 @@ app.get('/api/regime/backtest', (req, res) => {
   }
 });
 
-// 5-year OHLCV bars used for regime training (SPY or QQQ)
-app.get('/api/regime/bars/:ticker', (req, res) => {
+// 5-year OHLCV bars used for regime training (SPY or QQQ). Supabase when configured (Vercel); else file.
+app.get('/api/regime/bars/:ticker', async (req, res) => {
   try {
     const ticker = (req.params.ticker || '').toUpperCase();
     if (ticker !== 'SPY' && ticker !== 'QQQ') {
       return res.status(400).json({ error: 'Ticker must be SPY or QQQ' });
+    }
+    if (isSupabaseConfigured()) {
+      const supabase = getSupabase();
+      const { data, error } = await supabase.from('regime_bars').select('results').eq('ticker', ticker).single();
+      if (error || !data) return res.status(404).json({ error: '5y data not found. Run: npm run fetch-regime-data' });
+      return res.json({ ticker, results: data.results || [] });
     }
     const filePath = path.join(DATA_DIR, 'regime', `${ticker.toLowerCase()}_5y.json`);
     if (!fs.existsSync(filePath)) {
