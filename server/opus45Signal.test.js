@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { 
   checkMandatoryCriteria, 
+  getMandatoryThresholds,
   calculateConfidenceScore, 
   generateOpus45Signal,
   checkExitSignal,
@@ -112,7 +113,8 @@ describe('checkMandatoryCriteria', () => {
         at10MA: true, 
         at20MA: false, 
         atWhichMA: '10 MA' 
-      }
+      },
+      maSlope: { isRising: true, slopePct14d: 5, slopePct5d: 1 }
     };
 
     const result = checkMandatoryCriteria(params);
@@ -211,6 +213,29 @@ describe('checkMandatoryCriteria', () => {
     const result = checkMandatoryCriteria(params);
     assert.strictEqual(result.passed, false);
     assert.ok(result.failedCriteria.some(f => f.includes('MA support')));
+  });
+});
+
+describe('Opus4.5 threshold overrides', () => {
+  it('merges overrides into defaults', () => {
+    const merged = getMandatoryThresholds({ minRelativeStrength: 60 });
+    assert.strictEqual(merged.minRelativeStrength, 60);
+  });
+
+  it('respects threshold overrides in mandatory check', () => {
+    const params = {
+      bars: [],
+      relativeStrength: 65,
+      contractions: 2,
+      patternConfidence: 50,
+      maAlignment: { aligned: true, ma200Rising: true },
+      stats52w: { pctFromHigh: 10, pctAboveLow: 30 },
+      entryPoint: { at10MA: true, at20MA: false },
+      maSlope: { isRising: true, isRising14d: true, isRising5d: true, slopePct14d: 2, slopePct5d: 0.5 },
+      thresholdsOverride: { minRelativeStrength: 60 },
+    };
+    const result = checkMandatoryCriteria(params);
+    assert.strictEqual(result.passed, true);
   });
 });
 
@@ -331,18 +356,109 @@ describe('calculateConfidenceScore', () => {
 });
 
 // ============================================================================
+// TEST: NEW FACTORS — Industry Trend + Short-Term Price Action
+// ============================================================================
+
+describe('calculateConfidenceScore — industry trend factor', () => {
+  it('adds points when industry 3-month return is strongly positive', () => {
+    const base = {
+      contractions: 3,
+      volumeDryUp: true,
+      patternConfidence: 60,
+      entryPoint: { at10MA: true },
+      volumeConfirmation: { confirmed: true },
+      relativeStrength: 85,
+      industryRank: 15,
+    };
+
+    const withTrend = { ...base, industryReturn3Mo: 15 };
+    const withoutTrend = { ...base, industryReturn3Mo: -5 };
+
+    const scoreTrend = calculateConfidenceScore(withTrend, DEFAULT_WEIGHTS);
+    const scoreNoTrend = calculateConfidenceScore(withoutTrend, DEFAULT_WEIGHTS);
+
+    assert.ok(
+      scoreTrend.confidence > scoreNoTrend.confidence,
+      `Industry trending up (${scoreTrend.confidence}) should score higher than down (${scoreNoTrend.confidence})`
+    );
+  });
+
+  it('gives partial credit for moderate industry trend', () => {
+    const base = {
+      contractions: 3,
+      volumeDryUp: true,
+      patternConfidence: 60,
+      entryPoint: { at10MA: true },
+      volumeConfirmation: { confirmed: true },
+      relativeStrength: 85,
+    };
+
+    const moderate = { ...base, industryReturn3Mo: 6 };
+    const none = { ...base };
+
+    const scoreMod = calculateConfidenceScore(moderate, DEFAULT_WEIGHTS);
+    const scoreNone = calculateConfidenceScore(none, DEFAULT_WEIGHTS);
+
+    assert.ok(scoreMod.confidence >= scoreNone.confidence);
+  });
+});
+
+describe('calculateConfidenceScore — recent price action factor', () => {
+  it('adds points for strong recent 5-day return', () => {
+    const base = {
+      contractions: 3,
+      volumeDryUp: true,
+      patternConfidence: 60,
+      entryPoint: { at10MA: true },
+      volumeConfirmation: { confirmed: true },
+      relativeStrength: 85,
+    };
+
+    const strong = { ...base, recentReturn5d: 4 };
+    const weak = { ...base, recentReturn5d: -3 };
+
+    const scoreStrong = calculateConfidenceScore(strong, DEFAULT_WEIGHTS);
+    const scoreWeak = calculateConfidenceScore(weak, DEFAULT_WEIGHTS);
+
+    assert.ok(
+      scoreStrong.confidence > scoreWeak.confidence,
+      `Strong recent action (${scoreStrong.confidence}) should score higher than weak (${scoreWeak.confidence})`
+    );
+  });
+
+  it('ignores the factor when not provided', () => {
+    const base = {
+      contractions: 3,
+      volumeDryUp: true,
+      patternConfidence: 60,
+      entryPoint: { at10MA: true },
+      volumeConfirmation: { confirmed: true },
+      relativeStrength: 85,
+    };
+
+    const withAction = { ...base, recentReturn5d: 3 };
+    const without = { ...base };
+
+    const s1 = calculateConfidenceScore(withAction, DEFAULT_WEIGHTS);
+    const s2 = calculateConfidenceScore(without, DEFAULT_WEIGHTS);
+
+    assert.ok(s1.confidence >= s2.confidence);
+  });
+});
+
+// ============================================================================
 // TEST: EXIT SIGNALS
 // ============================================================================
 
 describe('checkExitSignal', () => {
-  it('triggers stop loss when price drops 4%', () => {
+  it('triggers stop loss when price drops 7%+', () => {
     const position = {
       ticker: 'TEST',
       entryPrice: 100,
       entryDate: Date.now() - 10 * 24 * 60 * 60 * 1000
     };
 
-    // Generate bars ending at 95 (5% down from 100)
+    // Generate bars ending at 92 (8% down from 100)
     const bars = [];
     for (let i = 0; i < 20; i++) {
       const price = 100 - (i * 0.5);  // Gradually declining
@@ -355,88 +471,44 @@ describe('checkExitSignal', () => {
         v: 100000
       });
     }
-    // Last bar at 95 (5% below entry)
-    bars[bars.length - 1].c = 95;
+    // Last bar at 92 (8% below entry)
+    bars[bars.length - 1].c = 92;
 
     const result = checkExitSignal(position, bars);
     assert.strictEqual(result.exitSignal, true);
     assert.strictEqual(result.exitType, 'STOP_LOSS');
   });
 
-  it('triggers exit when below 10 MA', () => {
+  it('triggers exit when 3 consecutive closes below 10 MA', () => {
     const position = {
       ticker: 'TEST',
       entryPrice: 100,
-      entryDate: Date.now() - 10 * 24 * 60 * 60 * 1000
+      highSinceEntry: 105
     };
 
-    // Generate bars with a clear downward cross of 10 MA
-    // Start high (above entry), then drop so last close is below 10 MA
+    // Build bars: 15 bars at 105 (establishes 10 MA ~105), then 5 declining bars
+    // Need at least 3 of the last bars below the 10 MA for the 3-day rule
     const bars = [];
-    for (let i = 0; i < 20; i++) {
-      // First 10 bars: steadily at 105 (above entry, establishes 10 MA ~105)
-      // Last 10 bars: drop to create a clear cross below 10 MA
-      let price;
-      if (i < 10) {
-        price = 105;  // Establishes 10 MA at ~105
-      } else {
-        price = 105 - ((i - 10) * 1.5);  // Drop: 105, 103.5, 102, 100.5, 99, 97.5, 96, 94.5, 93, 91.5
-      }
-      
+    for (let i = 0; i < 15; i++) {
       bars.push({
         t: Date.now() - (20 - i) * 24 * 60 * 60 * 1000,
-        o: price + 0.2,
-        h: price + 1,
-        l: price - 1,
-        c: price,
-        v: 100000
+        o: 105, h: 105.5, l: 104.5, c: 105, v: 100000
       });
     }
-
-    // At this point:
-    // - 10 MA is calculated from last 10 closes: ~98.25 (average of declining prices)
-    // - Last close is 91.5, which is well below the 10 MA
-    // - Still within 4% stop loss of entry (100): 91.5/100 = -8.5%, so stop loss triggers first
-    
-    // Actually, let's make the final price 97 (within 4% stop, but below 10 MA which should be ~100+)
-    // Need a scenario where we're above stop loss threshold but below 10 MA
-    
-    // Recreate: start at 105, 10 MA will be around 104, last close at 102 (below 10 MA, above -4% stop)
-    bars.length = 0;
-    for (let i = 0; i < 15; i++) {
-      const price = 105;
-      bars.push({
-        t: Date.now() - (15 - i) * 24 * 60 * 60 * 1000,
-        o: price,
-        h: price + 0.5,
-        l: price - 0.5,
-        c: price,
-        v: 100000
-      });
-    }
-    // Add 5 declining bars
+    // 5 declining bars all below 10 MA (~105 → the last 3 will satisfy the 3-day rule)
     for (let i = 0; i < 5; i++) {
       const price = 105 - (i + 1) * 0.8;  // 104.2, 103.4, 102.6, 101.8, 101
       bars.push({
         t: Date.now() - (5 - i) * 24 * 60 * 60 * 1000,
-        o: price + 0.5,
-        h: price + 0.8,
-        l: price - 0.2,
-        c: price,
-        v: 100000
+        o: price + 0.5, h: price + 0.8, l: price - 0.2, c: price, v: 100000
       });
     }
-    
-    // Entry price 100, last close 101 (1% above entry, no stop loss)
-    // 10 MA = avg of last 10 closes = (105*5 + 104.2 + 103.4 + 102.6 + 101.8 + 101)/10 = 103.8
-    // 101 < 103.8, so below 10 MA
-    
-    // But wait, the test was for entry at 100. Let's re-read the logic.
-    // Exit is triggered if: (close < sma10) regardless of entry price
-    
+
+    // Entry price 100, last close 101 → within 7% stop (no stop loss)
+    // 10 MA drifts down but still ~103-104, and last 3 closes are below it
     const result = checkExitSignal(position, bars);
     assert.strictEqual(result.exitSignal, true);
-    assert.strictEqual(result.exitType, 'BELOW_10MA');
+    assert.strictEqual(result.exitType, 'BELOW_10MA_3DAY');
   });
 
   it('does not trigger exit when above 10 MA and within stop', () => {
@@ -511,6 +583,25 @@ describe('generateOpus45Signal', () => {
       assert.ok('riskRewardRatio' in signal);
     }
   });
+
+  it('allows seed mode when strict mandatory criteria fail', () => {
+    const bars = generateStage2Bars(252);
+    const vcpResult = {
+      ticker: 'SEED',
+      relativeStrength: 80,
+      contractions: 0,
+      patternConfidence: 10,
+      volumeDryUp: false,
+      pattern: 'VCP',
+    };
+
+    const strictSignal = generateOpus45Signal(vcpResult, bars, null, null, DEFAULT_WEIGHTS, null, false);
+    assert.strictEqual(strictSignal.signal, false);
+
+    const seedSignal = generateOpus45Signal(vcpResult, bars, null, null, DEFAULT_WEIGHTS, null, true);
+    assert.strictEqual(seedSignal.signal, true);
+    assert.strictEqual(seedSignal.seedMode, true);
+  });
 });
 
 // ============================================================================
@@ -532,7 +623,9 @@ describe('Constants and Defaults', () => {
       'industryTop40',
       'institutionalOwnership',
       'epsGrowthPositive',
-      'relativeStrengthBonus'
+      'relativeStrengthBonus',
+      'pctFromHighIdeal',
+      'pctFromHighGood'
     ];
 
     for (const key of requiredKeys) {
@@ -549,8 +642,8 @@ describe('Constants and Defaults', () => {
   });
 
   it('EXIT_THRESHOLDS has correct values', () => {
-    assert.strictEqual(EXIT_THRESHOLDS.stopLossPercent, 4);
-    assert.strictEqual(EXIT_THRESHOLDS.below10MADays, 1);
+    assert.strictEqual(EXIT_THRESHOLDS.stopLossPercent, 7);
+    assert.strictEqual(EXIT_THRESHOLDS.below10MADays, 3);  // 3 consecutive closes below 10 MA
   });
 });
 

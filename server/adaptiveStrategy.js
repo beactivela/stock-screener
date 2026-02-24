@@ -62,10 +62,14 @@ export const DEFAULT_PARAMS = {
     minEntryScore: 35,              // Minimum score to trigger entry (relaxed from 50)
   },
   
-  // Exit rules
+  // Exit rules — matched to opus45Signal.js EXIT_THRESHOLDS for consistency
   exit: {
-    hardStopPct: 4,                 // Hard stop loss (% from entry)
-    trailingStopATR: 2.0,           // Trailing stop in ATR units
+    hardStopPct: 7,                 // Widened from 4% → 7% (Minervini's 7-8% rule)
+    trailingStopATR: 2.5,           // Widened from 2.0 → 2.5 ATR (let winners breathe)
+    breakevenActivationPct: 5,      // Move stop to breakeven once up this %
+    breakevenBufferPct: 0.5,        // Buffer below entry for breakeven stop
+    profitLockActivationPct: 10,    // Trail after reaching this gain %
+    profitGivebackPct: 50,          // Keep at least this % of max unrealized gain
     profitTarget1: 10,              // First profit target (%)
     profitTarget2: 20,              // Second profit target (%)
     profitTarget3: 30,              // Third profit target (%)
@@ -73,14 +77,15 @@ export const DEFAULT_PARAMS = {
     scaleOut2Pct: 33,               // % to sell at target 2
     maxHoldDays: 90,                // Maximum holding period
     exitBelowMA: 10,                // Exit if closes below this MA
+    consecutiveBelowMADays: 3,      // Consecutive closes below MA to trigger exit (was 1)
   },
   
-  // Position sizing
+  // Position sizing — concentrated for compounding
   position: {
-    accountRiskPct: 2.0,            // % of account to risk per trade
-    maxPositionPct: 15,             // Max position size (% of account)
-    maxPositions: 10,               // Max concurrent positions
-    minPositionSize: 2000,          // Minimum $ per position
+    accountRiskPct: 2.5,            // Raised from 2% → 2.5% (slightly more aggressive)
+    maxPositionPct: 20,             // Raised from 15% → 20% (more concentrated bets)
+    maxPositions: 6,                // Reduced from 10 → 6 (fewer, higher-conviction)
+    minPositionSize: 3000,          // Raised from $2K → $3K (meaningful positions)
   },
   
   // Learning settings
@@ -801,7 +806,9 @@ function findSignalsForTicker(ticker, bars, spxCloses, params) {
 }
 
 /**
- * Find exit point for a signal
+ * Find exit point for a signal using multi-phase exit strategy.
+ * Matches the exit logic in historicalSignalScanner.simulateTrade() and
+ * opus45Signal.checkExitSignal() for consistency across the system.
  */
 function findExit(bars, entryIdx, entryPrice, params) {
   const { exit } = params;
@@ -811,9 +818,11 @@ function findExit(bars, entryIdx, entryPrice, params) {
   let exitPrice = entryPrice;
   let exitReason = 'MAX_HOLD';
   let highSinceEntry = entryPrice;
+  let consecutiveBelowMA = 0;
   
   const maxIdx = Math.min(entryIdx + exit.maxHoldDays, bars.length - 1);
   const atrValues = atr(bars, 14);
+  const requiredDaysBelowMA = exit.consecutiveBelowMADays || 3;
   
   for (let i = entryIdx + 1; i <= maxIdx; i++) {
     const bar = bars[i];
@@ -821,41 +830,49 @@ function findExit(bars, entryIdx, entryPrice, params) {
     const currentATR = atrValues[i] || (price * 0.02);
     
     highSinceEntry = Math.max(highSinceEntry, bar.h);
-    
     const returnPct = ((price - entryPrice) / entryPrice) * 100;
+    const maxGainPct = ((highSinceEntry - entryPrice) / entryPrice) * 100;
     
-    // Hard stop
+    // PHASE 1: Hard stop
     if (returnPct <= -exit.hardStopPct) {
-      exitIdx = i;
-      exitPrice = price;
-      exitReason = 'HARD_STOP';
-      break;
+      exitIdx = i; exitPrice = price; exitReason = 'HARD_STOP'; break;
     }
     
-    // Trailing stop (only when in profit)
+    // PHASE 2: Breakeven stop (once up 5%+, protect entry)
+    if (maxGainPct >= (exit.breakevenActivationPct || 5) && returnPct <= -(exit.breakevenBufferPct || 0.5)) {
+      exitIdx = i; exitPrice = price; exitReason = 'BREAKEVEN_STOP'; break;
+    }
+    
+    // PHASE 3: Trailing profit lock (once up 10%+, keep ≥50% of max gain)
+    if (maxGainPct >= (exit.profitLockActivationPct || 10)) {
+      const minAcceptableReturn = maxGainPct * (1 - (exit.profitGivebackPct || 50) / 100);
+      if (returnPct < minAcceptableReturn) {
+        exitIdx = i; exitPrice = price; exitReason = 'PROFIT_LOCK'; break;
+      }
+    }
+    
+    // PHASE 4: ATR trailing stop (after meaningful gain, use ATR-based trail)
     const trailingStopPrice = highSinceEntry - (currentATR * exit.trailingStopATR);
-    if (price < trailingStopPrice && returnPct > 5) {
-      exitIdx = i;
-      exitPrice = price;
-      exitReason = 'TRAILING_STOP';
-      break;
+    if (price < trailingStopPrice && returnPct > (exit.breakevenActivationPct || 5)) {
+      exitIdx = i; exitPrice = price; exitReason = 'TRAILING_STOP'; break;
     }
     
-    // Close below 10 MA
-    const sma10 = closes.slice(Math.max(0, i - 9), i + 1).reduce((a, b) => a + b, 0) / Math.min(10, i + 1);
-    if (price < sma10 && i - entryIdx >= 5) {
-      exitIdx = i;
-      exitPrice = price;
-      exitReason = 'BELOW_10MA';
-      break;
+    // PHASE 5: Consecutive closes below exit MA
+    const exitMALen = exit.exitBelowMA || 10;
+    const exitMA = closes.slice(Math.max(0, i - exitMALen + 1), i + 1).reduce((a, b) => a + b, 0) / Math.min(exitMALen, i + 1);
+    if (price < exitMA && i - entryIdx >= 5) {
+      consecutiveBelowMA++;
+      if (consecutiveBelowMA >= requiredDaysBelowMA) {
+        exitIdx = i; exitPrice = price; exitReason = 'BELOW_10MA'; break;
+      }
+    } else {
+      consecutiveBelowMA = 0;
     }
   }
   
-  // Max hold exit
   if (exitReason === 'MAX_HOLD') {
     exitIdx = maxIdx;
     exitPrice = bars[exitIdx].c;
-    
     for (let i = entryIdx + 1; i <= exitIdx; i++) {
       highSinceEntry = Math.max(highSinceEntry, bars[i].h);
     }

@@ -10,9 +10,65 @@
  * The algorithm uses a two-tier system:
  * 1. MANDATORY CHECKLIST - All must pass to generate a signal
  * 2. CONFIDENCE SCORING - Ranks signals by quality (0-100)
+ * 
+ * SELF-LEARNING: Weights are auto-optimized from historical cross-stock analysis.
+ * Run POST /api/learning/optimize-weights to update weights based on real data.
  */
 
 import { sma, findPullbacks, nearMA } from './vcp.js';
+
+// Cache for optimized weights (refreshed periodically)
+let cachedOptimizedWeights = null;
+let cacheTimestamp = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Load optimized weights from database (with caching)
+ * Falls back to DEFAULT_WEIGHTS if not available
+ * 
+ * @returns {Promise<Object>} Weights object
+ */
+export async function getActiveWeights() {
+  const now = Date.now();
+  
+  // Return cached weights if still fresh
+  if (cachedOptimizedWeights && (now - cacheTimestamp) < CACHE_TTL_MS) {
+    return cachedOptimizedWeights;
+  }
+  
+  try {
+    // Dynamic import to avoid circular dependency
+    const { loadOptimizedWeights } = await import('./learning/autoOptimize.js');
+    const result = await loadOptimizedWeights();
+    
+    if (result.source === 'optimized' && result.weights) {
+      cachedOptimizedWeights = {
+        ...result.weights,
+        _source: 'optimized',
+        _signalsAnalyzed: result.signalsAnalyzed,
+        _generatedAt: result.generatedAt
+      };
+      cacheTimestamp = now;
+      console.log(`📊 Using optimized weights (from ${result.signalsAnalyzed} signals)`);
+      return cachedOptimizedWeights;
+    }
+  } catch (e) {
+    // Learning module not available or error - use defaults
+  }
+  
+  // Fallback to default weights
+  cachedOptimizedWeights = { ...DEFAULT_WEIGHTS, _source: 'default' };
+  cacheTimestamp = now;
+  return cachedOptimizedWeights;
+}
+
+/**
+ * Clear weight cache (call after optimization)
+ */
+export function clearWeightCache() {
+  cachedOptimizedWeights = null;
+  cacheTimestamp = 0;
+}
 
 /**
  * Default weights for the confidence scoring system.
@@ -56,6 +112,11 @@ export const DEFAULT_WEIGHTS = {
   pullbackIdeal: 10,     // 2–5% pullback: high-quality VCP re-test of 10 MA
   pullbackGood: 5,       // 5–8% pullback: valid but deeper, slight lower probability
 
+  // === DISTANCE FROM 52W HIGH (9 pts max) — learning can tune via pctFromHigh factor ===
+  // Closer to high = less overhead; iterative optimizer uses this when pctFromHigh is top factor
+  pctFromHighIdeal: 6,   // <5% from 52w high: strongest follow-through
+  pctFromHighGood: 3,    // 5–10% from 52w high
+
   // === ENTRY QUALITY (22 pts max) ===
   // 10 MA entries: 27.3% win rate vs 20 MA entries: 0% win rate (backtest data)
   entryAt10MA: 12,       // At 10 MA (tight, highest win rate)
@@ -78,6 +139,18 @@ export const DEFAULT_WEIGHTS = {
   institutionalOwnership: 5, // 50%+ institutional ownership (was 8)
   epsGrowthPositive: 5,      // Positive EPS growth (unchanged)
   relativeStrengthBonus: 3,  // RS > 80 bonus (was 5 — most of this moved to entryRSAbove90)
+
+  // === INDUSTRY TREND (8 pts max) ===
+  // 3-month return of the stock's industry group — capturing sector rotation.
+  // Stocks in rising industries have tailwinds; declining industries are headwinds.
+  industryTrendStrong: 8,    // Industry 3-month return ≥ 10%
+  industryTrendModerate: 4,  // Industry 3-month return ≥ 5%
+
+  // === RECENT PRICE ACTION (6 pts max) ===
+  // 5-day return: captures short-term momentum heading into the setup.
+  // Strong recent action (3%+) often precedes breakout follow-through.
+  recentActionStrong: 6,     // 5-day return ≥ 3%
+  recentActionGood: 3,       // 5-day return ≥ 1%
 };
 
 /**
@@ -105,15 +178,35 @@ export const MANDATORY_THRESHOLDS = {
 
 /**
  * Exit signal thresholds.
+ *
+ * REBALANCED for higher R:R to support 5-10% monthly compounding.
+ *
+ * BEFORE: 4% stop, 2-day 10MA exit, 60d max hold → avg return 1.12%, PF 1.52
+ * PROBLEM: Tight exits chop winners early. maxGain often 15-25% but actual
+ * exit captures only 2-5%. No trailing profit protection.
+ *
+ * AFTER: Multi-phase exit that widens initial risk (7% stop, matching
+ * Minervini's 7-8% rule) but aggressively protects profits once established.
+ *
+ * Phase 1 (initial):     Hard stop at -7% from entry
+ * Phase 2 (breakeven):   Once up 5%+, stop moves to entry (-0.5% buffer)
+ * Phase 3 (profit lock):  Once up 10%+, never give back >50% of max gain
+ * Phase 4 (trend exit):  3 consecutive closes below 10 MA
+ * Phase 5 (max hold):    90 trading days
  */
 export const EXIT_THRESHOLDS = {
-  stopLossPercent: 4,            // Sell if price drops 4% from entry
-  below10MADays: 2,              // Sell if closes below 10 MA for 2 CONSECUTIVE days
-  // Rationale: single-close below 10 MA is often intraday noise/wick.
-  // Two consecutive closes below = confirmed momentum shift.
-  // Backtest showed 2-day rule improves avg hold from 4.6 → 7.8 days and
-  // raises win rate from 3.5% → 19.4% on momentum stocks.
+  stopLossPercent: 7,            // Widened from 4% → 7% (Minervini uses 7-8%)
+  below10MADays: 3,              // Raised from 2 → 3 consecutive days below 10 MA
+  maxHoldDays: 90,               // Raised from 60 → 90 (big winners need time)
+  breakevenActivationPct: 5,     // Move stop to breakeven once up 5%
+  breakevenBufferPct: 0.5,       // Buffer below entry for breakeven stop (avoid noise)
+  profitLockActivationPct: 10,   // Start trailing profit lock once up 10%
+  profitGivebackPct: 50,         // Never give back more than 50% of max unrealized gain
 };
+
+export function getMandatoryThresholds(overrides = {}) {
+  return { ...MANDATORY_THRESHOLDS, ...(overrides || {}) };
+}
 
 /**
  * Calculate 52-week high and low statistics
@@ -354,10 +447,11 @@ export function checkMandatoryCriteria(params) {
     maAlignment,
     stats52w,
     entryPoint,
-    maSlope
+    maSlope,
+    thresholdsOverride
   } = params;
   
-  const thresholds = MANDATORY_THRESHOLDS;
+  const thresholds = getMandatoryThresholds(thresholdsOverride);
   const passedCriteria = [];
   const failedCriteria = [];
   
@@ -451,6 +545,61 @@ export function checkMandatoryCriteria(params) {
 }
 
 /**
+ * Seed-mode checklist — relaxed gate for bootstrapping signal pools.
+ * Only used when explicitly enabled for historical scans.
+ */
+export function checkSeedCriteria(params) {
+  const {
+    relativeStrength,
+    stats52w,
+    maSlope,
+    thresholdsOverride
+  } = params;
+
+  const thresholds = getMandatoryThresholds(thresholdsOverride);
+  const passedCriteria = [];
+  const failedCriteria = [];
+
+  if (relativeStrength && relativeStrength >= thresholds.minRelativeStrength) {
+    passedCriteria.push(`RS ${relativeStrength} >= ${thresholds.minRelativeStrength}`);
+  } else {
+    failedCriteria.push(`RS ${relativeStrength || '?'} < ${thresholds.minRelativeStrength}`);
+  }
+
+  // Seed mode is meant to be permissive, so slope is advisory only.
+  if (typeof maSlope?.slopePct14d === 'number') {
+    if (maSlope.slopePct14d >= thresholds.min10MASlopePct14d) {
+      passedCriteria.push(`10 MA slope 14d ${maSlope.slopePct14d}% >= ${thresholds.min10MASlopePct14d}%`);
+    } else {
+      passedCriteria.push(`10 MA slope 14d ${maSlope.slopePct14d}% below ${thresholds.min10MASlopePct14d}% (seed mode: allowed)`);
+    }
+  } else {
+    passedCriteria.push('10 MA slope unavailable (seed mode: skipped)');
+  }
+
+  if (stats52w && stats52w.pctFromHigh <= thresholds.maxDistanceFromHigh) {
+    passedCriteria.push(`Within ${stats52w.pctFromHigh}% of 52w high`);
+  } else {
+    failedCriteria.push(`Too far from 52w high (${stats52w?.pctFromHigh || '?'}%)`);
+  }
+
+  if (stats52w && stats52w.pctAboveLow >= thresholds.minAboveLow) {
+    passedCriteria.push(`${stats52w.pctAboveLow}% above 52w low`);
+  } else {
+    failedCriteria.push(`Not enough above 52w low (${stats52w?.pctAboveLow || '?'}%)`);
+  }
+
+  const passed = failedCriteria.length === 0;
+  return {
+    passed,
+    passedCount: passedCriteria.length,
+    totalCriteria: passedCriteria.length + failedCriteria.length,
+    passedCriteria,
+    failedCriteria
+  };
+}
+
+/**
  * CONFIDENCE SCORING - Ranks valid signals by quality
  * 
  * @param {Object} params - All parameters for scoring
@@ -469,7 +618,10 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
     institutionalOwnership,
     epsGrowth,
     maSlope,    // 10 MA slope data { slopePct14d, slopePct5d, isRising }
-    pullbackPct // NEW: % the stock pulled back from 5-day high to current price
+    pullbackPct, // % the stock pulled back from 5-day high to current price
+    pctFromHigh, // % below 52w high (learning: top factor drives pctFromHighIdeal/Good weights)
+    industryReturn3Mo, // 3-month return of the stock's industry group
+    recentReturn5d,    // 5-day price return heading into the setup
   } = params;
   
   let score = 0;
@@ -518,7 +670,20 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
       breakdown.push({ criterion: `Pullback quality`, points: 0, matched: false, actual: `${pullbackPct?.toFixed(1)}% (ideal: 2–5%)` });
     }
   }
-  
+
+  // === DISTANCE FROM 52W HIGH (9 pts max) — tunable by iterative optimizer when pctFromHigh is top factor ===
+  if (pctFromHigh !== undefined && pctFromHigh !== null) {
+    if (pctFromHigh < 5) {
+      score += (weights.pctFromHighIdeal ?? 0);
+      breakdown.push({ criterion: `Near 52w high IDEAL: ${pctFromHigh.toFixed(1)}% below`, points: weights.pctFromHighIdeal ?? 0, matched: true });
+    } else if (pctFromHigh < 10) {
+      score += (weights.pctFromHighGood ?? 0);
+      breakdown.push({ criterion: `Near 52w high GOOD: ${pctFromHigh.toFixed(1)}% below`, points: weights.pctFromHighGood ?? 0, matched: true });
+    } else {
+      breakdown.push({ criterion: 'Near 52w high', points: 0, matched: false, actual: `${pctFromHigh?.toFixed(1)}% (ideal: <5%)` });
+    }
+  }
+
   // === VCP TECHNICAL QUALITY (20 pts max — reduced from 40) ===
   // Still meaningful for confirming a proper base pattern, but NOT the key
   // win predictor. Slope and pullback quality are more predictive.
@@ -609,7 +774,33 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
     score += weights.relativeStrengthBonus;
     breakdown.push({ criterion: 'RS > 80 bonus', points: weights.relativeStrengthBonus, matched: true });
   }
-  
+
+  // === INDUSTRY TREND (8 pts max) ===
+  if (industryReturn3Mo != null) {
+    if (industryReturn3Mo >= 10) {
+      score += weights.industryTrendStrong;
+      breakdown.push({ criterion: `Industry trend STRONG: +${industryReturn3Mo.toFixed(1)}% (3mo)`, points: weights.industryTrendStrong, matched: true });
+    } else if (industryReturn3Mo >= 5) {
+      score += weights.industryTrendModerate;
+      breakdown.push({ criterion: `Industry trend MODERATE: +${industryReturn3Mo.toFixed(1)}% (3mo)`, points: weights.industryTrendModerate, matched: true });
+    } else {
+      breakdown.push({ criterion: 'Industry trend (3mo)', points: 0, matched: false, actual: `${industryReturn3Mo?.toFixed(1)}%` });
+    }
+  }
+
+  // === RECENT PRICE ACTION (6 pts max) ===
+  if (recentReturn5d != null) {
+    if (recentReturn5d >= 3) {
+      score += weights.recentActionStrong;
+      breakdown.push({ criterion: `Recent action STRONG: +${recentReturn5d.toFixed(1)}% (5d)`, points: weights.recentActionStrong, matched: true });
+    } else if (recentReturn5d >= 1) {
+      score += weights.recentActionGood;
+      breakdown.push({ criterion: `Recent action GOOD: +${recentReturn5d.toFixed(1)}% (5d)`, points: weights.recentActionGood, matched: true });
+    } else {
+      breakdown.push({ criterion: 'Recent price action (5d)', points: 0, matched: false, actual: `${recentReturn5d?.toFixed(1)}%` });
+    }
+  }
+
   // Calculate grade based on score
   const confidence = Math.min(100, Math.round(score));
   let grade = 'F';
@@ -629,7 +820,35 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
 }
 
 /**
- * Generate Opus4.5 Buy Signal for a stock
+ * Generate Opus4.5 Buy Signal (async version with auto-optimized weights)
+ * 
+ * This version automatically loads optimized weights from the learning system.
+ * Use this for API endpoints and production signal generation.
+ * 
+ * @param {Object} vcpResult - Result from checkVCP()
+ * @param {Array} bars - OHLC bars
+ * @param {Object} fundamentals - Company fundamentals (optional)
+ * @param {Object} industryData - Industry ranking data (optional)
+ * @returns {Promise<Object>} Complete Opus4.5 signal result with optimized weights
+ */
+export async function generateOpus45SignalAsync(vcpResult, bars, fundamentals = null, industryData = null) {
+  // Load optimized weights (cached, refreshes every 5 min)
+  const weights = await getActiveWeights();
+  
+  // Use sync version with loaded weights
+  const result = generateOpus45Signal(vcpResult, bars, fundamentals, industryData, weights);
+  
+  // Add weight source info to result
+  result.weightsSource = weights._source || 'default';
+  if (weights._signalsAnalyzed) {
+    result.weightsTrainedOn = weights._signalsAnalyzed;
+  }
+  
+  return result;
+}
+
+/**
+ * Generate Opus4.5 Buy Signal for a stock (sync version)
  * 
  * @param {Object} vcpResult - Result from checkVCP()
  * @param {Array} bars - OHLC bars
@@ -638,7 +857,7 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
  * @param {Object} weights - Custom weights from learning system (optional)
  * @returns {Object} Complete Opus4.5 signal result
  */
-export function generateOpus45Signal(vcpResult, bars, fundamentals = null, industryData = null, weights = DEFAULT_WEIGHTS) {
+export function generateOpus45Signal(vcpResult, bars, fundamentals = null, industryData = null, weights = DEFAULT_WEIGHTS, thresholdsOverride = null, seedMode = false) {
   const ticker = vcpResult.ticker || 'UNKNOWN';
   
   // Validate minimum data requirements
@@ -682,6 +901,7 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
   const institutionalOwnership = fundamentals?.pctHeldByInst || null;
   const epsGrowth = fundamentals?.qtrEarningsYoY || null;
   const industryRank = industryData?.rank || vcpResult.industryRank || null;
+  const industryReturn3Mo = industryData?.return3Mo ?? null;
   
   // Calculate pullback depth from recent 5-day high
   // Backtest showed: entries where stock pulled back 1-12% before touching MA
@@ -689,6 +909,10 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
   const closes5d = bars.slice(-6, -1).map(b => b.c);
   const high5d = closes5d.length > 0 ? Math.max(...closes5d) : lastClose;
   const pullbackPct = high5d > 0 ? ((high5d - lastClose) / high5d) * 100 : 0;
+
+  // Recent 5-day return (short-term price momentum)
+  const close5dAgo = bars.length >= 6 ? bars[lastIdx - 5].c : null;
+  const recentReturn5d = close5dAgo ? ((lastClose - close5dAgo) / close5dAgo) * 100 : null;
   
   // Check mandatory criteria
   const mandatoryCheck = checkMandatoryCriteria({
@@ -699,11 +923,17 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
     maAlignment,
     stats52w,
     entryPoint,
-    maSlope  // NEW: 10 MA slope check
+    maSlope,  // NEW: 10 MA slope check
+    thresholdsOverride
   });
+
+  const seedCheck = seedMode
+    ? checkSeedCriteria({ relativeStrength, stats52w, maSlope, thresholdsOverride })
+    : null;
+  const usedSeedMode = !!(seedMode && !mandatoryCheck.passed && seedCheck?.passed);
   
   // If mandatory criteria fail, return early
-  if (!mandatoryCheck.passed) {
+  if (!mandatoryCheck.passed && !usedSeedMode) {
     return {
       ticker,
       signal: false,
@@ -738,8 +968,11 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
     industryRank,
     institutionalOwnership,
     epsGrowth,
-    maSlope,     // 10 MA slope data (primary win predictor from backtest)
-    pullbackPct  // pullback % from 5-day high (NEW: ideal 2-5% for highest win rate)
+    maSlope,            // 10 MA slope data (primary win predictor from backtest)
+    pullbackPct,        // pullback % from 5-day high (ideal 2-5% for highest win rate)
+    pctFromHigh: stats52w?.pctFromHigh,
+    industryReturn3Mo,  // 3-month industry group return
+    recentReturn5d,     // 5-day price return heading into setup
   }, weights);
   
   // Determine signal strength
@@ -760,7 +993,8 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
     ticker,
     signal: true,
     signalType,
-    signalName: 'Opus4.5 Buy Signal',
+    signalName: usedSeedMode ? 'Opus4.5 Seed Signal' : 'Opus4.5 Buy Signal',
+    seedMode: usedSeedMode,
     
     // Confidence metrics
     opus45Confidence: confidenceResult.confidence,
@@ -783,8 +1017,9 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
     riskRewardRatio: Math.round(riskRewardRatio * 10) / 10,
     
     // Mandatory criteria
-    mandatoryPassed: true,
+    mandatoryPassed: mandatoryCheck.passed,
     mandatoryDetails: mandatoryCheck,
+    seedDetails: usedSeedMode ? seedCheck : null,
     
     // All metrics for transparency and learning
     metrics: {
@@ -806,7 +1041,9 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
       sma150: maAlignment.sma150,
       sma200: maAlignment.sma200,
       maSlope,
-      pullbackPct: Math.round(pullbackPct * 10) / 10
+      pullbackPct: Math.round(pullbackPct * 10) / 10,
+      industryReturn3Mo,
+      recentReturn5d: recentReturn5d != null ? Math.round(recentReturn5d * 10) / 10 : null,
     }
   };
 }
@@ -815,20 +1052,14 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
  * Check for EXIT signal on the current bar.
  *
  * EXIT RULES (in priority order):
- * 1. STOP_LOSS:      -4% from entry price (hard floor, executes immediately)
- * 2. BELOW_10MA_2DAY: 2 consecutive daily closes below 10 MA
- *    (requires caller to track prior-day close — see note below)
+ * 1. STOP_LOSS:      -7% from entry price (hard floor, executes immediately)
+ * 2. BREAKEVEN_STOP: Once up 5%+, stop moves to entry price (-0.5% buffer)
+ * 3. PROFIT_LOCK: Once up 10%+, never give back more than 50% of max gain
+ * 4. BELOW_10MA_3DAY: 3 consecutive daily closes below 10 MA
  *
- * NOTE: The 2-day consecutive rule requires knowing whether yesterday was
- * also below the 10 MA. Pass `priorBarBelowMA: true` in the position object
- * if the previous bar already closed below 10 MA. This way:
- * - Day 1 below 10 MA → exitSignal = false (warning only)
- * - Day 2 below 10 MA → exitSignal = true (confirmed exit)
+ * Uses bars array directly to check consecutive closes (no external state needed).
  *
- * This prevents single-bar whipsaw exits which were the primary cause of
- * the original signal's 3.5% win rate (exits in 1-3 days constantly).
- *
- * @param {Object} position - { entryPrice, ticker, priorBarBelowMA? }
+ * @param {Object} position - { entryPrice, ticker, highSinceEntry? }
  * @param {Array} bars - Current OHLC bars (at least 15)
  * @returns {Object} { exitSignal, exitType, exitPrice, exitReason, below10MA }
  */
@@ -838,152 +1069,168 @@ export function checkExitSignal(position, bars) {
   }
   
   const closes = bars.map(b => b.c);
+  const highs = bars.map(b => b.h);
   const lastIdx = bars.length - 1;
   const lastClose = closes[lastIdx];
   const lastBar = bars[lastIdx];
   
-  // Calculate 10 MA
   const sma10Arr = sma(closes, 10);
   const sma10 = sma10Arr[lastIdx];
   
   const below10MA = sma10 != null && lastClose < sma10;
   const pctFromEntry = ((lastClose - position.entryPrice) / position.entryPrice) * 100;
 
-  // EXIT RULE 1: Hard stop loss at -4%
-  const stopLossHit = pctFromEntry <= -EXIT_THRESHOLDS.stopLossPercent;
-  if (stopLossHit) {
+  // Track highest price since entry (use position state if available, else estimate from recent bars)
+  const highSinceEntry = position.highSinceEntry || Math.max(...highs.slice(-60));
+  const maxGainPct = ((highSinceEntry - position.entryPrice) / position.entryPrice) * 100;
+
+  // EXIT RULE 1: Hard stop loss
+  if (pctFromEntry <= -EXIT_THRESHOLDS.stopLossPercent) {
     return {
       exitSignal: true,
       exitType: 'STOP_LOSS',
       exitPrice: lastClose,
       exitDate: lastBar.t,
-      exitReason: `Stop loss hit: ${pctFromEntry.toFixed(1)}% from entry`,
+      exitReason: `Stop loss hit: ${pctFromEntry.toFixed(1)}% from entry (limit: -${EXIT_THRESHOLDS.stopLossPercent}%)`,
       pctFromEntry: Math.round(pctFromEntry * 10) / 10,
       sma10,
       below10MA
     };
   }
-  
-  // EXIT RULE 2: 2 CONSECUTIVE closes below 10 MA
-  // If this bar is below AND the prior bar was already below → confirmed exit
-  const priorBarBelowMA = position.priorBarBelowMA === true;
-  if (below10MA && priorBarBelowMA) {
+
+  // EXIT RULE 2: Breakeven stop (once up 5%+, never let it become a loser)
+  if (maxGainPct >= EXIT_THRESHOLDS.breakevenActivationPct && pctFromEntry <= -EXIT_THRESHOLDS.breakevenBufferPct) {
     return {
       exitSignal: true,
-      exitType: 'BELOW_10MA_2DAY',
+      exitType: 'BREAKEVEN_STOP',
       exitPrice: lastClose,
       exitDate: lastBar.t,
-      exitReason: `2 consecutive closes below 10 MA ${sma10?.toFixed(2)}`,
+      exitReason: `Breakeven stop: was up ${maxGainPct.toFixed(1)}%, now ${pctFromEntry.toFixed(1)}%`,
+      pctFromEntry: Math.round(pctFromEntry * 10) / 10,
+      sma10,
+      below10MA
+    };
+  }
+
+  // EXIT RULE 3: Trailing profit lock (once up 10%+, keep at least 50% of max gain)
+  if (maxGainPct >= EXIT_THRESHOLDS.profitLockActivationPct) {
+    const minAcceptableReturn = maxGainPct * (1 - EXIT_THRESHOLDS.profitGivebackPct / 100);
+    if (pctFromEntry < minAcceptableReturn) {
+      return {
+        exitSignal: true,
+        exitType: 'PROFIT_LOCK',
+        exitPrice: lastClose,
+        exitDate: lastBar.t,
+        exitReason: `Profit lock: max gain ${maxGainPct.toFixed(1)}%, current ${pctFromEntry.toFixed(1)}% < floor ${minAcceptableReturn.toFixed(1)}%`,
+        pctFromEntry: Math.round(pctFromEntry * 10) / 10,
+        sma10,
+        below10MA
+      };
+    }
+  }
+  
+  // EXIT RULE 4: N consecutive closes below 10 MA
+  const requiredDays = EXIT_THRESHOLDS.below10MADays;
+  let consecutiveBelow = 0;
+  for (let j = lastIdx; j > lastIdx - requiredDays && j >= 0; j--) {
+    if (sma10Arr[j] != null && closes[j] < sma10Arr[j]) {
+      consecutiveBelow++;
+    } else {
+      break;
+    }
+  }
+  if (consecutiveBelow >= requiredDays) {
+    return {
+      exitSignal: true,
+      exitType: `BELOW_10MA_${requiredDays}DAY`,
+      exitPrice: lastClose,
+      exitDate: lastBar.t,
+      exitReason: `${requiredDays} consecutive closes below 10 MA ${sma10?.toFixed(2)}`,
       pctFromEntry: Math.round(pctFromEntry * 10) / 10,
       sma10,
       below10MA
     };
   }
   
-  // No exit — but signal whether we're below 10 MA (day 1 warning)
   return {
     exitSignal: false,
     exitType: null,
     exitPrice: null,
     currentPrice: lastClose,
     pctFromEntry: Math.round(pctFromEntry * 10) / 10,
+    maxGainPct: Math.round(maxGainPct * 10) / 10,
     sma10,
-    below10MA,        // Caller should store this for next bar's priorBarBelowMA
+    below10MA,
     aboveStop: true,
-    above10MA: !below10MA
+    above10MA: !below10MA,
+    highSinceEntry: Math.max(highSinceEntry, lastBar.h)
   };
 }
 
 /**
- * Find the most recent buy signal in the last N days (if any)
- * Returns the buy signal if found and it hasn't been exited
+ * Check if there's a valid buy signal that should be recommended.
+ * 
+ * This is a fast check for the scanner. It checks if there's a signal on the current bar,
+ * then looks back 1-2 days (without recalculating VCP) to estimate entry timing.
+ * 
+ * For full accuracy (complete trade history, exact entry/exit dates), use the history endpoint
+ * which recalculates VCP for each bar. This function prioritizes speed for the scanner.
  * 
  * @param {Array} bars - OHLC bars (sorted by time ascending)
- * @param {Object} vcpResult - VCP analysis result
+ * @param {Object} vcpResult - VCP analysis result from scan (current bar)
  * @param {Object} fundamentals - Company fundamentals
  * @param {Object} industryData - Industry ranking data
  * @param {Object} weights - Custom weights
  * @param {number} maxDaysAgo - Maximum days ago for a valid signal (default 2)
- * @returns {Object|null} The active buy signal or null if exited/too old
+ * @param {Array} spyBars - Not used in simplified version (kept for API compatibility)
+ * @returns {Object|null} The active buy signal or null
  */
-function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weights, maxDaysAgo = 2) {
+function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weights, maxDaysAgo = 2, spyBars = null) {
   if (!bars || bars.length < 200) return null;
   
-  const closes = bars.map(b => b.c);
   const lastIdx = bars.length - 1;
-  const today = bars[lastIdx].t;
   
-  // Look back up to 90 bars (~3 months) so we catch open positions from buys 7+ days ago
-  const lookbackBars = 90;
-  const startIdx = Math.max(200, lastIdx - lookbackBars);
+  // Check if there's a valid buy signal on the CURRENT bar
+  const currentSignal = generateOpus45Signal(vcpResult, bars, fundamentals, industryData, weights);
   
-  let lastBuySignal = null;
-  let lastBuyIdx = -1;
-  let inPosition = false;
-  let entryPrice = 0;
-  let priorBarBelowMA = false; // Tracks if previous bar closed below 10 MA (2-day exit rule)
+  if (!currentSignal.signal) {
+    return null; // No valid signal today
+  }
   
-  // Scan through recent bars to find buy/sell signals
-  for (let i = startIdx; i <= lastIdx; i++) {
-    const barsUpToI = bars.slice(0, i + 1);
-    
-    if (!inPosition) {
-      // Check for buy signal at this bar
-      const signalAtI = generateOpus45Signal(vcpResult, barsUpToI, fundamentals, industryData, weights);
-      
-      if (signalAtI.signal) {
-        lastBuySignal = signalAtI;
-        lastBuyIdx = i;
-        inPosition = true;
-        entryPrice = bars[i].c;
-        priorBarBelowMA = false; // Reset 2-day tracker on new entry
-      }
-    } else {
-      // In position — check for exit signal.
-      // Pass priorBarBelowMA so checkExitSignal can apply the 2-day consecutive rule.
-      const exitCheck = checkExitSignal({ entryPrice, priorBarBelowMA }, barsUpToI);
-      
-      // Update the 2-day tracker for the next iteration
-      priorBarBelowMA = exitCheck.below10MA === true;
-      
-      if (exitCheck.exitSignal) {
-        // Position exited - no longer valid
-        inPosition = false;
-        lastBuySignal = null;
-        lastBuyIdx = -1;
-        entryPrice = 0;
-        priorBarBelowMA = false;
-      }
+  // Estimate how long we've been at/near the MA (rough heuristic for entry timing)
+  // Look back up to 3 days to see when price first came near 10 MA
+  const closes = bars.map(b => b.c);
+  const sma10Arr = sma(closes, 10);
+  const lastClose = closes[lastIdx];
+  const tolerance = MANDATORY_THRESHOLDS.maTolerance / 100;
+  
+  let firstNearMAIdx = lastIdx;
+  for (let i = Math.max(0, lastIdx - 3); i <= lastIdx; i++) {
+    const closeAtI = closes[i];
+    const sma10AtI = sma10Arr[i];
+    if (sma10AtI && Math.abs(closeAtI - sma10AtI) / sma10AtI <= tolerance) {
+      firstNearMAIdx = i;
+      break;
     }
   }
   
-  // If we're still in position with a valid buy signal, check if it's recent enough
-  if (inPosition && lastBuySignal && lastBuyIdx >= 0) {
-    const daysSinceBuy = lastIdx - lastBuyIdx;
-    const entryBar = bars[lastBuyIdx];
-    // Bar time may be in ms (Yahoo) or seconds; normalize to ms for Date()
-    let entryDate = entryBar && entryBar.t != null ? entryBar.t : null;
-    if (entryDate != null && entryDate < 1e12) entryDate = entryDate * 1000;
-    const entryPriceVal = entryPrice; // already set in loop
-
-    const base = {
-      ...lastBuySignal,
+  const daysSinceBuy = lastIdx - firstNearMAIdx;
+  const entryBar = bars[firstNearMAIdx];
+  let entryDate = entryBar && entryBar.t != null ? entryBar.t : null;
+  if (entryDate != null && entryDate < 1e12) entryDate = entryDate * 1000;
+  
+  // Only recommend if within maxDaysAgo
+  if (daysSinceBuy <= maxDaysAgo) {
+    return {
+      ...currentSignal,
       daysSinceBuy,
-      buyBarIndex: lastBuyIdx,
+      buyBarIndex: firstNearMAIdx,
       stillActive: true,
       entryDate,
-      entryPrice: entryPriceVal
+      entryPrice: bars[firstNearMAIdx].c
     };
-
-    // Signal must be within maxDaysAgo to be recommended
-    if (daysSinceBuy <= maxDaysAgo) {
-      return base;
-    }
-
-    // Signal is valid but older than maxDaysAgo - still in position but not a fresh recommendation
-    return { ...base, tooOldForRecommendation: true };
   }
-
+  
   return null;
 }
 
@@ -1000,9 +1247,10 @@ function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weight
  * @param {Object} fundamentalsByTicker - Map of ticker to fundamentals
  * @param {Object} industryRanks - Industry ranking data
  * @param {Object} weights - Custom weights (optional)
+ * @param {Array} spyBars - SPY/S&P 500 bars for RS calculation (optional)
  * @returns {{ signals: Array, allScores: Array<{ticker, opus45Confidence, opus45Grade}> }}
  */
-export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicker = {}, industryRanks = {}, weights = DEFAULT_WEIGHTS) {
+export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicker = {}, industryRanks = {}, weights = DEFAULT_WEIGHTS, spyBars = null) {
   const signals = [];
   const allScores = [];
   const MAX_DAYS_FOR_RECOMMENDATION = 2; // Only recommend if buy signal is within 2 days
@@ -1025,7 +1273,8 @@ export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicke
       fundamentals, 
       industryData, 
       weights,
-      MAX_DAYS_FOR_RECOMMENDATION
+      MAX_DAYS_FOR_RECOMMENDATION,
+      spyBars  // Pass SPY bars for accurate historical signal detection
     );
 
     // For allScores: show the confidence if there's an active position (even if old)

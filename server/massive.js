@@ -1,4 +1,7 @@
 /**
+ * DEPRECATED: Not used. Data is TradingView (tickers, industry) + Yahoo (OHLC bars).
+ * Kept for reference only. Remove this file if you do not need Massive.
+ *
  * Massive API client – all calls use server-side API key.
  * Base URL: https://api.massive.com
  * Docs: https://massive.com/docs/rest/stocks/aggregates/custom-bars
@@ -12,6 +15,10 @@ function getApiKey() {
   return key;
 }
 
+export function isMassiveConfigured() {
+  return !!(process.env.MASSIVE_API_KEY || process.env.VITE_MASSIVE_API_KEY);
+}
+
 function url(path, params = {}) {
   const key = getApiKey();
   const search = new URLSearchParams({ ...params, apiKey: key });
@@ -19,15 +26,33 @@ function url(path, params = {}) {
   return `${BASE}${path}${sep}${search}`;
 }
 
+/** Normalize ticker for Massive: ^GSPC (Yahoo index) → SPY for S&P 500 bars. */
+function normalizeTicker(ticker) {
+  const t = (ticker || '').trim().toUpperCase();
+  if (t === '^GSPC') return 'SPY';
+  return ticker;
+}
+
+/**
+ * OHLC bars for a ticker. from/to = YYYY-MM-DD.
+ * interval: '1d' | '1wk' | '1mo'. Returns array of { t, o, h, l, c, v } (t = ms).
+ */
+async function getBars(ticker, from, to, interval = '1d') {
+  const sym = normalizeTicker(ticker);
+  const timespan = interval === '1wk' ? 'week' : interval === '1mo' ? 'month' : 'day';
+  const path = `/v2/aggs/ticker/${encodeURIComponent(sym)}/range/1/${timespan}/${from}/${to}`;
+  const res = await fetch(url(path, { sort: 'asc', limit: 5000 }));
+  if (!res.ok) throw new Error(`Massive bars: ${res.status} ${await res.text()}`);
+  const data = await res.json();
+  const raw = data.results || [];
+  return raw.map((r) => ({ t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v ?? 0 }));
+}
+
 /**
  * Daily OHLC for a ticker. from/to = YYYY-MM-DD.
  */
 async function getDailyBars(ticker, from, to) {
-  const path = `/v2/aggs/ticker/${encodeURIComponent(ticker)}/range/1/day/${from}/${to}`;
-  const res = await fetch(url(path, { sort: 'asc', limit: 5000 }));
-  if (!res.ok) throw new Error(`Massive bars: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return data.results || [];
+  return getBars(ticker, from, to, '1d');
 }
 
 /**
@@ -60,7 +85,9 @@ async function getDividends(params = {}) {
 
 export {
   getApiKey,
+  getBars,
   getDailyBars,
   getEtfConstituents,
   getDividends,
+  normalizeTicker,
 };

@@ -1,6 +1,6 @@
 /**
  * Regime HMM data layer: fetch and persist 5 years of SPY and QQQ daily bars
- * for Hidden Markov Model training. Uses existing Yahoo getDailyBars; chunks
+ * for Hidden Markov Model training. Uses Yahoo getDailyBars; chunks
  * requests if needed (Yahoo may limit single request size).
  */
 

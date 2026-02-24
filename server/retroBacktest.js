@@ -318,17 +318,15 @@ function checkBuySignalAt(bars, closes, spxCloses, idx) {
 }
 
 /**
- * Calculate exit for a signal using improved exit strategy.
+ * Calculate exit for a signal using multi-phase exit strategy.
+ * Matches opus45Signal.EXIT_THRESHOLDS for consistency across the system.
  *
- * EXIT RULES (in priority order):
- * 1. STOP_LOSS: -4% from entry (hard floor, no exceptions)
- * 2. BELOW_10MA_2DAY: 2 consecutive daily closes below 10 MA
- *    (prevents whipsaw exits from single intraday dips)
- * 3. MAX_HOLD: Exit at max hold time regardless
- *
- * WHY 2-day rule: In Minervini's system a single close below the 10 MA
- * is often intraday noise or a test. Two consecutive closes signals a 
- * true shift in short-term momentum and warrants exit.
+ * EXIT PHASES (in priority order):
+ * 1. STOP_LOSS:      Hard stop at -7% (Minervini's 7-8% rule)
+ * 2. BREAKEVEN_STOP: Once up 5%+, stop moves to entry (-0.5% buffer)
+ * 3. PROFIT_LOCK:    Once up 10%+, never give back >50% of max gain
+ * 4. BELOW_10MA:     3 consecutive closes below 10 MA
+ * 5. MAX_HOLD:       90 trading days
  *
  * @param {Array} bars - All bars
  * @param {Array} closes - All closes
@@ -341,57 +339,65 @@ function calculateExit(bars, closes, entryIdx, entryPrice, maxHoldDays) {
   let exitPrice = null;
   let exitReason = 'MAX_HOLD';
   
-  // Track MFE and MAE
   let maxPrice = entryPrice;
   let minPrice = entryPrice;
   
   const maxIdx = Math.min(entryIdx + maxHoldDays, bars.length - 1);
+  const requiredDaysBelowMA = EXIT_THRESHOLDS.below10MADays || 3;
+  const breakevenActivation = EXIT_THRESHOLDS.breakevenActivationPct || 5;
+  const breakevenBuffer = EXIT_THRESHOLDS.breakevenBufferPct || 0.5;
+  const profitLockActivation = EXIT_THRESHOLDS.profitLockActivationPct || 10;
+  const profitGivebackPct = EXIT_THRESHOLDS.profitGivebackPct || 50;
   
-  // Track consecutive days below 10 MA (prevents whipsaw exits)
   let consecutiveBelowCount = 0;
   
   for (let i = entryIdx + 1; i <= maxIdx; i++) {
     const bar = bars[i];
     const price = bar.c;
     
-    // Update MFE/MAE
     maxPrice = Math.max(maxPrice, bar.h);
     minPrice = Math.min(minPrice, bar.l);
     
-    // EXIT RULE 1: Hard stop loss (-4%)
     const currentReturn = (price - entryPrice) / entryPrice * 100;
+    const maxGainPct = (maxPrice - entryPrice) / entryPrice * 100;
+    
+    // PHASE 1: Hard stop loss
     if (currentReturn <= -EXIT_THRESHOLDS.stopLossPercent) {
-      exitIdx = i;
-      exitPrice = price;
-      exitReason = 'STOP_LOSS';
-      break;
+      exitIdx = i; exitPrice = price; exitReason = 'STOP_LOSS'; break;
     }
     
-    // EXIT RULE 2: 2 consecutive closes below 10 MA (prevents whipsaw)
+    // PHASE 2: Breakeven stop (once up 5%+, protect entry)
+    if (maxGainPct >= breakevenActivation && currentReturn <= -breakevenBuffer) {
+      exitIdx = i; exitPrice = price; exitReason = 'BREAKEVEN_STOP'; break;
+    }
+    
+    // PHASE 3: Trailing profit lock (once up 10%+, keep ≥50% of max gain)
+    if (maxGainPct >= profitLockActivation) {
+      const minAcceptableReturn = maxGainPct * (1 - profitGivebackPct / 100);
+      if (currentReturn < minAcceptableReturn) {
+        exitIdx = i; exitPrice = price; exitReason = 'PROFIT_LOCK'; break;
+      }
+    }
+    
+    // PHASE 4: Consecutive closes below 10 MA
     if (i >= 10) {
       const sma10 = closes.slice(i - 9, i + 1).reduce((a, b) => a + b, 0) / 10;
       if (price < sma10) {
         consecutiveBelowCount++;
-        if (consecutiveBelowCount >= 2) {
-          exitIdx = i;
-          exitPrice = price;
-          exitReason = 'BELOW_10MA_2DAY';
-          break;
+        if (consecutiveBelowCount >= requiredDaysBelowMA) {
+          exitIdx = i; exitPrice = price; exitReason = `BELOW_10MA_${requiredDaysBelowMA}DAY`; break;
         }
       } else {
-        // Reset counter if price recovers above 10 MA
         consecutiveBelowCount = 0;
       }
     }
   }
   
-  // EXIT RULE 3: Max hold time
+  // PHASE 5: Max hold time
   if (exitIdx === -1) {
     exitIdx = maxIdx;
     exitPrice = bars[exitIdx].c;
     exitReason = 'MAX_HOLD';
-    
-    // Update MFE/MAE for remaining bars
     for (let i = entryIdx + 1; i <= exitIdx; i++) {
       maxPrice = Math.max(maxPrice, bars[i].h);
       minPrice = Math.min(minPrice, bars[i].l);
@@ -547,22 +553,39 @@ export async function runRetroBacktest(options = {}) {
   const {
     tickers = [],
     lookbackMonths = 12,
-    holdingPeriod = 60,
+    holdingPeriod = 90,   // Raised from 60 → 90 to match EXIT_THRESHOLDS.maxHoldDays
     topN = null, // Limit to top N tickers by some criteria
+    fromDate = null,
+    toDate = null,
+    warmupMonths = 12, // Extra history for MA calculations when using explicit ranges
+    signalFrom = null,
+    signalTo = null,
   } = options;
   
+  const usingExplicitRange = Boolean(fromDate || toDate || signalFrom || signalTo);
   console.log(`🔄 Starting retrospective backtest: ${tickers.length} tickers, ${lookbackMonths} months lookback, ${holdingPeriod} day hold`);
   
   // Calculate date range
   // We need at least 200 trading days (~10 months) for MA calculation PLUS the lookback period
   // So we fetch: lookbackMonths + 12 months (for MA history)
-  const toDate = new Date();
-  const fromDate = new Date();
-  const totalMonthsToFetch = lookbackMonths + 12; // Extra 12 months for MA calculation
-  fromDate.setMonth(fromDate.getMonth() - totalMonthsToFetch);
-  
-  const fromStr = fromDate.toISOString().slice(0, 10);
-  const toStr = toDate.toISOString().slice(0, 10);
+  const toDateObj = toDate ? new Date(`${toDate}T12:00:00Z`) : new Date();
+  let fromDateObj;
+  let fromStr;
+  let toStr;
+
+  if (fromDate) {
+    fromDateObj = new Date(`${fromDate}T12:00:00Z`);
+    const warmupStart = new Date(fromDateObj);
+    warmupStart.setUTCMonth(warmupStart.getUTCMonth() - warmupMonths);
+    fromStr = warmupStart.toISOString().slice(0, 10);
+  } else {
+    fromDateObj = new Date();
+    const totalMonthsToFetch = lookbackMonths + 12; // Extra 12 months for MA calculation
+    fromDateObj.setMonth(fromDateObj.getMonth() - totalMonthsToFetch);
+    fromStr = fromDateObj.toISOString().slice(0, 10);
+  }
+
+  toStr = toDateObj.toISOString().slice(0, 10);
   
   console.log(`📅 Date range: ${fromStr} to ${toStr} (${totalMonthsToFetch} months total)`);
   
@@ -613,10 +636,23 @@ export async function runRetroBacktest(options = {}) {
     }
   }
   
-  console.log(`✅ Retrospective backtest complete: ${processed} tickers, ${allSignals.length} signals, ${errors} errors`);
+  let filteredSignals = allSignals;
+  if (usingExplicitRange) {
+    const rangeStart = signalFrom || fromDate || null;
+    const rangeEnd = signalTo || toDate || null;
+    if (rangeStart && rangeEnd) {
+      filteredSignals = allSignals.filter((s) => s.signalDateStr >= rangeStart && s.signalDateStr <= rangeEnd);
+    } else if (rangeStart) {
+      filteredSignals = allSignals.filter((s) => s.signalDateStr >= rangeStart);
+    } else if (rangeEnd) {
+      filteredSignals = allSignals.filter((s) => s.signalDateStr <= rangeEnd);
+    }
+  }
+
+  console.log(`✅ Retrospective backtest complete: ${processed} tickers, ${filteredSignals.length} signals, ${errors} errors`);
   
   // Aggregate statistics
-  const stats = aggregateResults(allSignals);
+  const stats = aggregateResults(filteredSignals);
   
   return {
     config: {
@@ -624,9 +660,14 @@ export async function runRetroBacktest(options = {}) {
       holdingPeriod,
       tickersAnalyzed: processed,
       tickersWithErrors: errors,
-      dateRange: { from: fromStr, to: toStr }
+      dateRange: {
+        from: fromStr,
+        to: toStr,
+        signalFrom: signalFrom || fromDate || null,
+        signalTo: signalTo || toDate || null,
+      }
     },
-    signals: allSignals,
+    signals: filteredSignals,
     summary: stats.summary,
     byExitReason: stats.byExitReason,
     byMonth: stats.byMonth,
@@ -634,10 +675,36 @@ export async function runRetroBacktest(options = {}) {
   };
 }
 
+function getSignalDateStr(signal) {
+  return (
+    signal.signalDateStr ||
+    signal.entryDate ||
+    signal.entry_date ||
+    (signal.signalDate ? new Date(signal.signalDate).toISOString().slice(0, 10) : null) ||
+    null
+  );
+}
+
+function getExitReason(signal) {
+  return signal.exitReason || signal.exitType || 'UNKNOWN';
+}
+
+function getMfe(signal) {
+  if (typeof signal.mfe === 'number') return signal.mfe;
+  if (typeof signal.maxGain === 'number') return signal.maxGain;
+  return 0;
+}
+
+function getMae(signal) {
+  if (typeof signal.mae === 'number') return signal.mae;
+  if (typeof signal.maxDrawdown === 'number') return signal.maxDrawdown;
+  return 0;
+}
+
 /**
  * Aggregate signal results into statistics
  */
-function aggregateResults(signals) {
+export function aggregateResults(signals) {
   if (signals.length === 0) {
     return {
       summary: {
@@ -658,9 +725,9 @@ function aggregateResults(signals) {
   const avgReturn = signals.reduce((sum, s) => sum + s.returnPct, 0) / signals.length;
   const avgWin = wins.length > 0 ? wins.reduce((sum, s) => sum + s.returnPct, 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? losses.reduce((sum, s) => sum + s.returnPct, 0) / losses.length : 0;
-  const avgHoldTime = signals.reduce((sum, s) => sum + s.daysHeld, 0) / signals.length;
-  const avgMFE = signals.reduce((sum, s) => sum + s.mfe, 0) / signals.length;
-  const avgMAE = signals.reduce((sum, s) => sum + s.mae, 0) / signals.length;
+  const avgHoldTime = signals.reduce((sum, s) => sum + (s.daysHeld ?? s.holdingDays ?? 0), 0) / signals.length;
+  const avgMFE = signals.reduce((sum, s) => sum + getMfe(s), 0) / signals.length;
+  const avgMAE = signals.reduce((sum, s) => sum + getMae(s), 0) / signals.length;
   
   const winRate = Math.round(wins.length / signals.length * 1000) / 10;
   
@@ -670,13 +737,14 @@ function aggregateResults(signals) {
   // By exit reason
   const byExitReason = {};
   signals.forEach(s => {
-    if (!byExitReason[s.exitReason]) {
-      byExitReason[s.exitReason] = { count: 0, returns: [], wins: 0, losses: 0 };
+    const reason = getExitReason(s);
+    if (!byExitReason[reason]) {
+      byExitReason[reason] = { count: 0, returns: [], wins: 0, losses: 0 };
     }
-    byExitReason[s.exitReason].count++;
-    byExitReason[s.exitReason].returns.push(s.returnPct);
-    if (s.outcome === 'WIN') byExitReason[s.exitReason].wins++;
-    if (s.outcome === 'LOSS') byExitReason[s.exitReason].losses++;
+    byExitReason[reason].count++;
+    byExitReason[reason].returns.push(s.returnPct);
+    if (s.outcome === 'WIN') byExitReason[reason].wins++;
+    if (s.outcome === 'LOSS') byExitReason[reason].losses++;
   });
   
   Object.keys(byExitReason).forEach(reason => {
@@ -689,7 +757,8 @@ function aggregateResults(signals) {
   // By month (to see seasonality)
   const byMonth = {};
   signals.forEach(s => {
-    const month = s.signalDateStr.slice(0, 7); // YYYY-MM
+    const dateStr = getSignalDateStr(s);
+    const month = dateStr ? dateStr.slice(0, 7) : 'unknown';
     if (!byMonth[month]) {
       byMonth[month] = { count: 0, returns: [], wins: 0, losses: 0 };
     }
@@ -709,7 +778,7 @@ function aggregateResults(signals) {
   // By entry MA
   const byEntryMA = {};
   signals.forEach(s => {
-    const ma = s.entryMA;
+    const ma = s.entryMA || 'Unknown';
     if (!byEntryMA[ma]) {
       byEntryMA[ma] = { count: 0, returns: [], wins: 0, losses: 0 };
     }

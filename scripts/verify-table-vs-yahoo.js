@@ -1,12 +1,10 @@
 /**
- * Verify table data (Close, 50 MA) against live Yahoo Finance data.
- * Uses the same yahoo-finance2 + VCP logic as the app. Run: node scripts/verify-table-vs-yahoo.js
+ * Verify table data (Close, 50 MA) against live bar data (Yahoo).
+ * Uses same Yahoo + VCP logic as the app. Run: node scripts/verify-table-vs-yahoo.js
  *
  * Compares:
- * - lastClose (table "Close") vs Yahoo's latest close in the same date range
- * - sma50 (table "50 MA" value) vs our 50-day SMA from Yahoo bars
- *
- * Spot-check on Yahoo: https://finance.yahoo.com/quote/TICKER — "Previous Close" should match our Close.
+ * - lastClose (table "Close") vs live latest close in the same date range
+ * - sma50 (table "50 MA" value) vs our 50-day SMA from bars
  */
 
 import fs from 'fs';
@@ -15,7 +13,6 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Use server modules (same as scan) — dynamic import in async to avoid top-level await for lint
 const serverDir = path.join(__dirname, '..', 'server');
 let getDailyBars, checkVCP;
 
@@ -48,9 +45,9 @@ function main() {
     process.exit(1);
   }
 
-  console.log('Verifying table data vs Yahoo Finance (same date range as scan)\n');
+  console.log('Verifying table data vs live bars (Yahoo, same date range as scan)\n');
   console.log(`Scan range: ${from} → ${to}\n`);
-  console.log('Ticker | Table Close | Yahoo lastClose | Table 50 MA | Yahoo sma50 | Match');
+  console.log('Ticker | Table Close | Live lastClose | Table 50 MA | Live sma50 | Match');
   console.log('-'.repeat(85));
 
   (async () => {
@@ -60,20 +57,20 @@ function main() {
       const tableSma50 = row?.sma50;
       try {
         const bars = await getDailyBars(ticker, from, to);
-        const vcp = checkVCP(bars);
-        const yahooClose = vcp.lastClose;
-        const yahooSma50 = vcp.sma50;
-        const closeMatch = tableClose != null && yahooClose != null && Math.abs(tableClose - yahooClose) < 0.02;
-        const smaMatch = tableSma50 != null && yahooSma50 != null && Math.abs(tableSma50 - yahooSma50) < 0.02;
+        const vcpResult = checkVCP(bars);
+        const liveClose = vcpResult.lastClose;
+        const liveSma50 = vcpResult.sma50;
+        const closeMatch = tableClose != null && liveClose != null && Math.abs(tableClose - liveClose) < 0.02;
+        const smaMatch = tableSma50 != null && liveSma50 != null && Math.abs(tableSma50 - liveSma50) < 0.02;
         const status = closeMatch && smaMatch ? 'OK' : closeMatch ? '50 MA diff' : 'MISMATCH';
         console.log(
-          `${ticker.padEnd(6)} | ${(tableClose ?? '').toString().padEnd(11)} | ${(yahooClose ?? '').toString().padEnd(15)} | ${(tableSma50 ?? '').toString().padEnd(11)} | ${(yahooSma50 ?? '').toString().padEnd(10)} | ${status}`
+          `${ticker.padEnd(6)} | ${(tableClose ?? '').toString().padEnd(11)} | ${(liveClose ?? '').toString().padEnd(15)} | ${(tableSma50 ?? '').toString().padEnd(11)} | ${(liveSma50 ?? '').toString().padEnd(10)} | ${status}`
         );
       } catch (err) {
         console.log(`${ticker.padEnd(6)} | ${(tableClose ?? '').toString().padEnd(11)} | ERROR: ${err.message}`);
       }
     }
-    console.log('\nSpot-check: Open https://finance.yahoo.com/quote/TICKER — "Previous Close" should match Table Close (if scan end date = last trading day).');
+    console.log('\nSpot-check: Table Close should match last close in scan date range (if scan end date = last trading day).');
   })();
 }
 

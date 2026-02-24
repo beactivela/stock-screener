@@ -12,6 +12,8 @@ const Industry = lazy(() => import('./pages/Industry'))
 const IndustryTickers = lazy(() => import('./pages/IndustryTickers'))
 const Backtest = lazy(() => import('./pages/Backtest'))
 const Regime = lazy(() => import('./pages/Regime'))
+const Agents = lazy(() => import('./pages/Agents'))
+const Style = lazy(() => import('./pages/Style'))
 
 function PageFallback() {
   return (
@@ -34,7 +36,9 @@ export default function App() {
                 <Route path="/industry-tickers/:industryName" element={<IndustryTickers />} />
                 <Route path="/backtest" element={<Backtest />} />
                 <Route path="/regime" element={<Regime />} />
+                <Route path="/agents" element={<Agents />} />
                 <Route path="/stock/:ticker" element={<StockDetail />} />
+                <Route path="/style" element={<Style />} />
               </Routes>
             </Suspense>
           </ErrorBoundary>

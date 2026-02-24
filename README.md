@@ -2,7 +2,7 @@
 
 Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contraction Pattern)** criteria: consolidation with contracting pullbacks and support at 10 / 20 / 50-day moving averages. Scans **S&P 500 (SPY)** and **Russell 2000 (IWM)**; can run every 24 hours.
 
-- **Stack:** React (Vite) + Tailwind, Express backend, Massive API for real stock data.
+- **Stack:** React (Vite) + Tailwind, Express backend. Data: TradingView (tickers, industry) + Yahoo (OHLC bars; TradingView has no bar API).
 - **Data:** Real OHLC and volume only (no fake data). Charts use the same data.
 
 ## 🚀 Performance
@@ -21,9 +21,9 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
    cd stock-screener && npm install
    ```
 
-2. **API key**
+2. **Environment**
    - Copy `.env.example` to `.env`.
-   - Set `MASSIVE_API_KEY` to your [Massive](https://massive.com) API key (the one you used for the dividends endpoint works for aggregates and ETF constituents too).
+   - No API key required for core data: ticker list and industry from TradingView scanner; OHLC bars from Yahoo. Set Supabase vars for DB persistence (see `.env.example`).
 
 3. **Run**
    - **Single server (app + API):** `npm run dev` — one process at **http://localhost:5173**. The app and all `/api/*` routes are served from the same origin (no separate backend URL).

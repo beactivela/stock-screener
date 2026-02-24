@@ -65,6 +65,36 @@ I've successfully implemented **Improvement #3: Backtesting Foundation** with a 
 
 ---
 
+## 🧭 Backtest Hierarchy (v2)
+
+You now have a **4-tier validation ladder** that mirrors how real trading teams de-risk overfitting.
+**Important:** the hierarchy runs **per signal agent** so each specialist is optimized in isolation.
+
+1. **Simple Backtest** — run the strategy on historical data as-is. Fast, but high overfitting risk.
+2. **Walk-Forward Optimization (WFO)** — rolling train/test windows. The strategy is re-optimized per window.
+3. **Monte Carlo on top of WFO** — randomizes trade order to separate luck from edge.
+4. **Out-of-Sample Holdout** — locks away the final 20–30% of data and only touches it once.
+
+### New API Endpoint
+```
+POST /api/backtest/hierarchy
+```
+
+**Key inputs:**
+- `tier`: `simple | wfo | wfo_mc | holdout`
+- `engine`: `node | vectorbt`
+- `agentType`: `momentum_scout | base_hunter | breakout_tracker | turtle_trader`
+- `startDate`, `endDate`: `YYYY-MM-DD`
+- `trainMonths`, `testMonths`, `stepMonths` (WFO)
+- `holdoutPct` (holdout only)
+- `candidateHoldingPeriods` (WFO grid)
+
+### Engine options
+- **Node (default):** uses the existing retrospective engine.
+- **vectorbt (Python):** optional high-performance engine for portfolio metrics. Requires Python + vectorbt installed.
+
+---
+
 ## 📊 How It Works
 
 ### Flow
@@ -405,8 +435,9 @@ npm run dev
 # Look for:
 1. 🧪 Backtest button (top right, purple)
 2. 🧪 Backtest Configuration panel (below "Evaluate a ticker")
-3. Scan dates dropdown (if you've run scans)
-4. Run Backtest button
+3. **Signal agents** section (Momentum Scout, Base Hunter, Breakout Tracker)
+4. Scan dates dropdown (if you've run scans)
+5. Run Backtest button
 ```
 
 Your stock screener is now **complete** with industry momentum, relative strength, AND performance validation! 

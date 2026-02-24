@@ -7,6 +7,7 @@
  */
 
 import { identifyPattern } from './patternDetection.js';
+import { computeUnusualVolume } from './utils/unusualVolume.js';
 
 function sma(closes, period) {
   const out = [];
@@ -154,11 +155,20 @@ function checkVCP(bars, spyBars = null) {
       volumeRatio: null, 
       idealPullbackSetup: false, 
       idealPullbackBarTimes: [], 
+      unusualVolumeToday: false,
+      unusualVolume5d: false,
       scoreBreakdown, 
       relativeStrength: null, 
       rsData: null,
       pattern: 'None',
-      patternConfidence: 0
+      patternConfidence: 0,
+      ma10Slope14d: null,
+      pctFromHigh: null,
+      breakoutVolumeRatio: null,
+      turtleBreakout20: false,
+      turtleBreakout55: false,
+      priceAboveAllMAs: false,
+      ma200Rising: false
     };
   }
 
@@ -166,12 +176,16 @@ function checkVCP(bars, spyBars = null) {
   const sma10 = sma(closes, 10);
   const sma20 = sma(closes, 20);
   const sma50 = sma(closes, 50);
+  const sma150 = sma(closes, 150);
+  const sma200 = sma(closes, 200);
 
   const lastIdx = bars.length - 1;
   const lastClose = closes[lastIdx];
   const last10 = sma10[lastIdx];
   const last20 = sma20[lastIdx];
   const last50 = sma50[lastIdx];
+  const last150 = sma150[lastIdx];
+  const last200 = sma200[lastIdx];
   
   // Calculate Relative Strength vs SPY (NEW)
   const rsData = spyBars ? calculateRelativeStrength(bars, spyBars) : null;
@@ -194,10 +208,19 @@ function checkVCP(bars, spyBars = null) {
       volumeRatio: null, 
       idealPullbackSetup: false, 
       idealPullbackBarTimes: [], 
+      unusualVolumeToday: false,
+      unusualVolume5d: false,
       relativeStrength, 
       rsData,
       pattern: 'None',
-      patternConfidence: 0
+      patternConfidence: 0,
+      ma10Slope14d: null,
+      pctFromHigh: null,
+      breakoutVolumeRatio: null,
+      turtleBreakout20: false,
+      turtleBreakout55: false,
+      priceAboveAllMAs: false,
+      ma200Rising: false
     };
     const { score, recommendation, scoreBreakdown } = computeBuyScore(raw);
     return { ...raw, score, recommendation, scoreBreakdown };
@@ -227,6 +250,16 @@ function checkVCP(bars, spyBars = null) {
     lastPullback.avgVolume < avgVol20 * 0.85;
   const recentVol = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
   const volumeRatio = avgVol20 > 0 ? recentVol / avgVol20 : null;
+  const lastVol = volumes[lastIdx] ?? null;
+  const breakoutVolumeRatio = avgVol20 && avgVol20 > 0 && lastVol != null
+    ? Math.round((lastVol / avgVol20) * 100) / 100
+    : null;
+
+  // Unusual volume signal: 1.5x 20d avg + close > prior day high (any of last 5 days)
+  const { unusualVolumeToday, unusualVolume5d } = computeUnusualVolume(bars, volSma20, {
+    thresholdRatio: 1.5,
+    lookbackDays: 5,
+  });
 
   // Ideal setup: 5-10 day pullback, volume high above 20 MA at last high, increased volume on push from higher low to higher high
   const lookback = 80;
@@ -261,6 +294,53 @@ function checkVCP(bars, spyBars = null) {
 
   const vcpBullish = contractions >= 1 && atAnyMA && lastClose >= (last50 ?? 0);
 
+  // Agent-specific context fields (for Signal Agent filtering)
+  const ma10Slope14d = (() => {
+    const prevIdx = lastIdx - 14;
+    const prev10 = prevIdx >= 0 ? sma10[prevIdx] : null;
+    if (last10 == null || prev10 == null || prev10 === 0) return null;
+    return Math.round(((last10 - prev10) / prev10) * 1000) / 10;
+  })();
+
+  const pctFromHigh = (() => {
+    const lookback = Math.min(252, bars.length);
+    let maxHigh = 0;
+    for (let i = bars.length - lookback; i < bars.length; i++) {
+      const h = bars[i]?.h ?? bars[i]?.c ?? 0;
+      if (h > maxHigh) maxHigh = h;
+    }
+    if (maxHigh <= 0) return null;
+    return Math.round(((maxHigh - lastClose) / maxHigh) * 1000) / 10;
+  })();
+
+  const turtleBreakout = (days) => {
+    if (bars.length <= days + 1) return false;
+    let priorHigh = 0;
+    for (let i = bars.length - days - 1; i < bars.length - 1; i++) {
+      const h = bars[i]?.h ?? bars[i]?.c ?? 0;
+      if (h > priorHigh) priorHigh = h;
+    }
+    return priorHigh > 0 && lastClose > priorHigh;
+  };
+
+  const turtleBreakout20 = turtleBreakout(20);
+  const turtleBreakout55 = turtleBreakout(55);
+  const priceAboveAllMAs =
+    last10 != null &&
+    last20 != null &&
+    last50 != null &&
+    last200 != null &&
+    lastClose > last10 &&
+    lastClose > last20 &&
+    lastClose > last50 &&
+    lastClose > last200;
+  const ma200Rising = (() => {
+    const prevIdx = lastIdx - 20;
+    const prev200 = prevIdx >= 0 ? sma200[prevIdx] : null;
+    if (last200 == null || prev200 == null) return false;
+    return last200 > prev200;
+  })();
+
   // NEW: Identify which Minervini pattern has formed
   const patternResult = identifyPattern(bars, contractions, volumeDryUp);
 
@@ -280,17 +360,42 @@ function checkVCP(bars, spyBars = null) {
     avgVol20: avgVol20 != null ? Math.round(avgVol20) : null,
     idealPullbackSetup,
     idealPullbackBarTimes,
+    unusualVolumeToday,
+    unusualVolume5d,
     relativeStrength, // NEW: RS value (or null)
     rsData, // NEW: Full RS details
     pattern: patternResult.pattern, // NEW: Pattern name
     patternConfidence: patternResult.confidence, // NEW: Pattern confidence (0-100)
     patternDetails: patternResult.details, // NEW: Pattern analysis details
+    ma10Slope14d,
+    pctFromHigh,
+    breakoutVolumeRatio,
+    turtleBreakout20,
+    turtleBreakout55,
+    priceAboveAllMAs,
+    ma200Rising,
   };
   const { score, recommendation, scoreBreakdown } = computeBuyScore(raw);
   return { ...raw, score, recommendation, scoreBreakdown };
 }
 
-export { sma, volumeSma, findPullbacks, checkVCP, nearMA, computeBuyScore, calculateRelativeStrength };
+/**
+ * Build recent signal snapshots for last N bars.
+ * Uses checkVCP on slices so agent criteria reflect each bar's context.
+ */
+function buildSignalSnapshots(bars, spyBars = null, lookbackBars = 3) {
+  if (!Array.isArray(bars) || bars.length === 0) return [];
+  const startIdx = Math.max(0, bars.length - lookbackBars);
+  const snapshots = [];
+  for (let i = startIdx; i < bars.length; i++) {
+    const slice = bars.slice(0, i + 1);
+    const spySlice = Array.isArray(spyBars) ? spyBars.slice(0, i + 1) : null;
+    snapshots.push(checkVCP(slice, spySlice));
+  }
+  return snapshots;
+}
+
+export { sma, volumeSma, findPullbacks, checkVCP, buildSignalSnapshots, nearMA, computeBuyScore, calculateRelativeStrength };
 
 /**
  * Compute a 0–100 buy score and recommendation from VCP result.

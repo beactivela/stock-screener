@@ -7,7 +7,7 @@ import { getSupabase, isSupabaseConfigured } from '../supabase.js';
 
 /** @returns {Promise<{ scannedAt: string|null, from?: string, to?: string, totalTickers: number, vcpBullishCount: number, results: object[] }>} */
 export async function loadScanResults() {
-  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
   const supabase = getSupabase();
   const { data: run, error: runErr } = await supabase
     .from('scan_runs')
@@ -38,7 +38,7 @@ export async function loadScanResults() {
 
 /** @param {{ scannedAt: string, from: string, to: string, totalTickers: number, vcpBullishCount: number, results: object[] }} payload */
 export async function saveScanResults(payload) {
-  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
   const supabase = getSupabase();
   const { data: run, error: runErr } = await supabase
       .from('scan_runs')

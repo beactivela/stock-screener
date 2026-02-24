@@ -1,55 +1,258 @@
 /**
- * Bars cache data access: Supabase when configured, else data/bars/{TICKER}_{interval}.json
+ * Bars cache data access: Supabase → Yahoo Finance fallback.
+ *
+ * Cache strategy:
+ *   - Deep historical bars (5yr) are cached for DEEP_CACHE_TTL_MS (90 days).
+ *     These are immutable history — no point re-fetching every day.
+ *   - Regular bars (1yr screener use) are cached for CACHE_TTL_MS (24h by default).
+ *
+ * On cache miss, getBars fetches from Yahoo Finance and saves to Supabase automatically.
+ * This means the historical signal scanner only hits Yahoo once per ticker per 90 days.
  */
 
 import { getSupabase, isSupabaseConfigured } from '../supabase.js';
+import { getBars as fetchFromYahoo } from '../yahoo.js';
 
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
+// 5-year historical bars are immutable — cache for 90 days
+const DEEP_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+// A "deep" date range is anything going back more than 18 months
+const DEEP_RANGE_THRESHOLD_DAYS = 540;
 
 const barsMemoryCache = new Map();
 
+function isDeepRange(from, to) {
+  const spanDays = (new Date(to) - new Date(from)) / (1000 * 60 * 60 * 24);
+  return spanDays >= DEEP_RANGE_THRESHOLD_DAYS;
+}
+
+/** YYYY-MM-DD for the day after dateStr. */
+function nextDayStr(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD for the day before dateStr. */
+function prevDayStr(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
+ * Get the raw cached row for (ticker, interval) from Supabase, if any.
+ * No TTL check — used to decide whether we can do an incremental (missing-range only) fetch.
+ *
+ * @returns {Promise<{ date_from: string, date_to: string, results: Array } | null>}
+ */
+async function getCachedBarsRow(ticker, interval) {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('bars_cache')
+      .select('date_from, date_to, results')
+      .eq('ticker', ticker)
+      .eq('interval', interval)
+      .maybeSingle();
+    if (error || !data || !data.results || data.results.length === 0) return null;
+    return {
+      date_from: data.date_from,
+      date_to: data.date_to,
+      results: data.results,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Merge bar arrays by timestamp, sort by t, dedupe by t. */
+function mergeBars(arrays) {
+  const byT = new Map();
+  for (const arr of arrays) {
+    for (const b of arr) {
+      if (b && b.t != null) byT.set(b.t, b);
+    }
+  }
+  return [...byT.values()].sort((a, b) => a.t - b.t);
+}
+
+/** Filter bars to [from, to] inclusive (by date string YYYY-MM-DD). */
+function filterBarsToRange(bars, from, to) {
+  return bars.filter((b) => {
+    const d = new Date(b.t).toISOString().slice(0, 10);
+    return d >= from && d <= to;
+  });
+}
+
+/**
+ * Get bars with Supabase cache → Yahoo Finance fallback.
+ * Automatically saves fetched bars to Supabase for future runs.
+ *
  * @param {string} ticker
- * @param {string} from
- * @param {string} to
+ * @param {string} from  - YYYY-MM-DD
+ * @param {string} to    - YYYY-MM-DD
  * @param {string} interval
  * @returns {Promise<Array<{t:number,o:number,h:number,l:number,c:number,v:number}>|null>}
  */
 export async function getBars(ticker, from, to, interval = '1d') {
   const key = `${ticker}:${interval}:${from}:${to}`;
-  const mem = barsMemoryCache.get(key);
-  if (mem && Date.now() - mem.at < CACHE_TTL_MS) return mem.data;
+  const cacheTtl = isDeepRange(from, to) ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
 
-  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('bars_cache')
-    .select('*')
-    .eq('ticker', ticker)
-    .eq('interval', interval)
-    .single();
-  if (error || !data) return null;
-  const age = Date.now() - new Date(data.fetched_at).getTime();
-  if (age > CACHE_TTL_MS) return null;
-  const results = data.results || [];
-  if (results.length === 0) return null;
-  const rawFrom = data.date_from;
-  const rawTo = data.date_to;
-  if (rawFrom === from && rawTo === to) {
-    barsMemoryCache.set(key, { data: results, at: Date.now() - age });
-    return results;
-  }
-  if (rawFrom <= to && rawTo >= from) {
-    const filtered = results.filter((b) => {
-      const d = new Date(b.t).toISOString().slice(0, 10);
-      return d >= from && d <= to;
-    });
-    if (filtered.length > 0) {
-      barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
-      return filtered;
+  // 1. Memory cache
+  const mem = barsMemoryCache.get(key);
+  if (mem && Date.now() - mem.at < cacheTtl) return mem.data;
+
+  // 2. Supabase cache
+  if (isSupabaseConfigured()) {
+    try {
+      const supabase = getSupabase();
+      const { data, error } = await supabase
+        .from('bars_cache')
+        .select('*')
+        .eq('ticker', ticker)
+        .eq('interval', interval)
+        .single();
+
+      if (!error && data) {
+        const age = Date.now() - new Date(data.fetched_at).getTime();
+        const storedIsDeep = isDeepRange(data.date_from, data.date_to);
+        const ttl = storedIsDeep ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
+
+        if (age <= ttl) {
+          const results = data.results || [];
+          const rawFrom = data.date_from;
+          const rawTo = data.date_to;
+
+          // Exact match
+          if (rawFrom === from && rawTo === to && results.length > 0) {
+            barsMemoryCache.set(key, { data: results, at: Date.now() - age });
+            return results;
+          }
+
+          // Stored range covers the requested range — slice it
+          if (rawFrom <= from && rawTo >= to && results.length > 0) {
+            const filtered = results.filter((b) => {
+              const d = new Date(b.t).toISOString().slice(0, 10);
+              return d >= from && d <= to;
+            });
+            if (filtered.length > 0) {
+              barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
+              return filtered;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`bars_cache lookup failed for ${ticker}: ${e.message}`);
+    }
+
+    // 2b. Fallback: flat "bars" table (one row per day) — common when data is imported elsewhere
+    try {
+      const supabase = getSupabase();
+      const dateCols = ['date', 'trade_date', 'd'];
+      for (const dateCol of dateCols) {
+        const { data: rows, error } = await supabase
+          .from('bars')
+          .select('*')
+          .eq('ticker', ticker)
+          .gte(dateCol, from)
+          .lte(dateCol, to)
+          .order(dateCol, { ascending: true });
+        if (error || !rows || rows.length < 250) continue;
+        const o = rows[0].open != null ? 'open' : 'o';
+        const h = rows[0].high != null ? 'high' : 'h';
+        const l = rows[0].low != null ? 'low' : 'l';
+        const c = rows[0].close != null ? 'close' : 'c';
+        const v = rows[0].volume != null ? 'volume' : 'v';
+        const results = rows.map((r) => {
+          const d = r[dateCol] ?? r.date ?? r.trade_date ?? r.d;
+          const t = typeof d === 'number' ? d : new Date(d).getTime();
+          return { t, o: r[o], h: r[h], l: r[l], c: r[c], v: r[v] ?? 0 };
+        });
+        if (results.length > 0) {
+          barsMemoryCache.set(key, { data: results, at: Date.now() });
+          return results;
+        }
+        break;
+      }
+    } catch (e) {
+      // "bars" table may not exist or have different schema
     }
   }
-  return null;
+
+  // 3. Fetch from Yahoo: full range or incremental (only missing dates) when we have existing cache
+  try {
+    const existing = await getCachedBarsRow(ticker, interval);
+    let merged = null;
+    let newFrom = from;
+    let newTo = to;
+
+    if (existing && existing.date_from && existing.date_to) {
+      const storedFrom = existing.date_from;
+      const storedTo = existing.date_to;
+      const needBackfill = to > storedTo;
+      const needFrontfill = from < storedFrom;
+
+      if (!needBackfill && !needFrontfill) {
+        // Cached range already covers [from, to] — return slice and refresh TTL by re-saving
+        const filtered = filterBarsToRange(existing.results, from, to);
+        if (filtered.length > 0) {
+          barsMemoryCache.set(key, { data: filtered, at: Date.now() });
+          if (isSupabaseConfigured()) {
+            saveBars(ticker, storedFrom, storedTo, existing.results, interval).catch(() => {});
+          }
+          return filtered;
+        }
+      }
+
+      if (needBackfill || needFrontfill) {
+        const toFetch = [];
+        if (needBackfill) toFetch.push({ from: nextDayStr(storedTo), to });
+        if (needFrontfill) toFetch.push({ from, to: prevDayStr(storedFrom) });
+
+        const newChunks = [];
+        for (const r of toFetch) {
+          if (r.from > r.to) continue;
+          const chunk = await fetchFromYahoo(ticker, r.from, r.to, interval);
+          if (chunk && chunk.length > 0) newChunks.push(chunk);
+        }
+
+        if (newChunks.length > 0) {
+          merged = mergeBars([existing.results, ...newChunks]);
+          newFrom = merged.length > 0 ? new Date(Math.min(...merged.map((b) => b.t))).toISOString().slice(0, 10) : from;
+          newTo = merged.length > 0 ? new Date(Math.max(...merged.map((b) => b.t))).toISOString().slice(0, 10) : to;
+        }
+      }
+    }
+
+    if (merged == null) {
+      merged = await fetchFromYahoo(ticker, from, to, interval);
+      if (merged) {
+        newFrom = from;
+        newTo = to;
+      }
+    }
+
+    if (!merged || merged.length === 0) return null;
+
+    const results = filterBarsToRange(merged, from, to);
+    if (results.length === 0) return null;
+
+    barsMemoryCache.set(key, { data: results, at: Date.now() });
+
+    if (isSupabaseConfigured()) {
+      saveBars(ticker, newFrom, newTo, merged, interval).catch((e) =>
+        console.warn(`Failed to cache bars for ${ticker}: ${e.message}`)
+      );
+    }
+
+    return results;
+  } catch (e) {
+    console.warn(`Yahoo fetch failed for ${ticker}: ${e.message}`);
+    return null;
+  }
 }
 
 /**
@@ -63,11 +266,110 @@ export async function saveBars(ticker, from, to, results, interval = '1d') {
   const fetchedAt = new Date().toISOString();
   barsMemoryCache.set(`${ticker}:${interval}:${from}:${to}`, { data: results, at: Date.now() });
 
-  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
   const supabase = getSupabase();
   const { error } = await supabase.from('bars_cache').upsert(
     { ticker, interval, date_from: from, date_to: to, fetched_at: fetchedAt, results },
     { onConflict: 'ticker,interval' }
   );
   if (error) throw new Error(error.message);
+}
+
+/** Minimum calendar-day span to consider "5 years" of OHLC (used for count display). */
+const FIVE_YEAR_DAYS = 5 * 365;
+/** Minimum span for historical signal scan (e.g. 250 trading days ~= 12 months). */
+const MIN_SCAN_SPAN_DAYS = 250;
+
+/**
+ * Count distinct tickers that have at least 5 years of OHLC data in bars_cache.
+ * Used on the Agents page to show "N tickers with 5yr OHLC data".
+ *
+ * @returns {Promise<number>} Count of tickers with 5yr range cached (0 if Supabase not configured)
+ */
+export async function getTickerCountWith5YrBars() {
+  if (!isSupabaseConfigured()) return 0;
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('bars_cache')
+      .select('ticker, date_from, date_to')
+      .eq('interval', '1d');
+
+    if (error) {
+      console.warn('bars_cache count failed:', error.message);
+      return 0;
+    }
+
+    const rows = data || [];
+    const tickersWith5Yr = new Set();
+    for (const row of rows) {
+      const from = row.date_from ? new Date(row.date_from) : null;
+      const to = row.date_to ? new Date(row.date_to) : null;
+      if (!from || !to) continue;
+      const spanDays = (to - from) / (1000 * 60 * 60 * 24);
+      if (spanDays >= FIVE_YEAR_DAYS) tickersWith5Yr.add(row.ticker);
+    }
+    return tickersWith5Yr.size;
+  } catch (e) {
+    console.warn('getTickerCountWith5YrBars:', e.message);
+    return 0;
+  }
+}
+
+/**
+ * Return list of tickers that have enough bars in bars_cache for historical signal scanning.
+ * Used when the tickers table is empty so "first run" can still build a signal pool from bars.
+ * Tries bars_cache first; if empty, tries table "bars" (in case that's where OHLC is stored).
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.minSpanDays=250] - Minimum date span (days) to include a ticker
+ * @returns {Promise<string[]>} Ticker symbols (equity-style only, 1–5 chars)
+ */
+export async function getTickersFromBarsCache(opts = {}) {
+  if (!isSupabaseConfigured()) return [];
+  const minSpanDays = opts.minSpanDays ?? MIN_SCAN_SPAN_DAYS;
+  const supabase = getSupabase();
+
+  const fromTable = async (tableName, hasDateRange = true) => {
+    try {
+      let query = supabase.from(tableName).select(hasDateRange ? 'ticker, date_from, date_to' : 'ticker');
+      if (tableName === 'bars_cache') query = query.eq('interval', '1d');
+      const { data, error } = await query;
+      if (error) return [];
+      const list = [];
+      for (const row of data || []) {
+        if (hasDateRange && row.date_from != null && row.date_to != null) {
+          const from = new Date(row.date_from);
+          const to = new Date(row.date_to);
+          const spanDays = (to - from) / (1000 * 60 * 60 * 24);
+          if (spanDays >= minSpanDays && /^[A-Z]{1,5}$/.test(row.ticker)) list.push(row.ticker);
+        } else if (!hasDateRange && /^[A-Z]{1,5}$/.test(row.ticker)) {
+          list.push(row.ticker);
+        }
+      }
+      return [...new Set(list)].sort();
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const fromBarsCache = await fromTable('bars_cache', true);
+  if (fromBarsCache.length > 0) return fromBarsCache;
+
+  // Fallback: table "bars" (e.g. flat schema with ticker per row or ticker+date range)
+  try {
+    const { data, error } = await supabase.from('bars').select('ticker');
+    if (!error && data && data.length > 0) {
+      const list = data.map(r => r.ticker).filter(t => /^[A-Z]{1,5}$/.test(t));
+      const out = [...new Set(list)].sort();
+      if (out.length > 0) {
+        console.log(`getTickersFromBarsCache: bars_cache empty; using ${out.length} tickers from table "bars"`);
+        return out;
+      }
+    }
+  } catch (e) {
+    // "bars" table may not exist
+  }
+
+  return [];
 }

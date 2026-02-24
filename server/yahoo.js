@@ -1,6 +1,7 @@
 /**
- * Yahoo Finance data source via yahoo-finance2 (no API key required).
- * Returns bars in same format as Massive: { t, o, h, l, c, v } for VCP/charts.
+ * Yahoo Finance — OHLC bars, fundamentals, quote name/exchange, earnings dates.
+ * TradingView is used for ticker list and industry returns (server/tradingViewIndustry.js).
+ * TradingView has no public OHLC API, so bars come from Yahoo. See docs/README.md.
  */
 
 import YahooFinance from 'yahoo-finance2';
@@ -9,8 +10,7 @@ const yahooFinance = new YahooFinance();
 
 /**
  * OHLC bars for a ticker. from/to = YYYY-MM-DD.
- * interval: '1d' | '1wk' | '1mo' for daily, weekly, monthly.
- * Returns array of { t, o, h, l, c, v } matching Massive/Polygon format.
+ * interval: '1d' | '1wk' | '1mo'. Returns array of { t, o, h, l, c, v } (t = ms).
  */
 async function getBars(ticker, from, to, interval = '1d') {
   const result = await yahooFinance.chart(ticker, {
@@ -30,6 +30,8 @@ async function getBars(ticker, from, to, interval = '1d') {
       v: q.volume ?? 0,
     }));
 }
+
+const getDailyBars = (ticker, from, to) => getBars(ticker, from, to, '1d');
 
 /**
  * Fundamentals: % held by institutions, quarterly earnings YoY, profit margin, operating margin.
@@ -157,7 +159,4 @@ async function getEarningsDates(ticker) {
   }
 }
 
-export { getBars, getFundamentals, getQuoteName, getQuoteInfo, getEarningsDates };
-// Backward compat
-const getDailyBars = (ticker, from, to) => getBars(ticker, from, to, '1d');
-export { getDailyBars };
+export { getBars, getDailyBars, getFundamentals, getQuoteName, getQuoteInfo, getEarningsDates };

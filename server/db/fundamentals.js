@@ -22,7 +22,7 @@ function rowToEntry(r) {
 
 /** @returns {Promise<Record<string, object>>} */
 export async function loadFundamentals() {
-  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
   const supabase = getSupabase();
   const { data, error } = await supabase.from('fundamentals').select('*');
   if (error) throw new Error(error.message);

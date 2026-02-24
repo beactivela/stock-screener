@@ -31,13 +31,19 @@ export default function Layout({ children }: LayoutProps) {
               to="/backtest"
               className={`text-sm ${location.pathname === '/backtest' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >
-              Backtest
+              Learning
             </Link>
             <Link
               to="/regime"
               className={`text-sm ${location.pathname === '/regime' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >
               Regime
+            </Link>
+            <Link
+              to="/agents"
+              className={`text-sm ${location.pathname === '/agents' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Agents
             </Link>
           </nav>
         </div>

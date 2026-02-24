@@ -15,9 +15,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import { getDailyBars } from './yahoo.js';
-import { getEtfConstituents } from './massive.js';
-import { checkVCP } from './vcp.js';
+import { getTickerListFromScanner } from './tradingViewIndustry.js';
+import { checkVCP, buildSignalSnapshots } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
+import { classifySignalSetups, classifySignalSetupsRecent } from './learning/signalSetupClassifier.js';
 import { saveScanSnapshot } from './backtest.js';
 import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
 import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
@@ -68,25 +69,17 @@ const FALLBACK_TICKERS = [
   'QCOM', 'INTU', 'TXN', 'SBUX', 'AXP', 'BLK', 'C', 'GS', 'AMD', 'AMAT',
 ];
 
-/** Read tickers from DB. If empty, fetch SPY (or fallback) and save to DB. */
+/** Read tickers from DB. If empty, fetch from TradingView scanner and save to DB. */
 async function getTickers() {
   let tickers = await loadTickersFromDb();
   if (tickers.length > 0) return TICKER_LIMIT > 0 ? tickers.slice(0, TICKER_LIMIT) : tickers;
-  console.log('No tickers in DB. Fetching S&P 500 from SPY...');
+  console.log('No tickers in DB. Fetching US stocks from TradingView scanner...');
   let list;
   try {
-    const constituents = await getEtfConstituents('SPY');
-    list = constituents
-      .map((r) => r.constituent_ticker)
-      .filter(Boolean)
-      .slice(0, TICKER_LIMIT || 500);
+    list = await getTickerListFromScanner(TICKER_LIMIT || 500);
   } catch (e) {
-    if (e.message?.includes('403') || e.message?.includes('NOT_AUTHORIZED')) {
-      console.warn('ETF API not available. Using built-in S&P 500 list.');
-      list = FALLBACK_TICKERS.slice(0, TICKER_LIMIT || 50);
-    } else {
-      throw e;
-    }
+    console.warn('TradingView scanner failed. Using built-in fallback list.');
+    list = FALLBACK_TICKERS.slice(0, TICKER_LIMIT || 50);
   }
   await saveTickersToDb(list);
   console.log(`Created tickers with ${list.length} entries`);
@@ -138,7 +131,7 @@ async function runScan() {
     try {
       const bars = await getBarsForScan(ticker, from, to);
       if (!bars.length) {
-        results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F' });
+        results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] });
       } else {
         const vcp = checkVCP(bars, spyBars); // Pass SPY bars for RS calculation
         const fund = fundamentals[ticker] || null;
@@ -146,11 +139,15 @@ async function runScan() {
         
         // Pass industryRanks to apply multiplier
         const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
-        results.push({ ticker, ...vcp, ...enhanced });
+        const merged = { ticker, ...vcp, ...enhanced };
+        merged.signalSetups = classifySignalSetups(merged);
+        const snapshots = buildSignalSnapshots(bars, spyBars, 3);
+        merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
+        results.push(merged);
       }
     } catch (e) {
       console.warn(ticker, e.message);
-      results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F' });
+      results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] });
     }
     if ((i + 1) % 25 === 0 || i + 1 === tickers.length) {
       console.log(`  ${i + 1} / ${tickers.length}`);
@@ -221,7 +218,7 @@ async function* runScanStream() {
     try {
       const bars = await getBarsForScan(ticker, from, to);
       if (!bars.length) {
-        result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F' };
+        result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] };
       } else {
         const vcp = checkVCP(bars, spyBars); // Pass SPY bars for RS
         const fund = fundamentals[ticker] || null;
@@ -229,11 +226,15 @@ async function* runScanStream() {
         
         // Pass industryRanks to apply multiplier
         const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
-        result = { ticker, ...vcp, ...enhanced };
+        const merged = { ticker, ...vcp, ...enhanced };
+        merged.signalSetups = classifySignalSetups(merged);
+        const snapshots = buildSignalSnapshots(bars, spyBars, 3);
+        merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
+        result = merged;
       }
     } catch (e) {
       console.warn(ticker, e.message);
-      result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F' };
+      result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] };
     }
     yield { result, index: i + 1, total: tickers.length };
   }

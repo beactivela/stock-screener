@@ -2,7 +2,8 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams, useLocation, Link, useNavigate } from 'react-router-dom'
 import { createChart, ColorType } from 'lightweight-charts'
 import { sma, rsi, findPullbacks, vcpContraction, findIdealPullbackBarTimes, findVolumePriceBreakouts, calculateRelativeStrength } from '../utils/chartIndicators'
-import { toChartMarkers, Opus45Marker } from '../utils/opus45Indicators'
+import { Opus45Marker } from '../utils/opus45Indicators'
+import { AGENT_CHART_LIST, AGENT_CHART_ORDER, AgentSignalHistoryResponse, AgentType, toAgentChartMarkers } from '../utils/agentSignalMarkers'
 import { API_BASE } from '../utils/api'
 import TradingViewWidget from '../components/TradingViewWidget'
 // Trade Journal panel for logging entries and exits
@@ -138,10 +139,13 @@ export default function StockDetail() {
   const [loading, setLoading] = useState(true)
   const [timeframe, setTimeframe] = useState<(typeof TIMEFRAMES)[number]>(TIMEFRAMES[1])
   const [interval, setInterval] = useState<(typeof INTERVALS)[number]['value']>('1d')
-  // Toggle Opus4.5 BUY/SELL markers on chart - persists to localStorage
-  const [showOpus45Signal, setShowOpus45Signal] = useState(() => {
-    const saved = localStorage.getItem('showOpus45Signal')
-    return saved !== null ? saved === 'true' : true // Default to true if not set
+  // Toggle Signal Agent buy markers on chart - persists to localStorage
+  const [agentVisibility, setAgentVisibility] = useState<Record<AgentType, boolean>>(() => {
+    return AGENT_CHART_ORDER.reduce((acc, agentType) => {
+      const saved = localStorage.getItem(`showAgentSignal_${agentType}`)
+      acc[agentType] = saved !== null ? saved === 'true' : true
+      return acc
+    }, {} as Record<AgentType, boolean>)
   })
   // Toggle Relative Strength to Industry line - persists to localStorage, default hidden until checked
   // Opus4.5 Buy Signal Rules accordion: closed by default so "Why this score?" stays prominent
@@ -162,10 +166,15 @@ export default function StockDetail() {
   
   // Opus4.5 signals from server API (single source of truth)
   const [opus45History, setOpus45History] = useState<Opus45HistoryResponse | null>(null)
+
+  // Signal Agent overlays from server API (per-agent buy signals)
+  const [agentSignalHistory, setAgentSignalHistory] = useState<AgentSignalHistoryResponse | null>(null)
   
   // Scan results for horizontal ticker navigation bar
   const [scanTickers, setScanTickers] = useState<Array<{ ticker: string; score?: number; hasActionableBuy?: boolean }>>([])
   const tickerBarRef = useRef<HTMLDivElement>(null)
+  // Increment to re-run bars fetch (e.g. after "Retry" when chart data failed to load)
+  const [barsRetryKey, setBarsRetryKey] = useState(0)
 
   // Fetch scan results for ticker navigation bar (once on mount)
   // Syncs with Dashboard: sorted by score desc, green highlight for actionable buy signals
@@ -237,10 +246,12 @@ export default function StockDetail() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [ticker, scanTickers, navigate])
 
-  // Persist Opus4.5 signal visibility preference to localStorage
+  // Persist Signal Agent visibility preferences to localStorage
   useEffect(() => {
-    localStorage.setItem('showOpus45Signal', String(showOpus45Signal))
-  }, [showOpus45Signal])
+    AGENT_CHART_ORDER.forEach((agentType) => {
+      localStorage.setItem(`showAgentSignal_${agentType}`, String(agentVisibility[agentType]))
+    })
+  }, [agentVisibility])
   // Persist Relative Strength to Industry visibility to localStorage
   useEffect(() => {
     localStorage.setItem('showRsIndustry', String(showRsIndustry))
@@ -286,7 +297,7 @@ export default function StockDetail() {
       })
       .catch(() => {})
     setScanFallback(null)
-  }, [ticker, interval])
+  }, [ticker, interval, barsRetryKey])
 
   // Fetch Opus4.5 historical signals from server API (single source of truth)
   useEffect(() => {
@@ -296,11 +307,36 @@ export default function StockDetail() {
       .then((r) => r.json())
       .then((res) => {
         if (!res.error) {
+          // Debug log to verify data
+          if (ticker === 'STRL') {
+            console.log('[STRL DEBUG] Frontend received:', {
+              currentStatus: res.currentStatus,
+              lastBuyDate: res.lastBuySignal ? new Date(res.lastBuySignal.time * 1000).toISOString() : null,
+              lastBuyPrice: res.lastBuySignal?.price,
+              holdingPeriod: res.holdingPeriod
+            })
+          }
           setOpus45History(res)
         }
       })
       .catch((e) => {
         console.error('Opus45 history fetch failed:', e)
+      })
+  }, [ticker])
+
+  // Fetch Signal Agent overlays from server API (single source of truth)
+  useEffect(() => {
+    if (!ticker) return
+    setAgentSignalHistory(null)
+    fetch(`${API_BASE}/api/agents/signals/${ticker}/history`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((res) => {
+        if (!res?.error) {
+          setAgentSignalHistory(res)
+        }
+      })
+      .catch((e) => {
+        console.error('Agent signal history fetch failed:', e)
       })
   }, [ticker])
 
@@ -576,11 +612,10 @@ export default function StockDetail() {
     const candleSorted = dedupeByTime(candleData)
     candle.setData(candleSorted)
 
-    // Buy/Sell arrows:
+    // Buy markers:
     // (1) Blue: Volume increase 4-10 days prior with price decrease, then price breaks above MA or high
-    // (2) Yellow: ideal pullback setup
-    // (3) Opus4.5 BUY: Green with circle marker - high confidence entry signal
-    // (4) Opus4.5 SELL: Red with X marker - exit signal
+    // (2) Yellow: Ideal pullback setup
+    // (3) Signal Agents: Per-agent buy signals (colored circles)
     const toTimeSec = (t: number) => Math.floor(t / 1000) as any
     const blueMarkers = volumePriceBreakoutTimes
       .map(toTimeSec)
@@ -590,15 +625,14 @@ export default function StockDetail() {
       .map(toTimeSec)
       .filter((t) => candleSorted.some((d) => d.time === t))
       .map((t) => ({ time: t as any, position: 'belowBar' as const, shape: 'arrowUp' as const, color: '#facc15' }))
-    
-    // Opus4.5 Signal Markers (highest priority - shown as larger markers) - only if toggle is on
-    // Uses server API data (opus45History) as single source of truth
-    const opus45Markers = showOpus45Signal && opus45History
-      ? toChartMarkers(opus45History).filter((m) => candleSorted.some((d) => d.time === m.time))
-      : []
-    
-    // Combine all markers, with Opus4.5 signals taking priority (shown last = on top)
-    const allMarkers = [...blueMarkers, ...yellowMarkers, ...opus45Markers].sort((a, b) => (a.time as number) - (b.time as number))
+
+    // Signal Agent buy markers (per-agent, on-demand by checkbox)
+    const candleTimes = new Set(candleSorted.map((d) => d.time))
+    const agentMarkers = toAgentChartMarkers(agentSignalHistory?.agents ?? null, agentVisibility)
+      .filter((m) => candleTimes.has(m.time as any))
+
+    // Combine all markers, with Signal Agents taking priority (shown last = on top)
+    const allMarkers = [...blueMarkers, ...yellowMarkers, ...agentMarkers].sort((a, b) => (a.time as number) - (b.time as number))
     candle.setMarkers(allMarkers as any)
 
     const ma10Series = mainChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false, priceScaleId: 'left' })
@@ -814,7 +848,7 @@ export default function StockDetail() {
       vcpChartInstance.current = null
       rsChartInstance.current = null
     }
-  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, opus45History, showOpus45Signal, showRsIndustry])
+  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry])
 
   // Adjust visible range when timeframe changes (zoom in/out while keeping all 12 months of data loaded)
   useEffect(() => {
@@ -846,6 +880,7 @@ export default function StockDetail() {
   const displayVcp = apiFailedOrZero && fromScan
     ? (scanResult && !scanResult.error ? scanResult : scanFallback)
     : (vcp ?? (scanResult && !scanResult.error ? scanResult : scanFallback ?? null))
+  const visibleAgentLegend = AGENT_CHART_LIST.filter((agent) => agentVisibility[agent.agentType])
 
   if (loading || !ticker) {
     return (
@@ -1276,9 +1311,18 @@ export default function StockDetail() {
         {/* Chart Section (main area) */}
         <div className="flex-1 min-w-0">
           {bars.length === 0 && displayVcp && (
-            <p className="mb-4 text-amber-400/90 text-sm">
-              Chart data unavailable (API may be rate limited). Score and breakdown above are from the last scan.
-            </p>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <p className="text-amber-400/90 text-sm">
+                Chart data couldn&apos;t be loaded (network or API limit). Score above is from the last scan.
+              </p>
+              <button
+                type="button"
+                onClick={() => setBarsRetryKey((k) => k + 1)}
+                className="rounded-lg bg-amber-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600"
+              >
+                Retry
+              </button>
+            </div>
           )}
           <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
             <h2 className="text-lg font-medium text-slate-200">
@@ -1319,15 +1363,27 @@ export default function StockDetail() {
                 ))}
               </div>
               <span className="text-slate-500 text-sm">|</span>
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={showOpus45Signal}
-                  onChange={(e) => setShowOpus45Signal(e.target.checked)}
-                  className="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500/50"
-                />
-                <span className="text-sm text-slate-400">Opus4.5 buy signal</span>
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs uppercase tracking-wide text-slate-500">Signal agents</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  {AGENT_CHART_LIST.map((agent) => (
+                    <label key={agent.agentType} className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={agentVisibility[agent.agentType]}
+                        onChange={(e) =>
+                          setAgentVisibility((prev) => ({
+                            ...prev,
+                            [agent.agentType]: e.target.checked,
+                          }))
+                        }
+                        className={`rounded border-slate-600 bg-slate-800 focus:ring-emerald-500/50 ${agent.accentClass}`}
+                      />
+                      <span className="text-sm text-slate-400">{agent.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
               {(fundamentals?.industry || rsIndustryData.length > 0) && (
                 <>
                   <span className="text-slate-500 text-sm">|</span>
@@ -1356,6 +1412,17 @@ export default function StockDetail() {
                 <>
                   <span className="text-slate-600">│</span>
                   <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">Relative Strength to Industry</span>
+                </>
+              )}
+              {visibleAgentLegend.length > 0 && (
+                <>
+                  <span className="text-slate-600">│</span>
+                  {visibleAgentLegend.map((agent) => (
+                    <span key={agent.agentType} className="flex items-center gap-1">
+                      <span className={`text-base ${agent.legendClass}`}>●</span>
+                      <span className="text-slate-300">{agent.label}</span>
+                    </span>
+                  ))}
                 </>
               )}
             </div>
@@ -1425,7 +1492,7 @@ export default function StockDetail() {
       </div>
 
       <p className="text-slate-500 text-sm">
-        <strong>Chart includes:</strong> Moving Averages 10 (orange), 20 (blue), 50 (purple), 150 (pink) + RSI 14 + Relative Strength (RS) Line vs S&P 500 + Volume with 20d MA + VCP pullback analysis. <strong>Opus4.5 Signals:</strong> <span className="text-green-400">↑</span> Green arrow = BUY signal, <span className="text-red-400">↓</span> Red arrow = SELL signal. RS Line: Rising = outperforming market (bullish), Falling = underperforming market (bearish). Data: Yahoo Finance.
+        <strong>Chart includes:</strong> Moving Averages 10 (orange), 20 (blue), 50 (purple), 150 (pink) + RSI 14 + Relative Strength (RS) Line vs S&P 500 + Volume with 20d MA + VCP pullback analysis. <strong>Opus4.5 Signals:</strong> <span className="text-green-400">↑</span> Green arrow = BUY signal, <span className="text-red-400">↓</span> Red arrow = SELL signal. RS Line: Rising = outperforming market (bullish), Falling = underperforming market (bearish). Data: Yahoo (OHLC); chart also available via TradingView widget below.
       </p>
 
       {/* TradingView Interactive Chart */}

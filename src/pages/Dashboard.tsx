@@ -2,9 +2,11 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import TickerChart from '../components/TickerChart'
 import SortHeader from '../components/SortHeader'
+import MarcusSummary from '../components/MarcusSummary'
 import { useScan } from '../contexts/ScanContext'
 import { buildIndustryMaps } from '../utils/industryMaps'
 import { API_BASE } from '../utils/api'
+import { resolveSignalAgentLabel, formatSignalDate, formatSignalPL } from '../utils/signalAgentDisplay'
 
 interface ScanResult {
   ticker: string
@@ -42,6 +44,8 @@ interface ScanResult {
   pattern?: string
   patternConfidence?: number
   patternDetails?: string
+  signalSetups?: string[]
+  signalSetupsRecent?: string[]
 }
 
 // Opus4.5 Signal from API (entryDate/daysSinceBuy/pctChange used for Open Trade column)
@@ -133,7 +137,9 @@ export default function Dashboard() {
   const [data, setData] = useState<ScanPayload | null>(null)
   const [apiError, setApiError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<'all' | '10' | '20' | '50' | 'all3'>('all')
+  const [filter, setFilter] = useState<
+    'all' | 'unusual_vol' | 'momentum_scout' | 'base_hunter' | 'breakout_tracker' | 'turtle_trader' | 'ma_crossover_10_20'
+  >('all')
   const [tickerInput, setTickerInput] = useState('')
   const [evaluateResult, setEvaluateResult] = useState<EvaluateResult | null>(null)
   const [evaluateLoading, setEvaluateLoading] = useState(false)
@@ -146,7 +152,7 @@ export default function Dashboard() {
   const [industryTrendMapYtd, setIndustryTrendMapYtd] = useState<Record<string, number>>({})
   const [fetchingFundamentals, setFetchingFundamentals] = useState(false)
   const [fundamentalsProgress, setFundamentalsProgress] = useState<{ index: number; total: number } | null>(null)
-  const [sortColumn, setSortColumn] = useState<string>('opus45')
+  const [sortColumn, setSortColumn] = useState<string>('score')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [viewMode, setViewMode] = useState<'table' | 'charts'>('table')
   // Opus4.5 signals state
@@ -471,13 +477,10 @@ export default function Dashboard() {
   const filtered =
     filter === 'all'
       ? results
-      : filter === 'all3'
-        ? results.filter((r) => r.atMa10 && r.atMa20 && r.atMa50)
-        : filter === '10'
-          ? results.filter((r) => r.atMa10)
-          : filter === '20'
-            ? results.filter((r) => r.atMa20)
-            : results.filter((r) => r.atMa50)
+      : results.filter((r) => {
+          const recentSetups = r.signalSetupsRecent ?? r.signalSetups ?? [];
+          return recentSetups.includes(filter);
+        })
 
   const getSortValue = (r: ScanResult, col: string): number | string => {
     switch (col) {
@@ -567,6 +570,7 @@ export default function Dashboard() {
   return (
     <div className="w-[90%] max-w-full mx-auto">
       <div className="space-y-8">
+      <MarcusSummary />
       {/* Action row: ticker search + Evaluate left; Fetch Industry + Run Scan right */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-2">
@@ -719,18 +723,32 @@ export default function Dashboard() {
 
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex flex-wrap gap-2">
-          <span className="text-slate-400 text-sm mr-2">Filter by MA:</span>
-          {(['all', '10', '20', '50', 'all3'] as const).map((f) => (
+          <span className="text-slate-400 text-sm mr-2">Signal Agents:</span>
+          {([
+            { id: 'all', label: 'All' },
+            { id: 'unusual_vol', label: 'Unusual Vol.' },
+            { id: 'momentum_scout', label: 'Momentum' },
+            { id: 'base_hunter', label: 'Base' },
+            { id: 'breakout_tracker', label: 'Breakout' },
+            { id: 'turtle_trader', label: 'Turtle' },
+            { id: 'ma_crossover_10_20', label: '10-20 Cross Over' },
+          ] as const).map((f) => (
             <button
-              key={f}
-              onClick={() => setFilter(f)}
+              key={f.id}
+              onClick={() => {
+                setFilter(f.id)
+                if (f.id === 'all') {
+                  setSortColumn('score')
+                  setSortDir('desc')
+                }
+              }}
               className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                filter === f
+                filter === f.id
                   ? 'bg-sky-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
             >
-              {f === 'all' ? 'All' : f === 'all3' ? '10+20+50' : `${f} MA`}
+              {f.label}
             </button>
           ))}
         </div>
@@ -787,6 +805,9 @@ export default function Dashboard() {
                 <SortHeader col="opus45" label="Opus" {...sortHeaderProps} alignRight sticky stickyLeft="10rem" />
                 <th className="px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">Open Trade</th>
                 <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400 whitespace-nowrap">Signal Agent</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">Triggered</th>
+                <th className="px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">P/L</th>
                 <SortHeader col="relativeStrength" label="RS" {...sortHeaderProps} alignRight />
                 <SortHeader col="industryRank" label="Ind.Rank" {...sortHeaderProps} alignRight />
                 <SortHeader col="close" label="Price" {...sortHeaderProps} alignRight />
@@ -807,7 +828,7 @@ export default function Dashboard() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                    <td colSpan={19} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={22} className="px-4 py-8 text-center text-slate-500">
                     No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.
                   </td>
                 </tr>
@@ -815,7 +836,7 @@ export default function Dashboard() {
                 sorted.map((r) => (
                   <tr key={r.ticker} className="group border-b border-slate-800/80 hover:bg-slate-800/40">
                     <td className="sticky left-0 z-10 min-w-[10rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3">
-                      <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium">
+                      <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium" target="_blank" rel="noopener noreferrer">
                         {r.ticker}
                       </Link>
                       {(fundamentals[r.ticker]?.companyName ?? fundamentals[r.ticker]?.industry) && (
@@ -927,6 +948,33 @@ export default function Dashboard() {
                       ) : (
                         <span className="text-slate-500">–</span>
                       )}
+                    </td>
+                    {/* Signal Agent */}
+                    <td className="px-4 py-3 text-sm">
+                      <span className={(r.signalSetupsRecent ?? r.signalSetups)?.length ? 'text-slate-200' : 'text-slate-500'}>
+                        {resolveSignalAgentLabel(r.signalSetupsRecent ?? r.signalSetups ?? [])}
+                      </span>
+                    </td>
+                    {/* Triggered date */}
+                    <td className="px-4 py-3 font-mono text-right text-sm">
+                      {(() => {
+                        const ot = opus45ByTicker[r.ticker];
+                        return formatSignalDate(ot?.entryDate);
+                      })()}
+                    </td>
+                    {/* Current P/L */}
+                    <td className="px-4 py-3 font-mono text-right text-sm">
+                      {(() => {
+                        const ot = opus45ByTicker[r.ticker];
+                        const pl = formatSignalPL(ot?.pctChange);
+                        const toneClass =
+                          pl.tone === 'positive'
+                            ? 'text-emerald-400'
+                            : pl.tone === 'negative'
+                              ? 'text-red-400'
+                              : 'text-slate-500';
+                        return <span className={toneClass}>{pl.text}</span>;
+                      })()}
                     </td>
                     {/* RS vs SPY */}
                     <td className="px-4 py-3 font-mono tabular-nums text-right">

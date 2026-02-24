@@ -1,0 +1,26 @@
+## Project frameworks & stack (Cursor context)
+
+### Runtime
+- **Node**: ESM project (`"type": "module"`). Local dev currently runs on Node 22.x.
+- **Server**: Express (`server/index.js`) serves `/api/*` endpoints.
+- **Client**: Vite + React (`src/`), same-origin in local dev (`npm run dev` runs Express on port 5173).
+
+### Frontend
+- **Framework**: React 18 + React Router
+- **Styling**: TailwindCSS (utility-first). Keep UI desktop-first, responsive.
+- **API access**: Use `API_BASE` from `src/utils/api.ts` and call `${API_BASE}/api/...`.
+
+### Backend
+- **DB**: Supabase optional (`server/supabase.js`). Code should gracefully degrade when not configured.
+- **Market data**: `yahoo-finance2`
+- **News**: server-side RSS fetch (no API key) to avoid browser CORS.
+
+### Testing
+- **Runner**: Node’s built-in test runner (`node --test`).
+- **Command**: `npm test` (explicit list of test files in `package.json`).
+
+### Conventions
+- Prefer **small, composable** UI components in `src/components/`.
+- Prefer **pure helper functions** for anything that needs unit tests.
+- Avoid heavy work on page load; provide “run” buttons for long-running pipelines (SSE).
+

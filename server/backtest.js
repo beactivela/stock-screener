@@ -15,6 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDailyBars } from './yahoo.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
+import { EXIT_THRESHOLDS } from './opus45Signal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -300,65 +301,63 @@ export async function calculateForwardReturns(snapshot, daysForward = 30, topN =
         continue;
       }
       
-      // Step 2: Find exit point - when price closes below 10 MA or stop loss hit
+      // Step 2: Find exit using multi-phase strategy (matched to EXIT_THRESHOLDS)
       let exitIdx = -1;
       let exitPrice = null;
       let exitDate = null;
-      let exitReason = 'MAX_HOLD'; // Default if we hit max hold time
+      let exitReason = 'MAX_HOLD';
       
-      // Track MFE and MAE from entry point
       let maxPrice = entryPrice;
       let minPrice = entryPrice;
-      
-      // Track consecutive closes below 10 MA (2-day rule prevents whipsaw exits)
       let consecutiveBelowCount = 0;
+      const requiredDaysBelowMA = EXIT_THRESHOLDS.below10MADays || 3;
 
-      // Look for exit signal after entry
       for (let i = entryIdx + 1; i < Math.min(entryIdx + daysForward, bars.length); i++) {
         const bar = bars[i];
         const allCloses = bars.slice(0, i + 1).map(b => b.c);
         
-        // Update MFE and MAE
         maxPrice = Math.max(maxPrice, bar.h || bar.c);
         minPrice = Math.min(minPrice, bar.l || bar.c);
         
-        // Calculate current return
         const currentReturn = ((bar.c - entryPrice) / entryPrice) * 100;
+        const maxGainPct = ((maxPrice - entryPrice) / entryPrice) * 100;
         
-        // Exit Rule 1: -4% hard stop loss (aligned with opus45Signal.EXIT_THRESHOLDS)
-        if (currentReturn <= -4) {
-          exitIdx = i;
-          exitPrice = bar.c;
-          exitDate = bar.t;
-          exitReason = 'STOP_LOSS';
-          break;
+        // Phase 1: Hard stop loss
+        if (currentReturn <= -EXIT_THRESHOLDS.stopLossPercent) {
+          exitIdx = i; exitPrice = bar.c; exitDate = bar.t; exitReason = 'STOP_LOSS'; break;
         }
         
-        // Exit Rule 2: 2 CONSECUTIVE closes below 10 MA (prevents whipsaw exits)
+        // Phase 2: Breakeven stop
+        if (maxGainPct >= (EXIT_THRESHOLDS.breakevenActivationPct || 5) && currentReturn <= -(EXIT_THRESHOLDS.breakevenBufferPct || 0.5)) {
+          exitIdx = i; exitPrice = bar.c; exitDate = bar.t; exitReason = 'BREAKEVEN_STOP'; break;
+        }
+        
+        // Phase 3: Trailing profit lock
+        if (maxGainPct >= (EXIT_THRESHOLDS.profitLockActivationPct || 10)) {
+          const minAcceptable = maxGainPct * (1 - (EXIT_THRESHOLDS.profitGivebackPct || 50) / 100);
+          if (currentReturn < minAcceptable) {
+            exitIdx = i; exitPrice = bar.c; exitDate = bar.t; exitReason = 'PROFIT_LOCK'; break;
+          }
+        }
+        
+        // Phase 4: Consecutive closes below 10 MA
         const ma10 = calculateSMA(allCloses, 10);
         if (ma10 && bar.c < ma10) {
           consecutiveBelowCount++;
-          if (consecutiveBelowCount >= 2) {
-            exitIdx = i;
-            exitPrice = bar.c;
-            exitDate = bar.t;
-            exitReason = 'BELOW_10MA_2DAY';
-            break;
+          if (consecutiveBelowCount >= requiredDaysBelowMA) {
+            exitIdx = i; exitPrice = bar.c; exitDate = bar.t; exitReason = `BELOW_10MA_${requiredDaysBelowMA}DAY`; break;
           }
         } else {
-          consecutiveBelowCount = 0; // Reset if price recovers above 10 MA
+          consecutiveBelowCount = 0;
         }
       }
       
-      // If no exit signal found, exit at max hold time
       if (exitIdx === -1) {
         exitIdx = Math.min(entryIdx + daysForward, bars.length - 1);
         const exitBar = bars[exitIdx];
         exitPrice = exitBar.c;
         exitDate = exitBar.t;
         exitReason = 'MAX_HOLD';
-        
-        // Update MFE/MAE for remaining bars
         for (let i = entryIdx + 1; i <= exitIdx; i++) {
           maxPrice = Math.max(maxPrice, bars[i].h || bars[i].c);
           minPrice = Math.min(minPrice, bars[i].l || bars[i].c);
@@ -549,11 +548,11 @@ export function analyzeBacktestResults(backtestResults) {
     ? Math.round(validTrades.reduce((sum, t) => sum + (t.daysHeld || 0), 0) / validTrades.length * 10) / 10
     : 0;
   
-  // Calculate exit reason breakdown (updated for 2-day exit rule)
   const exitReasons = {
-    BELOW_10MA_2DAY: validTrades.filter(t => t.exitReason === 'BELOW_10MA_2DAY').length,
-    BELOW_10MA: validTrades.filter(t => t.exitReason === 'BELOW_10MA').length,  // Legacy
     STOP_LOSS: validTrades.filter(t => t.exitReason === 'STOP_LOSS').length,
+    BREAKEVEN_STOP: validTrades.filter(t => t.exitReason === 'BREAKEVEN_STOP').length,
+    PROFIT_LOCK: validTrades.filter(t => t.exitReason === 'PROFIT_LOCK').length,
+    BELOW_10MA: validTrades.filter(t => t.exitReason?.startsWith('BELOW_10MA')).length,
     MAX_HOLD: validTrades.filter(t => t.exitReason === 'MAX_HOLD').length
   };
   

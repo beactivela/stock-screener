@@ -18,8 +18,8 @@ const TV_SCAN_CONCURRENCY = 5; // Fetch 5 pages in parallel (balance speed vs ra
 
 // In-memory cache: { returnsMap, tickerToTvIndustry, fetchedAt }
 let memoryCache = null;
-const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours - industry returns don't change intraday
-const CACHE_STALE_MS = 1 * 60 * 60 * 1000; // 1 hour - after this, serve stale + refresh in background
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours - industry returns change slowly
+const CACHE_STALE_MS = 12 * 60 * 60 * 1000; // 12 hours - after this, serve stale + refresh in background
 
 // Background refresh state
 let isBackgroundRefreshing = false;
@@ -64,6 +64,31 @@ async function fetchTradingViewPage(page, columns) {
   if (!scanRes.ok) throw new Error(`TradingView scanner HTTP ${scanRes.status}`);
   const scanJson = await scanRes.json();
   return scanJson.data || [];
+}
+
+/**
+ * Fetch US stock ticker list from TradingView scanner (replaces Massive ETF constituents).
+ * Returns symbols sorted by market cap desc. Limit = max tickers to return (default 500).
+ * @param {number} limit - Max number of tickers (e.g. 500 for S&P 500-style list)
+ * @returns {Promise<string[]>} - Array of ticker strings (e.g. ['AAPL', 'MSFT', ...])
+ */
+export async function getTickerListFromScanner(limit = 500) {
+  const columns = ['symbol'];
+  const tickers = new Set();
+  const pagesNeeded = Math.ceil(limit / TV_SCAN_PAGE_SIZE) || 1;
+  for (let page = 0; page < pagesNeeded; page++) {
+    const rows = await fetchTradingViewPage(page, columns);
+    for (const row of rows) {
+      if (row.symbol) {
+        const ticker = row.symbol.split(':').pop();
+        if (ticker) tickers.add(ticker);
+      }
+      if (tickers.size >= limit) break;
+    }
+    if (rows.length < TV_SCAN_PAGE_SIZE) break;
+    if (tickers.size >= limit) break;
+  }
+  return [...tickers].slice(0, limit);
 }
 
 /**

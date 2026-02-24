@@ -1,5 +1,7 @@
 # Implementation notes & plans
 
+**Data sources (TradingView + Yahoo only; no Massive):** Ticker list and industry performance from **TradingView** Scanner API. OHLC bars from **Yahoo** (TradingView has no public bar API). Charts: Lightweight Charts (Yahoo data) + TradingView embedded widget. Company name/fundamentals: Yahoo.
+
 - **PLAN.md** — VCP criteria, data sources, task breakdown
 - **BACKGROUND_SCAN_IMPLEMENTATION.md** — Background scan and progress polling
 - **IMPROVEMENT_PLAN.md** — Future work (e.g. wiring `server/enhancedVcpScore.js`)

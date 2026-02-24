@@ -190,11 +190,18 @@ export async function getTradeById(id) {
 
 /**
  * Create a new trade
+ * 
+ * LEARNING SYSTEM INTEGRATION:
+ * When a trade is created, we capture a full context snapshot
+ * at entry for later analysis. This includes all MAs, VCP data,
+ * market condition, etc. See server/learning/tradeContext.js.
+ * 
  * @param {Object} tradeData - Trade entry form data
  * @param {Object} entryMetrics - Technical indicators at entry
+ * @param {Object} learningContext - Additional context for learning (optional)
  * @returns {Promise<Object>} Created trade
  */
-export async function createTrade(tradeData, entryMetrics) {
+export async function createTrade(tradeData, entryMetrics, learningContext = {}) {
   const data = await loadTrades();
   
   const trade = {
@@ -241,11 +248,38 @@ export async function createTrade(tradeData, entryMetrics) {
   
   console.log(`📝 Trade created: ${trade.ticker} @ $${trade.entryPrice}`);
   
+  // LEARNING: Capture full context snapshot at entry
+  // This enables post-mortem analysis of losing trades
+  try {
+    const { createTradeContextSnapshot } = await import('./learning/tradeContext.js');
+    await createTradeContextSnapshot({
+      tradeId: trade.id,
+      ticker: trade.ticker,
+      entryPrice: trade.entryPrice,
+      entryDate: trade.entryDate,
+      bars: learningContext.bars || null,
+      vcpResult: learningContext.vcpResult || entryMetrics,
+      opus45Signal: learningContext.opus45Signal || null,
+      fundamentals: learningContext.fundamentals || null,
+      industryData: learningContext.industryData || null,
+      entryReason: trade.notes,
+      conviction: trade.conviction
+    });
+    console.log(`📸 Context snapshot captured for ${trade.ticker}`);
+  } catch (e) {
+    console.warn(`Could not capture context snapshot: ${e.message}`);
+  }
+  
   return trade;
 }
 
 /**
  * Update an existing trade
+ * 
+ * LEARNING SYSTEM INTEGRATION:
+ * When a trade is closed with a loss, we trigger the loss analyzer
+ * to classify the failure and update learning data.
+ * 
  * @param {string} id - Trade ID
  * @param {Object} updates - Fields to update
  * @returns {Promise<Object|null>} Updated trade or null
@@ -255,6 +289,9 @@ export async function updateTrade(id, updates) {
   const idx = data.trades.findIndex(t => t.id === id);
   
   if (idx === -1) return null;
+  
+  // Check if this is transitioning from open to closed
+  const wasOpen = data.trades[idx].status === 'open';
   
   // Apply updates
   const trade = data.trades[idx];
@@ -280,6 +317,20 @@ export async function updateTrade(id, updates) {
   await saveTrades(data);
   
   console.log(`📝 Trade updated: ${trade.ticker}`);
+  
+  // LEARNING: If trade just closed with a loss, trigger analysis
+  const justClosed = wasOpen && trade.status !== 'open';
+  const isLoss = trade.returnPct != null && trade.returnPct < 0;
+  
+  if (justClosed && isLoss) {
+    try {
+      const { onTradeClosed } = await import('./learning/index.js');
+      const analysis = await onTradeClosed(trade);
+      console.log(`📊 Loss analyzed: ${trade.ticker} -> ${analysis.classification || 'PENDING'}`);
+    } catch (e) {
+      console.warn(`Could not analyze loss: ${e.message}`);
+    }
+  }
   
   return trade;
 }

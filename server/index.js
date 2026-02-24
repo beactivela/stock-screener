@@ -1,6 +1,6 @@
 /**
  * Express server: API + frontend (Vite in dev, static dist in prod). Caches API data to flat JSON files.
- * Loads .env from project root. Yahoo Finance for bars (no API key); Massive only for populate-tickers.
+ * Loads .env from project root. Ticker list + industry from TradingView; OHLC bars from Yahoo (TradingView has no bar API).
  * Dev: npm run dev → one process on 5173 (API + Vite HMR). Prod: npm run serve (build + serve on PORT).
  */
 
@@ -24,6 +24,8 @@ import { listScanSnapshots, runBacktest, loadScanSnapshot } from './backtest.js'
 import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS } from './opus45Signal.js';
 import { loadOptimizedWeights, runLearningPipeline, getLearningStatus, applyWeightChanges, resetWeightsToDefault } from './opus45Learning.js';
 import { runRetroBacktest, getTickersForBacktest } from './retroBacktest.js';
+import { runBacktestHierarchy } from './backtesting/index.js';
+import { buildLearningRunFromHierarchy } from './backtesting/learningBridge.js';
 import { loadCurrentRegime, loadRegimeBacktest } from './regimeHmm.js';
 import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
 import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
@@ -47,6 +49,15 @@ import {
   getTradeStats 
 } from './trades.js';
 import { chatWithMinervini } from './minerviniAgent.js';
+// Exit Learning Agent - analyzes why trades fail vs succeed
+import { runExitLearning, analyzeCaseStudy, loadExitLearningHistory } from './exitLearning.js';
+import { runHistoricalExitLearning } from './historicalExitAnalysis.js';
+import { runConversationForSignal } from './agents/conversationOrchestrator.js';
+import { saveConversation, loadConversation, labelConversation } from './agents/conversationStore.js';
+import { classifyMarket } from './agents/marketPulse.js';
+import { resolveSignalFromCache } from './agents/conversationSignalSource.js';
+import { scanTickerForSignals } from './learning/historicalSignalScanner.js';
+import { buildAgentSignalOverlay } from './agents/agentSignalOverlay.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -73,6 +84,16 @@ function ensureDirs() {
   if (process.env.VERCEL) return; // Vercel serverless: read-only filesystem (no data/ writes)
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
+}
+
+function getDefaultDateRange(years = 5) {
+  const end = new Date();
+  const start = new Date(end);
+  start.setFullYear(start.getFullYear() - years);
+  return {
+    startDate: start.toISOString().slice(0, 10),
+    endDate: end.toISOString().slice(0, 10),
+  };
 }
 ensureDirs();
 
@@ -1181,7 +1202,7 @@ const TV_SCAN_PAGE_SIZE = 250;
 const TV_SCAN_MAX_PAGES = 40; // 250*40 = 10k symbols max
 
 app.get('/api/industry-tradingview', async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
   try {
     const columns = [
       'name', 'sector', 'industry', 'close', 'market_cap_basic',
@@ -1758,6 +1779,171 @@ app.post('/api/backtest/retro', async (req, res) => {
   }
 });
 
+// ========== BACKTEST HIERARCHY (Simple → WFO → MC → Holdout) ==========
+app.post('/api/backtest/hierarchy', async (req, res) => {
+  const {
+    tier = 'simple',
+    engine = 'node',
+    agentType = null,
+    startDate,
+    endDate,
+    holdoutPct = 0.2,
+    trainMonths = 12,
+    testMonths = 3,
+    stepMonths = 3,
+    candidateHoldingPeriods = [60, 90, 120],
+    optimizeMetric = 'expectancy',
+    topN = null,
+    lookbackMonths = 60,
+    forceRefresh = false,
+    warmupMonths = 12,
+    monteCarloTrials = 500,
+    monteCarloSeed = 42,
+    allowWeightUpdates = true,
+    minImprovement = 0.25,
+  } = req.body || {};
+
+  try {
+    if (!agentType) {
+      return res.status(400).json({ error: 'agentType is required for backtest hierarchy' });
+    }
+
+    const defaults = getDefaultDateRange(5);
+    const resolvedStart = startDate || defaults.startDate;
+    const resolvedEnd = endDate || defaults.endDate;
+
+    const objective = 'expectancy';
+    if (optimizeMetric && optimizeMetric !== 'expectancy') {
+      console.warn(`[Backtest hierarchy] Ignoring optimizeMetric="${optimizeMetric}". Objective is fixed to expectancy.`);
+    }
+
+    const result = await runBacktestHierarchy({
+      tier,
+      engine,
+      agentType,
+      tickerLimit: topN ?? 0,
+      lookbackMonths,
+      forceRefresh,
+      startDate: resolvedStart,
+      endDate: resolvedEnd,
+      holdoutPct,
+      trainMonths,
+      testMonths,
+      stepMonths,
+      candidateHoldingPeriods,
+      optimizeMetric: objective,
+      topN,
+      warmupMonths,
+      monteCarloTrials,
+      monteCarloSeed,
+    });
+
+    const storeResult = await buildLearningRunFromHierarchy({
+      agentType,
+      tier,
+      result,
+      objective,
+      allowWeightUpdates,
+      minImprovement,
+    });
+
+    res.json({
+      ...result,
+      learningRun: storeResult,
+    });
+  } catch (e) {
+    console.error('Backtest hierarchy error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Streamed hierarchy backtest with progress updates (SSE over POST)
+app.post('/api/backtest/hierarchy/stream', async (req, res) => {
+  const {
+    tier = 'simple',
+    engine = 'node',
+    agentType = null,
+    startDate,
+    endDate,
+    holdoutPct = 0.2,
+    trainMonths = 12,
+    testMonths = 3,
+    stepMonths = 3,
+    candidateHoldingPeriods = [60, 90, 120],
+    optimizeMetric = 'expectancy',
+    topN = null,
+    lookbackMonths = 60,
+    forceRefresh = false,
+    warmupMonths = 12,
+    monteCarloTrials = 500,
+    monteCarloSeed = 42,
+    allowWeightUpdates = true,
+    minImprovement = 0.25,
+  } = req.body || {};
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  const send = (obj) => {
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    res.flush?.();
+  };
+
+  try {
+    if (!agentType) {
+      send({ done: true, error: 'agentType is required for backtest hierarchy' });
+      return res.end();
+    }
+
+    const defaults = getDefaultDateRange(5);
+    const resolvedStart = startDate || defaults.startDate;
+    const resolvedEnd = endDate || defaults.endDate;
+
+    const objective = 'expectancy';
+    if (optimizeMetric && optimizeMetric !== 'expectancy') {
+      console.warn(`[Backtest hierarchy stream] Ignoring optimizeMetric="${optimizeMetric}". Objective is fixed to expectancy.`);
+    }
+
+    const result = await runBacktestHierarchy({
+      tier,
+      engine,
+      agentType,
+      tickerLimit: topN ?? 0,
+      lookbackMonths,
+      forceRefresh,
+      startDate: resolvedStart,
+      endDate: resolvedEnd,
+      holdoutPct,
+      trainMonths,
+      testMonths,
+      stepMonths,
+      candidateHoldingPeriods,
+      optimizeMetric: objective,
+      warmupMonths,
+      monteCarloTrials,
+      monteCarloSeed,
+      onProgress: (evt) => send({ progress: true, ...evt }),
+    });
+
+    const storeResult = await buildLearningRunFromHierarchy({
+      agentType,
+      tier,
+      result,
+      objective,
+      allowWeightUpdates,
+      minImprovement,
+    });
+
+    send({ done: true, result: { ...result, learningRun: storeResult } });
+    res.end();
+  } catch (e) {
+    console.error('Backtest hierarchy stream error:', e);
+    send({ done: true, error: e.message });
+    res.end();
+  }
+});
+
 // ========== OPUS4.5 SIGNAL ENDPOINTS ==========
 
 /**
@@ -1786,6 +1972,15 @@ async function computeAndSaveOpus45Scores() {
     const toStr = to.toISOString().slice(0, 10);
 
     const resultsToAnalyze = results;
+
+    // Load SPY bars for RS calculation (needed for accurate historical signal detection)
+    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
+    if (!spyBars || spyBars.length < 200) {
+      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
+      if (spyBars && spyBars.length >= 200) {
+        await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
+      }
+    }
 
     // Collect tickers that need a bar fetch. Try Opus cache (_1d.json) first, then scan cache (.json).
     const needFetch = [];
@@ -1825,7 +2020,7 @@ async function computeAndSaveOpus45Scores() {
     }
 
     // Generate Opus4.5 signals and scores for every ticker
-    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, industryReturns, weights);
+    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, industryReturns, weights, spyBars);
     const stats = getSignalStats(signals);
 
     // Enrich each signal with currentPrice so when we serve from cache we can compute P/L for Open Trade column
@@ -2159,6 +2354,7 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
     let entryPrice = 0;
     let lastBuySignal = null;
     let lastSellSignal = null;
+    let highSinceEntry = 0;
     
     // Need at least 200 bars before we can check signals
     for (let i = 200; i < sortedBars.length; i++) {
@@ -2185,10 +2381,11 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
           lastBuySignal = buyMarker;
           inPosition = true;
           entryPrice = bar.c;
+          highSinceEntry = bar.h;
         }
       } else {
-        // Check for sell signal
-        const exitCheck = checkExitSignal({ entryPrice }, barsToDate);
+        highSinceEntry = Math.max(highSinceEntry, bar.h);
+        const exitCheck = checkExitSignal({ entryPrice, highSinceEntry }, barsToDate);
         
         if (exitCheck.exitSignal) {
           const sellMarker = {
@@ -2202,6 +2399,7 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
           lastSellSignal = sellMarker;
           inPosition = false;
           entryPrice = 0;
+          highSinceEntry = 0;
         }
       }
     }
@@ -2235,7 +2433,12 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
     const MAX_DAYS_FOR_ACTIONABLE_BUY = 2;
     const isActionableBuy = inPosition && holdingPeriod !== null && holdingPeriod <= MAX_DAYS_FOR_ACTIONABLE_BUY;
     
-    res.json({
+    // Set cache headers to prevent stale data
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    
+    const response = {
       ticker,
       buySignals,
       sellSignals,
@@ -2246,9 +2449,77 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
       holdingPeriod,
       isActionableBuy,  // true only if buy signal triggered in last 2 days
       weightsVersion: weights._version || 'default'
-    });
+    };
+    
+    // Debug log for STRL
+    if (ticker === 'STRL') {
+      console.log(`[STRL DEBUG] Sending response:`, {
+        currentStatus: response.currentStatus,
+        lastBuyDate: lastBuySignal ? new Date(lastBuySignal.time * 1000).toISOString() : null,
+        lastBuyPrice: lastBuySignal?.price,
+        holdingPeriod: response.holdingPeriod
+      });
+    }
+    
+    res.json(response);
   } catch (e) {
     console.error(`Opus4.5 history error for ${ticker}:`, e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get per-agent buy signals for chart overlays (Momentum Scout, Base Hunter, Breakout Tracker, Turtle Trader)
+app.get('/api/agents/signals/:ticker/history', async (req, res) => {
+  const { ticker } = req.params;
+
+  try {
+    const to = new Date();
+    const from365 = new Date(to);
+    from365.setDate(from365.getDate() - 365);
+    const fromStr365 = from365.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+
+    // Get bars (need 250+ days for historical signal evaluation)
+    let bars = await getBarsFromDb(ticker, fromStr365, toStr, '1d');
+    if (!bars) {
+      bars = await getBars(ticker, fromStr365, toStr, '1d');
+      await saveBarsToDb(ticker, fromStr365, toStr, bars, '1d');
+    }
+
+    if (!bars || bars.length < 250) {
+      return res.json({
+        ticker,
+        agents: {},
+        reason: 'Insufficient data (need 250+ days)',
+      });
+    }
+
+    // Get SPY bars for RS calculation (shared with VCP checks)
+    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
+    if (!spyBars) {
+      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
+      await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
+    }
+
+    const signals = scanTickerForSignals(ticker, bars, spyBars, {
+      lookbackMonths: 12,
+      signalFamilies: ['opus45', 'turtle'],
+    });
+
+    const agents = buildAgentSignalOverlay({ signals, bars });
+
+    // Set cache headers to prevent stale data
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+
+    res.json({
+      ticker,
+      agents,
+      scannedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error(`Agent signal history error for ${ticker}:`, e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -2449,9 +2720,9 @@ app.get('/api/opus45/weights', async (req, res) => {
 
 // ========== REGIME (HMM) ==========
 // Separate SPY and QQQ regime + forward predictions (run fetch-regime-data + regime:train first)
-app.get('/api/regime', (req, res) => {
+app.get('/api/regime', async (req, res) => {
   try {
-    const data = loadCurrentRegime();
+    const data = await loadCurrentRegime();
     if (!data.spy && !data.qqq) {
       return res.status(404).json({ error: 'Regime not trained. Run: npm run fetch-regime-data && npm run regime:train' });
     }
@@ -2462,13 +2733,130 @@ app.get('/api/regime', (req, res) => {
 });
 
 // 5-year regime backtest: prediction vs actual forward returns (correlation)
-app.get('/api/regime/backtest', (req, res) => {
+app.get('/api/regime/backtest', async (req, res) => {
   try {
-    const data = loadRegimeBacktest();
+    const data = await loadRegimeBacktest();
     if (!data.spy && !data.qqq) {
       return res.status(404).json({ error: 'Regime backtest not found. Run: npm run regime:train' });
     }
     res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Harry Historian regime analytics: leaderboard, regime filter profile, stage timeline, and sector RS percentile ranking.
+app.get('/api/regime/harry', async (req, res) => {
+  const normalizeRegime = (value) => {
+    const v = String(value || '').toUpperCase();
+    if (v === 'BULL' || v === 'UNCERTAIN' || v === 'CORRECTION' || v === 'BEAR') return v;
+    return 'UNCERTAIN';
+  };
+
+  const fallbackStageHistory = (backtestData) => {
+    const base = backtestData?.spy?.fullHistory || backtestData?.qqq?.fullHistory || [];
+    return base.map((item) => ({
+      date: item.date,
+      regime: item.regime === 'bull' ? 'BULL' : 'BEAR',
+      source: 'hmm_fallback',
+    }));
+  };
+
+  try {
+    const [
+      { listBatchRuns },
+      {
+        buildRegimeLeaderboard,
+        buildRegimeProfile,
+        buildTopDownFilterProfile,
+        buildSectorRankByTicker,
+        buildSectorRsPercentileByTicker,
+      },
+      { getHistoricalMarketConditions },
+    ] = await Promise.all([
+      import('./learning/batchCheckpointStore.js'),
+      import('./agents/harryHistorian.js'),
+      import('./learning/distributionDays.js'),
+    ]);
+
+    const runs = await listBatchRuns(1);
+    const latestRun = runs?.[0] || null;
+    const cycles = latestRun?.finalResult?.cycles || [];
+    const leaderboardByRegime = latestRun?.finalResult?.leaderboardByRegime || buildRegimeLeaderboard(cycles);
+    const profileByRegime = buildRegimeProfile(cycles);
+    const topDownProfileByRegime = {
+      BULL: buildTopDownFilterProfile('BULL'),
+      UNCERTAIN: buildTopDownFilterProfile('UNCERTAIN'),
+      CORRECTION: buildTopDownFilterProfile('CORRECTION'),
+      BEAR: buildTopDownFilterProfile('BEAR'),
+    };
+
+    // Stage history (uses logged market_conditions when available, otherwise falls back to HMM bull/bear)
+    const backtestData = await loadRegimeBacktest();
+    const allDates = [
+      ...(backtestData?.spy?.fullHistory || []).map((r) => r.date),
+      ...(backtestData?.qqq?.fullHistory || []).map((r) => r.date),
+    ].filter(Boolean);
+    const sortedDates = [...new Set(allDates)].sort();
+    const fromDate = sortedDates[0] || null;
+    const toDate = sortedDates[sortedDates.length - 1] || null;
+
+    let stageHistory = [];
+    let stageHistorySource = 'none';
+    if (fromDate && toDate) {
+      try {
+        const historical = await getHistoricalMarketConditions(fromDate, toDate);
+        stageHistory = (historical || []).map((row) => ({
+          date: row.date,
+          regime: normalizeRegime(row.market_regime || row.regime),
+          source: 'market_conditions',
+        }));
+        stageHistorySource = stageHistory.length > 0 ? 'market_conditions' : 'hmm_fallback';
+      } catch {
+        stageHistory = [];
+      }
+    }
+    if (stageHistory.length === 0) {
+      stageHistory = fallbackStageHistory(backtestData);
+      stageHistorySource = stageHistory.length > 0 ? 'hmm_fallback' : 'none';
+    }
+
+    // Sector RS percentile ranking by ticker
+    const tvPayload = await fetchTradingViewIndustryReturns({ useCache: true });
+    const sectorRankByTicker = buildSectorRankByTicker(tvPayload);
+    const sectorRsPercentileByTicker = buildSectorRsPercentileByTicker(tvPayload);
+    const tickerRows = Object.keys(sectorRsPercentileByTicker).map((ticker) => ({
+      ticker,
+      industry: tvPayload?.tickerToTvIndustry?.get?.(ticker) || null,
+      sectorRankPct: sectorRankByTicker[ticker] ?? null,
+      sectorRsPercentile: sectorRsPercentileByTicker[ticker] ?? null,
+    }));
+
+    tickerRows.sort((a, b) => {
+      const p = (b.sectorRsPercentile ?? -Infinity) - (a.sectorRsPercentile ?? -Infinity);
+      if (p !== 0) return p;
+      const r = (a.sectorRankPct ?? Infinity) - (b.sectorRankPct ?? Infinity);
+      if (r !== 0) return r;
+      return a.ticker.localeCompare(b.ticker);
+    });
+
+    res.json({
+      latestBatchRun: latestRun
+        ? {
+            runId: latestRun.runId,
+            status: latestRun.status,
+            updatedAt: latestRun.updatedAt,
+            cyclesCompleted: latestRun.finalResult?.cyclesCompleted ?? 0,
+            cyclesPlanned: latestRun.finalResult?.cyclesPlanned ?? 0,
+          }
+        : null,
+      leaderboardByRegime,
+      profileByRegime,
+      topDownProfileByRegime,
+      stageHistorySource,
+      stageHistory,
+      sectorRsRankings: tickerRows.slice(0, 250),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2700,6 +3088,1690 @@ app.post('/api/trades/learning/apply', (req, res) => {
   }
 });
 
+// ========== EXIT LEARNING ENDPOINTS ==========
+// Advanced exit analysis - learns from what makes trades stop out vs succeed
+
+// Run complete exit learning analysis
+// Query params: ?includeBehaviorAnalysis=true (slower but more detailed)
+app.post('/api/exit-learning/run', async (req, res) => {
+  try {
+    const includeBehaviorAnalysis = req.query.includeBehaviorAnalysis === 'true';
+    
+    console.log('\n🧠 Starting Exit Learning Analysis...');
+    const analysis = await runExitLearning({ includeBehaviorAnalysis });
+    
+    if (analysis.error) {
+      return res.status(400).json(analysis);
+    }
+    
+    res.json(analysis);
+  } catch (e) {
+    console.error('Exit learning error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get exit learning history
+app.get('/api/exit-learning/history', (req, res) => {
+  try {
+    const history = loadExitLearningHistory();
+    res.json({ history, count: history.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Analyze specific failed trade (case study)
+// Body: { ticker, entryDate }
+// Example: { ticker: "CMC", entryDate: "2026-02-17" }
+app.post('/api/exit-learning/case-study', async (req, res) => {
+  try {
+    const { ticker, entryDate } = req.body;
+    
+    if (!ticker || !entryDate) {
+      return res.status(400).json({ 
+        error: 'ticker and entryDate are required',
+        example: { ticker: 'CMC', entryDate: '2026-02-17' }
+      });
+    }
+    
+    console.log(`\n🔍 Analyzing case study: ${ticker} @ ${entryDate}`);
+    const analysis = await analyzeCaseStudy(ticker, entryDate);
+    
+    if (analysis.error) {
+      return res.status(400).json(analysis);
+    }
+    
+    res.json(analysis);
+  } catch (e) {
+    console.error('Case study error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Run historical exit learning on past Opus signals
+// Query params: ?maxSignals=50&daysToTrack=30&fromDate=2025-01-01
+app.post('/api/exit-learning/historical', async (req, res) => {
+  try {
+    const maxSignals = parseInt(req.query.maxSignals) || 50;
+    const daysToTrack = parseInt(req.query.daysToTrack) || 30;
+    const fromDate = req.query.fromDate || null;
+    const includeTradeDetails = req.query.includeTradeDetails === 'true';
+    
+    console.log('\n🧠 Starting Historical Exit Learning...');
+    console.log(`  Max signals: ${maxSignals}`);
+    console.log(`  Days to track: ${daysToTrack}`);
+    if (fromDate) console.log(`  From date: ${fromDate}`);
+    
+    const analysis = await runHistoricalExitLearning({
+      maxSignals,
+      daysToTrack,
+      fromDate,
+      includeTradeDetails,
+      saveReport: true
+    });
+    
+    if (analysis.error) {
+      return res.status(400).json(analysis);
+    }
+    
+    res.json(analysis);
+  } catch (e) {
+    console.error('Historical exit learning error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== SELF-LEARNING SYSTEM ENDPOINTS ==========
+// Advanced self-learning trading system with failure analysis, pattern recognition,
+// and adaptive scoring. See server/learning/ for implementation.
+
+// Get learning dashboard summary
+app.get('/api/learning/dashboard', async (req, res) => {
+  try {
+    const { getLearningDashboard } = await import('./learning/index.js');
+    const dashboard = await getLearningDashboard();
+    res.json(dashboard);
+  } catch (e) {
+    console.error('Learning dashboard error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get current market condition (distribution days, regime)
+app.get('/api/learning/market-condition', async (req, res) => {
+  try {
+    const { getCurrentMarketCondition } = await import('./learning/index.js');
+    const condition = await getCurrentMarketCondition();
+    res.json(condition || { error: 'Could not fetch market condition' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get failure classification statistics
+app.get('/api/learning/failures', async (req, res) => {
+  try {
+    const { getClassificationStats } = await import('./learning/index.js');
+    const stats = await getClassificationStats();
+    res.json(stats || { error: 'No failure data available' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Classify all unclassified losing trades
+app.post('/api/learning/failures/classify', async (req, res) => {
+  try {
+    const { classifyAllUnclassified } = await import('./learning/index.js');
+    const result = await classifyAllUnclassified();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Run pattern analysis across all trades
+app.post('/api/learning/analyze-patterns', async (req, res) => {
+  try {
+    const { analyzePatterns } = await import('./learning/index.js');
+    const analysis = await analyzePatterns();
+    res.json(analysis);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get latest pattern analysis
+app.get('/api/learning/patterns', async (req, res) => {
+  try {
+    const { getLatestPatternAnalysis } = await import('./learning/index.js');
+    const analysis = await getLatestPatternAnalysis();
+    res.json(analysis || { error: 'No pattern analysis available' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Generate weekly learning report
+app.post('/api/learning/weekly-report', async (req, res) => {
+  try {
+    const { weekEndDate } = req.body;
+    const { generateWeeklyReport } = await import('./learning/index.js');
+    const report = await generateWeeklyReport(weekEndDate);
+    res.json(report);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get latest weekly report
+app.get('/api/learning/weekly-report', async (req, res) => {
+  try {
+    const { getLatestWeeklyReport, formatReportAsMarkdown } = await import('./learning/index.js');
+    const report = await getLatestWeeklyReport();
+    const format = req.query.format;
+    
+    if (format === 'markdown' && report) {
+      res.type('text/markdown').send(formatReportAsMarkdown(report));
+    } else {
+      res.json(report || { error: 'No weekly report available' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get all weekly reports
+app.get('/api/learning/weekly-reports', async (req, res) => {
+  try {
+    const { getAllWeeklyReports } = await import('./learning/index.js');
+    const reports = await getAllWeeklyReports();
+    res.json({ reports, count: reports.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Run full weekly learning cycle
+app.post('/api/learning/run-weekly-cycle', async (req, res) => {
+  try {
+    const { runWeeklyLearningCycle } = await import('./learning/index.js');
+    const results = await runWeeklyLearningCycle();
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update setup win rates from trade history
+app.post('/api/learning/update-win-rates', async (req, res) => {
+  try {
+    const { updateSetupWinRates } = await import('./learning/index.js');
+    const result = await updateSetupWinRates();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get historical win rate for a setup
+app.post('/api/learning/historical-win-rate', async (req, res) => {
+  try {
+    const { getHistoricalWinRate } = await import('./learning/index.js');
+    const setup = req.body;
+    const result = await getHistoricalWinRate(setup);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get effective weights (default or learned)
+app.get('/api/learning/weights', async (req, res) => {
+  try {
+    const { getEffectiveWeights } = await import('./learning/index.js');
+    const weights = await getEffectiveWeights();
+    res.json(weights);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Apply learned weight adjustments
+app.post('/api/learning/apply-weights', async (req, res) => {
+  try {
+    const { applyLearnedWeights } = await import('./learning/index.js');
+    const result = await applyLearnedWeights();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Validate entry with learning system
+app.post('/api/learning/validate-entry', async (req, res) => {
+  try {
+    const { ticker, bars, vcpResult, opus45Signal, fundamentals, industryData } = req.body;
+    
+    // If bars not provided, fetch them
+    let barsData = bars;
+    if (!barsData && ticker) {
+      const to = new Date();
+      const from = new Date();
+      from.setDate(from.getDate() - 365);
+      barsData = await getBars(ticker, from.toISOString().slice(0, 10), to.toISOString().slice(0, 10));
+    }
+    
+    const { validateEntryWithLearning } = await import('./learning/index.js');
+    const validation = await validateEntryWithLearning({
+      bars: barsData,
+      vcpResult: vcpResult || {},
+      opus45Signal: opus45Signal || {},
+      fundamentals: fundamentals || {},
+      industryData: industryData || {}
+    });
+    
+    res.json({ ticker, ...validation });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Analyze a breakout
+app.post('/api/learning/analyze-breakout', async (req, res) => {
+  try {
+    const { ticker, breakoutDate, pivotPrice, patternData } = req.body;
+    
+    if (!ticker || !breakoutDate) {
+      return res.status(400).json({ error: 'ticker and breakoutDate required' });
+    }
+    
+    const { analyzeBreakout } = await import('./learning/index.js');
+    const analysis = await analyzeBreakout(ticker, breakoutDate, pivotPrice, patternData);
+    res.json(analysis);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get breakout success statistics
+app.get('/api/learning/breakout-stats', async (req, res) => {
+  try {
+    const { getBreakoutStats } = await import('./learning/index.js');
+    const stats = await getBreakoutStats();
+    res.json(stats || { error: 'No breakout data available' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get context snapshot for a trade
+app.get('/api/learning/context/:tradeId', async (req, res) => {
+  try {
+    const { getContextSnapshotByTradeId } = await import('./learning/index.js');
+    const context = await getContextSnapshotByTradeId(req.params.tradeId);
+    res.json(context || { error: 'No context snapshot found' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get failure classification for a trade
+app.get('/api/learning/classification/:tradeId', async (req, res) => {
+  try {
+    const { getClassification } = await import('./learning/index.js');
+    const classification = await getClassification(req.params.tradeId);
+    res.json(classification || { error: 'No classification found' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== HISTORICAL SIGNAL ANALYSIS ENDPOINTS ==========
+// Auto-generate trades from Opus4.5 signals over past 5 years (60 months)
+// Learn cross-stock patterns without manual trade entry
+
+// Run full historical analysis (main entry point)
+// This scans tickers, finds signals, simulates trades, and analyzes patterns
+app.post('/api/learning/historical/run', async (req, res) => {
+  try {
+    const { tickers, lookbackMonths = 60, storeInDatabase = true, tickerLimit = 0, relaxedThresholds = false, seedMode = false, signalFamilies = null } = req.body;
+    
+    const { runHistoricalAnalysis } = await import('./learning/index.js');
+    
+    // This can take a while - start it and stream progress
+    const results = await runHistoricalAnalysis({
+      tickers,
+      lookbackMonths,
+      tickerLimit,
+      storeInDatabase,
+      relaxedThresholds,
+      seedMode,
+      signalFamilies,
+      onProgress: (progress) => {
+        console.log(`Scanning ${progress.ticker} (${progress.current}/${progress.total})`);
+      }
+    });
+    
+    res.json(results);
+  } catch (e) {
+    console.error('Historical analysis error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Quick analysis on specific tickers (faster, no DB storage)
+app.post('/api/learning/historical/quick', async (req, res) => {
+  try {
+    const { tickers, lookbackMonths = 6 } = req.body;
+    
+    if (!tickers || !Array.isArray(tickers) || tickers.length === 0) {
+      return res.status(400).json({ error: 'tickers array required' });
+    }
+    
+    const { quickAnalysis } = await import('./learning/index.js');
+    const results = await quickAnalysis(tickers, lookbackMonths);
+    
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get latest cross-stock analysis results
+app.get('/api/learning/historical/latest', async (req, res) => {
+  try {
+    const { getLatestAnalysis } = await import('./learning/index.js');
+    const analysis = await getLatestAnalysis();
+    res.json(analysis || { error: 'No historical analysis available. Run /api/learning/historical/run first.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get stored historical signals from database
+app.get('/api/learning/historical/signals', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 500;
+    const { getStoredSignals } = await import('./learning/index.js');
+    const signals = await getStoredSignals(limit);
+    res.json({ signals, count: signals.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Re-analyze stored signals without re-scanning
+app.post('/api/learning/historical/reanalyze', async (req, res) => {
+  try {
+    const { getStoredSignals, runCrossStockAnalysis, storeAnalysisResults } = await import('./learning/index.js');
+    
+    const signals = await getStoredSignals(1000);
+    
+    if (signals.length === 0) {
+      return res.json({ error: 'No stored signals. Run historical scan first.' });
+    }
+    
+    const analysis = runCrossStockAnalysis(signals);
+    await storeAnalysisResults(analysis);
+    
+    res.json({
+      signalsAnalyzed: signals.length,
+      ...analysis
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Scan a single ticker for historical signals (for testing)
+app.get('/api/learning/historical/scan/:ticker', async (req, res) => {
+  try {
+    const ticker = req.params.ticker.toUpperCase();
+    const lookbackMonths = parseInt(req.query.months) || 60;
+    
+    const { scanMultipleTickers } = await import('./learning/index.js');
+    const results = await scanMultipleTickers([ticker], lookbackMonths);
+    
+    res.json({
+      ticker,
+      signals: results.signals,
+      stats: results.stats
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get optimal VCP setup parameters (cross-stock learned)
+app.get('/api/learning/historical/optimal-setup', async (req, res) => {
+  try {
+    const { getStoredSignals, findOptimalSetup } = await import('./learning/index.js');
+    
+    const signals = await getStoredSignals(1000);
+    
+    if (signals.length < 10) {
+      return res.json({ 
+        error: 'Not enough signals. Need at least 10 historical trades.',
+        signalsFound: signals.length 
+      });
+    }
+    
+    const optimal = findOptimalSetup(signals);
+    res.json(optimal);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get factor analysis (win rate by RS, contractions, volume, etc.)
+app.get('/api/learning/historical/factors', async (req, res) => {
+  try {
+    const { getStoredSignals, analyzeAllFactors } = await import('./learning/index.js');
+    
+    const signals = await getStoredSignals(1000);
+    
+    if (signals.length < 5) {
+      return res.json({ error: 'Not enough signals for factor analysis' });
+    }
+    
+    const factors = analyzeAllFactors(signals);
+    res.json(factors);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get pattern type analysis (VCP vs Cup-with-Handle vs Flat Base)
+app.get('/api/learning/historical/pattern-types', async (req, res) => {
+  try {
+    const { getStoredSignals, analyzePatternTypes } = await import('./learning/index.js');
+    
+    const signals = await getStoredSignals(1000);
+    
+    if (signals.length < 5) {
+      return res.json({ error: 'Not enough signals for pattern analysis' });
+    }
+    
+    const patterns = analyzePatternTypes(signals);
+    res.json(patterns);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get exit type analysis
+app.get('/api/learning/historical/exits', async (req, res) => {
+  try {
+    const { getStoredSignals, analyzeExitTypes } = await import('./learning/index.js');
+    
+    const signals = await getStoredSignals(1000);
+    
+    if (signals.length < 5) {
+      return res.json({ error: 'Not enough signals for exit analysis' });
+    }
+    
+    const exits = analyzeExitTypes(signals);
+    res.json(exits);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get weight adjustment recommendations based on historical data
+app.get('/api/learning/historical/weight-recommendations', async (req, res) => {
+  try {
+    const { getStoredSignals, analyzeAllFactors, generateWeightRecommendations } = await import('./learning/index.js');
+    
+    const signals = await getStoredSignals(1000);
+    
+    if (signals.length < 10) {
+      return res.json({ error: 'Not enough signals for weight recommendations' });
+    }
+    
+    const factors = analyzeAllFactors(signals);
+    const recommendations = generateWeightRecommendations(factors);
+    
+    res.json({
+      signalsAnalyzed: signals.length,
+      recommendations
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ========== OPUS4.5 SELF-OPTIMIZATION ENDPOINTS ==========
+
+// Run full weight optimization (auto-update Opus4.5 based on historical data)
+app.post('/api/learning/optimize-weights', async (req, res) => {
+  try {
+    const { minSignals = 50, forceRun = false } = req.body;
+    
+    const { runWeightOptimization } = await import('./learning/index.js');
+    const result = await runWeightOptimization({ minSignals, forceRun });
+    
+    // Clear weight cache so new weights are used immediately
+    if (result.success && result.stored) {
+      const { clearWeightCache } = await import('./opus45Signal.js');
+      clearWeightCache();
+    }
+    
+    res.json(result);
+  } catch (e) {
+    console.error('Weight optimization error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get current active weights (optimized or default)
+app.get('/api/learning/active-weights', async (req, res) => {
+  try {
+    const { loadOptimizedWeights } = await import('./learning/index.js');
+    const result = await loadOptimizedWeights();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Compare default vs optimized weights
+app.get('/api/learning/compare-weights', async (req, res) => {
+  try {
+    const { loadOptimizedWeights } = await import('./learning/index.js');
+    const { DEFAULT_WEIGHTS } = await import('./opus45Signal.js');
+    
+    const optimized = await loadOptimizedWeights();
+    
+    // Calculate differences
+    const differences = [];
+    if (optimized.source === 'optimized') {
+      for (const [key, defaultVal] of Object.entries(DEFAULT_WEIGHTS)) {
+        const optimizedVal = optimized.weights[key];
+        if (optimizedVal !== defaultVal) {
+          differences.push({
+            weight: key,
+            default: defaultVal,
+            optimized: optimizedVal,
+            delta: optimizedVal - defaultVal
+          });
+        }
+      }
+    }
+    
+    res.json({
+      default: DEFAULT_WEIGHTS,
+      optimized: optimized.weights,
+      source: optimized.source,
+      signalsAnalyzed: optimized.signalsAnalyzed,
+      generatedAt: optimized.generatedAt,
+      differences
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Latest A/B learning run result (control vs variant comparison)
+app.get('/api/learning/latest-ab', async (req, res) => {
+  try {
+    const { loadLatestLearningRun } = await import('./learning/index.js');
+    const run = await loadLatestLearningRun();
+    if (!run) {
+      return res.json({ available: false, message: 'No learning runs found. Run iterative-optimize first.' });
+    }
+    res.json({
+      available: true,
+      runNumber: run.run_number,
+      objective: run.objective,
+      control: {
+        source: run.control_source,
+        avgReturn: run.control_avg_return,
+        expectancy: run.control_expectancy,
+        winRate: run.control_win_rate,
+        avgWin: run.control_avg_win,
+        avgLoss: run.control_avg_loss,
+        profitFactor: run.control_profit_factor,
+        signalCount: run.control_signal_count
+      },
+      variant: {
+        avgReturn: run.variant_avg_return,
+        expectancy: run.variant_expectancy,
+        winRate: run.variant_win_rate,
+        avgWin: run.variant_avg_win,
+        avgLoss: run.variant_avg_loss,
+        profitFactor: run.variant_profit_factor,
+        signalCount: run.variant_signal_count
+      },
+      delta: {
+        avgReturn: run.delta_avg_return,
+        expectancy: run.delta_expectancy,
+        winRate: run.delta_win_rate
+      },
+      factorChanges: run.factor_changes || [],
+      topFactors: run.top_factors || [],
+      promoted: run.promoted,
+      promotionReason: run.promotion_reason,
+      iterationsRun: run.iterations_run,
+      signalsEvaluated: run.signals_evaluated,
+      completedAt: run.completed_at
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Learning run history (last N A/B comparisons, optionally filtered by agent)
+app.get('/api/learning/run-history', async (req, res) => {
+  try {
+    const limit = Math.min(50, parseInt(req.query.limit) || 20);
+    const agentType = req.query.agent || null;
+    const { loadLearningRunHistory } = await import('./learning/index.js');
+    const runs = await loadLearningRunHistory(limit, agentType);
+    res.json({
+      total: runs.length,
+      runs: runs.map(r => ({
+        runNumber: r.run_number,
+        agentType: r.agent_type || 'default',
+        regimeTag: r.regime_tag || null,
+        objective: r.objective,
+        controlAvgReturn: r.control_avg_return,
+        variantAvgReturn: r.variant_avg_return,
+        deltaAvgReturn: r.delta_avg_return,
+        controlExpectancy: r.control_expectancy,
+        variantExpectancy: r.variant_expectancy,
+        deltaExpectancy: r.delta_expectancy,
+        controlWinRate: r.control_win_rate,
+        variantWinRate: r.variant_win_rate,
+        controlProfitFactor: r.control_profit_factor,
+        variantProfitFactor: r.variant_profit_factor,
+        promoted: r.promoted,
+        promotionReason: r.promotion_reason,
+        iterationsRun: r.iterations_run,
+        signalsEvaluated: r.signals_evaluated,
+        completedAt: r.completed_at
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Regime leaderboard from learning run history.
+app.get('/api/learning/leaderboard/regime', async (req, res) => {
+  try {
+    const limit = Math.min(5000, parseInt(req.query.limit) || 1000);
+    const { loadLearningRunHistory } = await import('./learning/index.js');
+    const runs = await loadLearningRunHistory(limit, null);
+
+    const leaderboard = {};
+    for (const r of runs || []) {
+      const regime = r.regime_tag || 'UNKNOWN';
+      const agent = r.agent_type || 'default';
+      if (!leaderboard[regime]) leaderboard[regime] = {};
+      if (!leaderboard[regime][agent]) {
+        leaderboard[regime][agent] = {
+          runs: 0,
+          promotions: 0,
+          avgDeltaExpectancy: 0,
+          avgDeltaWinRate: 0,
+          avgDeltaAvgReturn: 0,
+          promotionRate: 0,
+        };
+      }
+      const row = leaderboard[regime][agent];
+      row.runs += 1;
+      if (r.promoted) row.promotions += 1;
+      row.avgDeltaExpectancy += Number(r.delta_expectancy || 0);
+      row.avgDeltaWinRate += Number(r.delta_win_rate || 0);
+      row.avgDeltaAvgReturn += Number(r.delta_avg_return || 0);
+    }
+
+    for (const regime of Object.keys(leaderboard)) {
+      for (const agent of Object.keys(leaderboard[regime])) {
+        const row = leaderboard[regime][agent];
+        row.avgDeltaExpectancy = Math.round((row.avgDeltaExpectancy / Math.max(row.runs, 1)) * 100) / 100;
+        row.avgDeltaWinRate = Math.round((row.avgDeltaWinRate / Math.max(row.runs, 1)) * 100) / 100;
+        row.avgDeltaAvgReturn = Math.round((row.avgDeltaAvgReturn / Math.max(row.runs, 1)) * 100) / 100;
+        row.promotionRate = Math.round((row.promotions / Math.max(row.runs, 1)) * 1000) / 10;
+      }
+    }
+
+    res.json({ totalRuns: runs.length, leaderboard });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Archive legacy learning runs whose objective is not expectancy.
+// This keeps the active dashboard focused on one comparable objective.
+app.post('/api/learning/run-history/archive-legacy', async (req, res) => {
+  try {
+    const {
+      keepObjective = 'expectancy',
+      dryRun = false,
+      beforeDate = null,
+      limit = 5000,
+    } = req.body || {};
+
+    const { archiveLearningRuns } = await import('./learning/index.js');
+    const result = await archiveLearningRuns({
+      keepObjective,
+      dryRun: !!dryRun,
+      beforeDate,
+      limit,
+    });
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Full self-learning pipeline: scan history + analyze + optimize weights
+app.post('/api/learning/full-pipeline', async (req, res) => {
+  try {
+    const { tickers, lookbackMonths = 60, tickerLimit = 0 } = req.body;
+    
+    console.log('🚀 Starting full self-learning pipeline...');
+    if (tickerLimit > 0) {
+      console.log(`   Ticker limit: ${tickerLimit}`);
+    }
+    
+    // Step 1: Run historical analysis
+    const { runHistoricalAnalysis } = await import('./learning/index.js');
+    const scanResult = await runHistoricalAnalysis({
+      tickers,
+      lookbackMonths,
+      tickerLimit,
+      storeInDatabase: true
+    });
+    
+    if (!scanResult.success) {
+      return res.json({ success: false, step: 'scan', error: scanResult.message });
+    }
+    
+    console.log(`📊 Scanned ${scanResult.totalSignals} signals`);
+    
+    // Step 2: Optimize weights
+    const { runWeightOptimization } = await import('./learning/index.js');
+    const optimizeResult = await runWeightOptimization({ 
+      minSignals: 10, 
+      forceRun: true 
+    });
+    
+    // Step 3: Clear cache so new weights are used
+    if (optimizeResult.success) {
+      const { clearWeightCache } = await import('./opus45Signal.js');
+      clearWeightCache();
+    }
+    
+    console.log('✅ Full pipeline complete');
+    
+    res.json({
+      success: true,
+      
+      // Scan results
+      signalsScanned: scanResult.totalSignals,
+      overallStats: scanResult.overallStats,
+      
+      // Optimization results
+      weightAdjustments: optimizeResult.adjustments,
+      optimizedWeights: optimizeResult.optimizedWeights,
+      
+      // Summary
+      report: scanResult.report,
+      optimizationSummary: optimizeResult.summary
+    });
+    
+  } catch (e) {
+    console.error('Full pipeline error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// MULTI-AGENT ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════
+
+// Get current market regime from Market Pulse agent
+app.get('/api/agents/regime', async (req, res) => {
+  try {
+    const regime = await classifyMarket({ persist: false });
+    res.json(regime);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Marcus money manager snapshot (fast): IBD-style market summary + news + subagent health
+app.get('/api/marcus/summary', async (req, res) => {
+  try {
+    const includeNews = String(req.query.includeNews ?? '1') !== '0';
+    const newsLimitRaw = Number(req.query.newsLimit ?? 8);
+    const newsLimit = Number.isFinite(newsLimitRaw) ? Math.max(0, Math.min(20, newsLimitRaw)) : 8;
+
+    const { getMarcusSummary } = await import('./agents/marcus.js');
+    const summary = await getMarcusSummary({ includeNews, newsLimit });
+    res.json(summary);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Marcus full orchestration run (SSE): runs Harry + strategy agents + Sam scoring + Marcus briefing
+app.post('/api/marcus/orchestrate', async (req, res) => {
+  const { tickerLimit = 200, forceRefresh = false } = req.body || {};
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => {
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    res.flush?.();
+  };
+
+  try {
+    send({ phase: 'starting', message: 'Marcus: starting orchestration...' });
+    const { runMarcusOrchestration } = await import('./agents/marcus.js');
+    const result = await runMarcusOrchestration({
+      tickerLimit,
+      forceRefresh,
+      onProgress: (p) => send(p),
+    });
+    send({ done: true, result });
+    res.end();
+  } catch (e) {
+    console.error('Marcus orchestration error:', e);
+    send({ done: true, error: e.message });
+    res.end();
+  }
+});
+
+// Run-agents: same as Marcus orchestration, SSE shape expected by UI + Python heartbeat (phase/message, final phase: 'done' + result)
+app.post('/api/learning/run-agents', async (req, res) => {
+  const { tickerLimit = 200, forceRefresh = false } = req.body || {};
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => {
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    res.flush?.();
+  };
+
+  try {
+    send({ phase: 'starting', message: 'Marcus: starting orchestration...' });
+    const { runMarcusOrchestration } = await import('./agents/marcus.js');
+    const result = await runMarcusOrchestration({
+      tickerLimit,
+      forceRefresh,
+      onProgress: (p) => send(p),
+    });
+    // UI expects phase: 'done' and result with regime.regime, signalCount, elapsedMs
+    const payload = {
+      phase: 'done',
+      result: {
+        ...result,
+        regime: result.regime != null ? { regime: result.regime } : undefined,
+        signalCount: result.signalCount,
+        successfulAgents: result.approvedCount,
+        elapsedMs: result.elapsedMs,
+      },
+    };
+    send(payload);
+    res.end();
+  } catch (e) {
+    console.error('Run-agents error:', e);
+    send({ phase: 'done', result: { error: e.message } });
+    res.end();
+  }
+});
+
+// ─── Heartbeat cron (5 min): in-server scheduler, user can turn on/off ────────
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const heartbeatState = {
+  enabled: false,
+  timerId: null,
+  running: false,
+  lastRun: null,      // ISO string
+  lastResult: null,   // { regime, signalCount, elapsedMs, ... }
+  nextRun: null,      // ISO string (when next tick will fire)
+};
+
+async function runHeartbeatTick() {
+  if (heartbeatState.running) {
+    console.log('[Heartbeat] Previous run still in progress — skipping tick.');
+    return;
+  }
+  heartbeatState.running = true;
+  heartbeatState.lastRun = new Date().toISOString();
+  try {
+    const { runMarcusOrchestration } = await import('./agents/marcus.js');
+    const result = await runMarcusOrchestration({
+      tickerLimit: 200,
+      forceRefresh: false,
+      onProgress: () => {},
+    });
+    heartbeatState.lastResult = {
+      regime: result.regime,
+      signalCount: result.signalCount,
+      approvedCount: result.approvedCount,
+      elapsedMs: result.elapsedMs,
+    };
+    console.log(`[Heartbeat] Tick complete — regime=${result.regime} signals=${result.signalCount} elapsed=${result.elapsedMs}ms`);
+  } catch (e) {
+    console.error('[Heartbeat] Tick error:', e);
+    heartbeatState.lastResult = { error: e.message };
+  } finally {
+    heartbeatState.running = false;
+  }
+}
+
+function startHeartbeatCron() {
+  if (heartbeatState.timerId) return;
+  heartbeatState.enabled = true;
+  const scheduleNext = () => {
+    heartbeatState.nextRun = new Date(Date.now() + HEARTBEAT_INTERVAL_MS).toISOString();
+    runHeartbeatTick().catch(() => {});
+  };
+  heartbeatState.timerId = setInterval(scheduleNext, HEARTBEAT_INTERVAL_MS);
+  heartbeatState.nextRun = new Date(Date.now() + HEARTBEAT_INTERVAL_MS).toISOString();
+  // Run first tick immediately so user sees activity when they turn cron on
+  runHeartbeatTick().catch(() => {});
+  console.log('[Heartbeat] Cron started — fires every 5 minutes (first tick running now).');
+}
+
+function stopHeartbeatCron() {
+  if (heartbeatState.timerId) {
+    clearInterval(heartbeatState.timerId);
+    heartbeatState.timerId = null;
+  }
+  heartbeatState.enabled = false;
+  heartbeatState.nextRun = null;
+  console.log('[Heartbeat] Cron stopped.');
+}
+
+app.get('/api/heartbeat', (req, res) => {
+  try {
+    res.json({
+      enabled: heartbeatState.enabled,
+      status: heartbeatState.running ? 'running' : 'idle',
+      lastRun: heartbeatState.lastRun ?? null,
+      lastResult: heartbeatState.lastResult ?? null,
+      nextRun: heartbeatState.nextRun ?? null,
+    });
+  } catch (e) {
+    console.error('[Heartbeat] GET error:', e);
+    res.status(500).json({ error: String(e.message), enabled: false, status: 'idle', lastRun: null, lastResult: null, nextRun: null });
+  }
+});
+
+app.post('/api/heartbeat/start', (req, res) => {
+  try {
+    startHeartbeatCron();
+    res.json({ ok: true, enabled: true, message: 'Heartbeat cron started (every 5 min).' });
+  } catch (e) {
+    console.error('[Heartbeat] start error:', e);
+    res.status(500).json({ ok: false, error: String(e.message) });
+  }
+});
+
+app.post('/api/heartbeat/stop', (req, res) => {
+  try {
+    stopHeartbeatCron();
+    res.json({ ok: true, enabled: false, message: 'Heartbeat cron stopped.' });
+  } catch (e) {
+    console.error('[Heartbeat] stop error:', e);
+    res.status(500).json({ ok: false, error: String(e.message) });
+  }
+});
+
+// Get full agent hierarchy manifest (Marcus + all subagents)
+app.get('/api/agents/manifest', async (req, res) => {
+  try {
+    const { getMarcusManifest } = await import('./agents/marcus.js');
+    res.json(getMarcusManifest());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Run a structured multi-agent conversation for a single signal (advisory-only)
+app.post('/api/agents/conversation/run', async (req, res) => {
+  try {
+    const { ticker, signal, regime, constraints } = req.body || {};
+
+    let targetSignal = signal || null;
+    if (!targetSignal) {
+      const cached = await loadOpus45SignalsFromDb().catch(() => null);
+      const signals = cached?.signals || [];
+      targetSignal = resolveSignalFromCache({ ticker, cachedSignals: signals });
+    }
+
+    // If no cached signals and a ticker was provided, compute JUST that ticker.
+    if (!targetSignal && ticker) {
+      const to = new Date();
+      const from365 = new Date(to);
+      from365.setDate(from365.getDate() - 365);
+      const fromStr365 = from365.toISOString().slice(0, 10);
+      const toStr = to.toISOString().slice(0, 10);
+
+      const bars = await getBarsFromDb(ticker, fromStr365, toStr, '1d');
+      if (!bars || bars.length < 200) {
+        return res.status(400).json({
+          error: 'No cached bars for that ticker. Run “Fetch 5yr history” or a scan first, then retry.',
+        });
+      }
+
+      let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
+      if (!spyBars) {
+        spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
+        await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
+      }
+
+      const vcpResult = checkVCP(bars, spyBars);
+      const fundamentals = await loadFundamentals();
+      const tickerFundamentals = fundamentals[ticker] || null;
+      const industryData = null;
+      const weights = loadOptimizedWeights();
+      const singleSignal = generateOpus45Signal(vcpResult, bars, tickerFundamentals, industryData, weights);
+      targetSignal = { ticker, ...singleSignal };
+    }
+
+    if (!targetSignal && !ticker) {
+      targetSignal = {
+        ticker: 'SYSTEM',
+        signalType: 'META',
+        opus45Confidence: 0,
+        riskRewardRatio: null,
+        metrics: {},
+      };
+    }
+
+    if (!targetSignal) {
+      return res.status(400).json({
+        error: 'No cached Opus45 signals found. Provide { ticker } to compute a single signal, or run /api/opus45/signals first.',
+      });
+    }
+
+    const market = regime ? { regime } : await classifyMarket({ persist: false });
+    const result = await runConversationForSignal(targetSignal, {
+      regime: market.regime || 'UNCERTAIN',
+      constraints,
+      timeoutMs: Number(process.env.AGENT_DIALOGUE_TIMEOUT_MS) || 30000,
+    });
+
+    const saved = await saveConversation({
+      ticker: targetSignal.ticker,
+      regime: market.regime || 'UNCERTAIN',
+      signal: targetSignal,
+      decision: result.decision,
+      transcript: result.transcript,
+    });
+
+    res.json(saved);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fetch a saved conversation by id
+app.get('/api/agents/conversation/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const convo = await loadConversation(id);
+    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+    res.json(convo);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Attach outcome labels for calibration
+app.post('/api/agents/conversation/:id/label', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { outcome } = req.body || {};
+    if (!outcome) return res.status(400).json({ error: 'Outcome is required' });
+    const updated = await labelConversation(id, outcome);
+    if (!updated) return res.status(404).json({ error: 'Conversation not found' });
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// In-memory state for Harry fetch so progress survives client disconnect (background job)
+const harryFetchState = {
+  status: 'idle', // 'idle' | 'running' | 'done' | 'error'
+  phase: null,
+  message: null,
+  current: null,
+  total: null,
+  ticker: null,
+  signalCount: null,
+  result: null,
+  error: null,
+  startedAt: null,
+  completedAt: null,
+};
+
+// Harry Historian: fetch status (for polling when job runs in background)
+app.get('/api/agents/harry/fetch/status', (req, res) => {
+  res.json({
+    status: harryFetchState.status,
+    phase: harryFetchState.phase,
+    message: harryFetchState.message,
+    current: harryFetchState.current,
+    total: harryFetchState.total,
+    ticker: harryFetchState.ticker,
+    signalCount: harryFetchState.signalCount,
+    result: harryFetchState.result,
+    error: harryFetchState.error,
+    startedAt: harryFetchState.startedAt,
+    completedAt: harryFetchState.completedAt,
+  });
+});
+
+// Harry Historian: count of tickers with 5yr OHLC, total tickers in DB, last fetch time
+app.get('/api/agents/harry/ohlc-count', async (req, res) => {
+  try {
+    const { getTickerCountWith5YrBars } = await import('./db/bars.js');
+    const { getTickerList } = await import('./learning/historicalSignalScanner.js');
+    const { getLastHarryFetchAt } = await import('./learning/autoPopulate.js');
+    const [count, tickerList, lastFetchAt] = await Promise.all([
+      getTickerCountWith5YrBars(),
+      getTickerList(),
+      getLastHarryFetchAt(),
+    ]);
+    res.json({
+      count,
+      totalTickers: tickerList?.length ?? 0,
+      lastFetchAt: lastFetchAt || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Harry Historian: fetch 5yr OHLC for all tickers, save signals to DB (SSE progress; runs in background if client leaves)
+app.post('/api/agents/harry/fetch', async (req, res) => {
+  const { tickerLimit = 0, forceRefresh = true } = req.body || {};
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => {
+    if (res.writableEnded) return;
+    try {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      res.flush?.();
+    } catch (e) {
+      // Client disconnected; job continues, progress is in harryFetchState
+    }
+  };
+
+  const updateState = (p) => {
+    harryFetchState.phase = p.phase ?? harryFetchState.phase;
+    harryFetchState.message = p.message ?? harryFetchState.message;
+    harryFetchState.current = p.current ?? harryFetchState.current;
+    harryFetchState.total = p.total ?? harryFetchState.total;
+    harryFetchState.ticker = p.ticker ?? harryFetchState.ticker;
+    harryFetchState.signalCount = p.signalCount ?? harryFetchState.signalCount;
+  };
+
+  harryFetchState.status = 'running';
+  harryFetchState.startedAt = new Date().toISOString();
+  harryFetchState.phase = null;
+  harryFetchState.message = null;
+  harryFetchState.current = null;
+  harryFetchState.total = null;
+  harryFetchState.ticker = null;
+  harryFetchState.signalCount = null;
+  harryFetchState.result = null;
+  harryFetchState.error = null;
+  harryFetchState.completedAt = null;
+
+  try {
+    const { runHarryFetchOnly } = await import('./agents/harryHistorian.js');
+    const result = await runHarryFetchOnly({
+      tickerLimit,
+      forceRefresh: !!forceRefresh,
+      onProgress: (p) => {
+        updateState(p);
+        send(p);
+      },
+    });
+    harryFetchState.status = result.success ? 'done' : 'error';
+    harryFetchState.result = result;
+    harryFetchState.error = result.error ?? null;
+    harryFetchState.completedAt = new Date().toISOString();
+    send({ done: true, result });
+    res.end();
+  } catch (e) {
+    console.error('Harry fetch error:', e);
+    harryFetchState.status = 'error';
+    harryFetchState.error = e.message;
+    harryFetchState.completedAt = new Date().toISOString();
+    send({ done: true, error: e.message });
+    res.end();
+  }
+});
+
+// Run multi-agent optimization pipeline (SSE)
+app.post('/api/agents/optimize', async (req, res) => {
+  const {
+    maxIterations = 20,
+    targetProfit = 5,
+    lookbackMonths = 60,
+    tickerLimit = 200,
+    agentTypes = null,
+    forceRefresh = false,
+    topDownFilter = true,
+  } = req.body;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => {
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    res.flush?.();
+  };
+
+  try {
+    send({ phase: 'starting', message: 'Starting multi-agent optimization...' });
+
+    const { runMultiAgentOptimization } = await import('./agents/harryHistorian.js');
+
+    const result = await runMultiAgentOptimization({
+      maxIterations,
+      targetProfit,
+      lookbackMonths,
+      tickerLimit,
+      forceRefresh,
+      agentTypes,
+      topDownFilter,
+      onProgress: (progress) => send(progress),
+    });
+
+    send({ done: true, result });
+    res.end();
+  } catch (e) {
+    console.error('Multi-agent optimization error:', e);
+    send({ done: true, error: e.message });
+    res.end();
+  }
+});
+
+// Batch multi-agent optimization with checkpoints (SSE).
+app.post('/api/agents/optimize/batch', async (req, res) => {
+  const {
+    runId = `batch_${Date.now()}`,
+    cyclesPerAgent = 25,
+    maxIterations = 20,
+    targetProfit = 5,
+    lookbackMonths = 60,
+    tickerLimit = 200,
+    agentTypes = null,
+    forceRefresh = false,
+    topDownFilter = true,
+    stopOnError = false,
+    resume = false,
+    validationEnabled = false,
+    validationWfoEveryNCycles = 10,
+    validationWfoMcEveryNCycles = 25,
+    validationHoldoutEveryNCycles = 0,
+    validationHoldoutOnFinalCycle = true,
+    validationPromotedOnly = true,
+    validationMinDeltaExpectancy = 0.25,
+    validationTrainMonths = 12,
+    validationTestMonths = 3,
+    validationStepMonths = 3,
+    validationHoldoutPct = 0.2,
+    validationHoldingPeriods = [60, 90, 120],
+    validationMonteCarloTrials = 500,
+    validationMinImprovement = 0.25,
+    validationAllowWeightUpdates = true,
+    validationTopN = null,
+  } = req.body || {};
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => {
+    if (res.writableEnded) return;
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    res.flush?.();
+  };
+
+  try {
+    send({ phase: 'starting', runId, message: `Starting batch loop (${cyclesPerAgent} cycles per agent)...` });
+
+    const { runBatchLearningLoop } = await import('./agents/harryHistorian.js');
+    const {
+      initializeBatchRun,
+      appendBatchCheckpoint,
+      finalizeBatchRun,
+      getBatchRun,
+    } = await import('./learning/batchCheckpointStore.js');
+
+    const validationPolicy = {
+      enabled: !!validationEnabled,
+      wfoEveryNCycles: Number(validationWfoEveryNCycles) || 0,
+      wfoMcEveryNCycles: Number(validationWfoMcEveryNCycles) || 0,
+      holdoutEveryNCycles: Number(validationHoldoutEveryNCycles) || 0,
+      holdoutOnFinalCycle: validationHoldoutOnFinalCycle !== false,
+      validatePromotedOnly: validationPromotedOnly !== false,
+      minPromotedDeltaExpectancy: Number.isFinite(Number(validationMinDeltaExpectancy))
+        ? Number(validationMinDeltaExpectancy)
+        : null,
+    };
+
+    const validationDateRange = getDefaultDateRange(5);
+    const normalizedHoldingPeriods = Array.isArray(validationHoldingPeriods) && validationHoldingPeriods.length > 0
+      ? validationHoldingPeriods.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0)
+      : [60, 90, 120];
+
+    const summarizeHierarchyMetrics = (tier, hierarchyResult) => {
+      if (!hierarchyResult) return null;
+      if (tier === 'wfo' || tier === 'wfo_mc') {
+        return hierarchyResult.combinedTest || hierarchyResult.combinedTrain || null;
+      }
+      if (tier === 'holdout') {
+        return hierarchyResult.holdout?.node?.summary || hierarchyResult.inSample?.wfo?.combinedTest || null;
+      }
+      return hierarchyResult.node?.summary || hierarchyResult.summary || null;
+    };
+
+    const runValidation = validationPolicy.enabled
+      ? async ({ tier, agentType, cycle }) => {
+          const hierarchyResult = await runBacktestHierarchy({
+            tier,
+            engine: 'vectorbt',
+            agentType,
+            startDate: validationDateRange.startDate,
+            endDate: validationDateRange.endDate,
+            holdoutPct: Number(validationHoldoutPct) || 0.2,
+            trainMonths: Number(validationTrainMonths) || 12,
+            testMonths: Number(validationTestMonths) || 3,
+            stepMonths: Number(validationStepMonths) || 3,
+            candidateHoldingPeriods: normalizedHoldingPeriods.length > 0 ? normalizedHoldingPeriods : [60, 90, 120],
+            optimizeMetric: 'expectancy',
+            topN: validationTopN ?? tickerLimit ?? null,
+            lookbackMonths,
+            forceRefresh: false,
+            warmupMonths: 12,
+            monteCarloTrials: Number(validationMonteCarloTrials) || 500,
+            monteCarloSeed: 42,
+          });
+
+          const learningRun = await buildLearningRunFromHierarchy({
+            agentType,
+            tier,
+            result: hierarchyResult,
+            objective: 'expectancy',
+            allowWeightUpdates: validationAllowWeightUpdates !== false,
+            minImprovement: Number(validationMinImprovement) || 0.25,
+          });
+
+          const m = summarizeHierarchyMetrics(tier, hierarchyResult);
+          return {
+            cycle,
+            tier,
+            agentType,
+            metrics: {
+              expectancy: m?.expectancy ?? null,
+              avgReturn: m?.avgReturn ?? null,
+              winRate: m?.winRate ?? null,
+              profitFactor: m?.profitFactor ?? null,
+              totalSignals: m?.totalSignals ?? null,
+            },
+            learningRun: {
+              stored: Boolean(learningRun?.stored),
+              promoted: Boolean(learningRun?.promoted),
+              objectiveDelta: learningRun?.objectiveDelta ?? null,
+              promotionReason: learningRun?.promotionReason ?? null,
+              weightUpdate: learningRun?.weightUpdate || null,
+            },
+          };
+        }
+      : null;
+
+    let startCycle = 1;
+    let existingCycles = [];
+
+    if (resume) {
+      const priorRun = await getBatchRun(runId);
+      if (priorRun) {
+        existingCycles = priorRun?.finalResult?.cycles || [];
+        const lastCheckpointCycle = priorRun?.checkpoints?.length > 0
+          ? (priorRun.checkpoints[priorRun.checkpoints.length - 1]?.cycle || 0)
+          : existingCycles.length;
+        startCycle = Math.max(1, lastCheckpointCycle + 1);
+
+        if (lastCheckpointCycle >= cyclesPerAgent && priorRun?.finalResult) {
+          send({
+            done: true,
+            result: priorRun.finalResult,
+            message: 'Batch already complete; returned stored final result.',
+          });
+          res.end();
+          return;
+        }
+      } else {
+        await initializeBatchRun({
+          runId,
+          options: {
+            cyclesPerAgent,
+            maxIterations,
+            targetProfit,
+            lookbackMonths,
+            tickerLimit,
+            agentTypes,
+            forceRefresh,
+            topDownFilter,
+            stopOnError,
+            resume: true,
+            validationPolicy,
+          },
+        });
+      }
+    } else {
+      await initializeBatchRun({
+        runId,
+        options: {
+          cyclesPerAgent,
+          maxIterations,
+          targetProfit,
+          lookbackMonths,
+          tickerLimit,
+          agentTypes,
+          forceRefresh,
+          topDownFilter,
+          stopOnError,
+          resume: false,
+          validationPolicy,
+        },
+      });
+    }
+
+    const result = await runBatchLearningLoop({
+      runId,
+      cyclesPerAgent,
+      startCycle,
+      existingCycles,
+      maxIterations,
+      targetProfit,
+      lookbackMonths,
+      tickerLimit,
+      agentTypes,
+      forceRefresh,
+      topDownFilter,
+      stopOnError,
+      validationPolicy,
+      runValidation,
+      onProgress: (progress) => send(progress),
+      onCheckpoint: async (checkpoint) => {
+        await appendBatchCheckpoint(runId, checkpoint);
+        send({ phase: 'batch_checkpoint', checkpoint });
+      },
+    });
+
+    await finalizeBatchRun(runId, result);
+    send({ done: true, result });
+    res.end();
+  } catch (e) {
+    console.error('Batch multi-agent optimization error:', e);
+    send({ done: true, error: e.message });
+    res.end();
+  }
+});
+
+// Get one batch run state (checkpoint + final result).
+app.get('/api/agents/optimize/batch/:runId', async (req, res) => {
+  try {
+    const { getBatchRun } = await import('./learning/batchCheckpointStore.js');
+    const run = await getBatchRun(req.params.runId);
+    if (!run) return res.status(404).json({ error: 'Batch run not found' });
+    res.json(run);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List recent batch runs.
+app.get('/api/agents/optimize/batch', async (req, res) => {
+  try {
+    const limit = Math.min(100, parseInt(req.query.limit) || 20);
+    const { listBatchRuns } = await import('./learning/batchCheckpointStore.js');
+    const runs = await listBatchRuns(limit);
+    res.json({ total: runs.length, runs });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get per-agent active weights
+app.get('/api/agents/:agentType/weights', async (req, res) => {
+  try {
+    const { loadOptimizedWeights } = await import('./learning/index.js');
+    const result = await loadOptimizedWeights(req.params.agentType);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get per-agent latest A/B run
+app.get('/api/agents/:agentType/latest-ab', async (req, res) => {
+  try {
+    const { loadLatestLearningRun } = await import('./learning/index.js');
+    const run = await loadLatestLearningRun(req.params.agentType);
+    if (!run) {
+      return res.json({ available: false, agentType: req.params.agentType });
+    }
+    res.json({
+      available: true,
+      agentType: run.agent_type,
+      runNumber: run.run_number,
+      control: {
+        avgReturn: run.control_avg_return,
+        expectancy: run.control_expectancy,
+        winRate: run.control_win_rate,
+        profitFactor: run.control_profit_factor,
+      },
+      variant: {
+        avgReturn: run.variant_avg_return,
+        expectancy: run.variant_expectancy,
+        winRate: run.variant_win_rate,
+        profitFactor: run.variant_profit_factor,
+      },
+      delta: {
+        avgReturn: run.delta_avg_return,
+        expectancy: run.delta_expectancy,
+        winRate: run.delta_win_rate,
+      },
+      promoted: run.promoted,
+      promotionReason: run.promotion_reason,
+      completedAt: run.completed_at,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Iterative Profitability Optimization - SSE version with real-time progress
+// Now includes A/B comparison: control vs variant with automatic promotion
+app.post('/api/learning/iterative-optimize', async (req, res) => {
+  const {
+    maxIterations = 100,
+    targetProfit = 8,
+    lookbackMonths = 12,
+    tickerLimit = 200
+  } = req.body;
+
+  // Set up SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (obj) => {
+    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    res.flush?.();
+  };
+
+  try {
+    console.log('\n🔄 Starting iterative optimization loop...');
+    console.log(`   Target: ${targetProfit}% avg profit`);
+    console.log(`   Max iterations: ${maxIterations}`);
+    console.log(`   Ticker limit: ${tickerLimit}`);
+
+    send({ phase: 'starting', message: 'Starting optimization...', tickerLimit, maxIterations });
+
+    const { runIterativeOptimizationWithProgress } = await import('./learning/index.js');
+
+    const result = await runIterativeOptimizationWithProgress({
+      maxIterations,
+      targetProfit,
+      lookbackMonths,
+      tickerLimit,
+      onProgress: (progress) => {
+        send(progress);
+      }
+    });
+
+    // Weight saving and A/B promotion is now handled inside runIterativeOptimization.
+    // The result includes abComparison with promoted flag.
+
+    send({ done: true, result });
+    res.end();
+
+  } catch (e) {
+    console.error('Iterative optimization error:', e);
+    send({ done: true, error: e.message });
+    res.end();
+  }
+});
+
 // Helper function to compute volatility
 function computeVolatility(bars) {
   if (!bars || bars.length < 2) return null;
@@ -2729,7 +4801,13 @@ async function attachFrontend() {
     // Single process: Express serves /api, Vite serves app + HMR on same port
     const { createServer } = await import('vite');
     const vite = await createServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          // Avoid full-page reload loops when backend jobs update cached data files.
+          ignored: ['**/data/**'],
+        },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

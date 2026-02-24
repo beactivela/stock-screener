@@ -19,7 +19,7 @@
 │                     DATA SOURCES                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Yahoo Finance (Free)              Massive API (Paid - Optional)│
+│  Yahoo Finance (OHLC bars)         TradingView Scanner (tickers, industry)  │
 │  ├─ Daily OHLC bars               ├─ ETF constituents          │
 │  ├─ Company fundamentals          ├─ Alternative data          │
 │  ├─ Industry performance          └─ Future: options, etc.     │
@@ -520,7 +520,7 @@ SCAN COMPLETED
 ### Backend
 - **Runtime:** Node.js (ES modules)
 - **Server:** Express.js
-- **Data APIs:** Yahoo Finance (yahoo-finance2), Massive (optional)
+- **Data APIs:** Yahoo Finance (yahoo-finance2) for OHLC/fundamentals; TradingView Scanner for tickers and industry
 - **Storage:** Supabase (PostgreSQL). All scan results, fundamentals, industry data, and caches live in the DB.
 - **Caching:** Cache is stored in the database (e.g. bars_cache, fundamentals, industry_cache). TTL applied when reading (e.g. 24hr for bars).
 
@@ -586,7 +586,7 @@ SCAN COMPLETED
 
 ### API Keys
 - **Yahoo Finance:** No API key required (free tier)
-- **Massive API:** Stored in `.env`, never exposed to frontend
+- **TradingView:** No API key; scanner used for ticker list and industry returns
 - **Best practice:** Keep `.env` in `.gitignore`
 
 ### Data Validation
@@ -596,7 +596,7 @@ SCAN COMPLETED
 
 ### Rate Limiting
 - **Yahoo Finance:** 150ms delay between requests
-- **Massive API:** Follow plan limits
+- **Yahoo:** Rate limits apply; 150ms delay between tickers during scan
 - **Frontend:** Throttle scan button (prevent double-clicks)
 
 ---

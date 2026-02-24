@@ -1,6 +1,6 @@
 /**
  * Industry Performance — data from TradingView Scanner API (sector, industry, 1M/3M/6M/YTD/1Y).
- * scanner.tradingview.com/america/scan; industries aggregated with average performance. Cache 12h.
+ * scanner.tradingview.com/america/scan; industries aggregated with average performance. Cache 24h.
  */
 
 import { useEffect, useState } from 'react'
@@ -28,7 +28,7 @@ interface IndustryPayload {
 }
 
 const CACHE_KEY = 'industry-cache'
-const CACHE_TTL_MS = 12 * 60 * 60 * 1000 // 12 hours
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 type SortKey = 'sector' | 'name' | 'perf1M' | 'perf3M' | 'perf6M' | 'perfYTD' | 'perf1Y' | 'count'
 
@@ -214,7 +214,7 @@ export default function Industry() {
         <div className="flex flex-wrap items-center gap-3">
           {data?.fetchedAt && (
             <span className="text-slate-500 text-sm">
-              Fetched: {new Date(data.fetchedAt).toLocaleString()} · {data.totalSymbols} symbols (cache 12h)
+              Fetched: {new Date(data.fetchedAt).toLocaleString()} · {data.totalSymbols} symbols (cache 24h)
             </span>
           )}
           <button
@@ -230,7 +230,7 @@ export default function Industry() {
 
       <p className="text-slate-400 text-sm">
         Sectors and industries from TradingView Scanner API (FactSet classification). Performance is average of
-        symbols in each industry. Cached 12h.
+        symbols in each industry. Cached 24h.
       </p>
 
       {error && (
