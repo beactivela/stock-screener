@@ -647,6 +647,7 @@ export async function runBatchLearningLoop(options = {}) {
     agentTypes = null,
     cyclesPerAgent = 10,
     startCycle = 1,
+    maxCycles = 0,
     existingCycles = [],
     runCycle = null,
     validationPolicy = null,
@@ -659,6 +660,7 @@ export async function runBatchLearningLoop(options = {}) {
   } = options;
 
   const normalizedStartCycle = Math.max(1, Math.min(cyclesPerAgent, Number(startCycle) || 1));
+  const normalizedMaxCycles = Math.max(0, Number(maxCycles) || 0);
   const cycles = Array.isArray(existingCycles) ? [...existingCycles] : [];
   const startedAt = new Date().toISOString();
   const normalizedValidationPolicy = normalizeBatchValidationPolicy(validationPolicy || {}, cyclesPerAgent);
@@ -754,7 +756,11 @@ export async function runBatchLearningLoop(options = {}) {
     return runMultiAgentOptimization(payload);
   });
 
+  let cyclesExecutedThisRequest = 0;
   for (let cycle = normalizedStartCycle; cycle <= cyclesPerAgent; cycle++) {
+    if (normalizedMaxCycles > 0 && cyclesExecutedThisRequest >= normalizedMaxCycles) {
+      break;
+    }
     const emitProgress = (payload = {}) => {
       if (!onProgress) return;
       onProgress({
@@ -864,10 +870,12 @@ export async function runBatchLearningLoop(options = {}) {
     }
 
     cycles.push(cycleRecord);
+    cyclesExecutedThisRequest += 1;
 
+    const batchFullyCompleted = cycle >= cyclesPerAgent;
     const checkpoint = {
       runId,
-      status: cycle >= cyclesPerAgent ? 'completed' : 'running',
+      status: batchFullyCompleted ? 'completed' : 'running',
       cycle,
       cyclesPerAgent,
       cyclesCompleted: cycles.length,
@@ -888,11 +896,19 @@ export async function runBatchLearningLoop(options = {}) {
 
   const leaderboardByRegime = buildRegimeLeaderboard(cycles);
   const totalAgentExecutions = cycles.reduce((sum, c) => sum + (c.agentResults?.length || 0), 0);
+  const completed = cycles.length >= cyclesPerAgent;
+  const lastCompletedCycle = cycles.length > 0 ? (cycles[cycles.length - 1]?.cycle || 0) : 0;
+  const nextCycle = completed
+    ? null
+    : Math.min(cyclesPerAgent, Math.max(normalizedStartCycle, lastCompletedCycle + 1));
   const result = {
     success: true,
     runId,
     startedAt,
     completedAt: new Date().toISOString(),
+    completed,
+    nextCycle,
+    remainingCycles: Math.max(0, cyclesPerAgent - cycles.length),
     cyclesPlanned: cyclesPerAgent,
     cyclesCompleted: cycles.length,
     totalAgentExecutions,
@@ -905,7 +921,9 @@ export async function runBatchLearningLoop(options = {}) {
   if (onProgress) {
     onProgress({
       phase: 'batch_done',
-      message: `Batch complete: ${cycles.length}/${cyclesPerAgent} cycles`,
+      message: completed
+        ? `Batch complete: ${cycles.length}/${cyclesPerAgent} cycles`
+        : `Batch request complete: ${cycles.length}/${cyclesPerAgent} cycles (resume required)`,
       result,
     });
   }

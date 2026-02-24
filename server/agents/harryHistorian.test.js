@@ -451,6 +451,36 @@ describe('runBatchLearningLoop', () => {
     assert.ok(seen.every((row) => row.seenPool === sharedSignalPool));
     assert.ok(seen.every((row) => row.seenSector === sharedSectorRankByTicker));
   });
+
+  it('supports partial batch execution with maxCycles and reports continuation state', async () => {
+    let callCount = 0;
+    const result = await runBatchLearningLoop({
+      runId: 'partial-batch-test',
+      agentTypes: ['momentum_scout'],
+      cyclesPerAgent: 5,
+      maxCycles: 2,
+      runCycle: async ({ cycle }) => {
+        callCount += 1;
+        return {
+          regime: { regime: 'BULL' },
+          agentResults: [
+            {
+              agentType: 'momentum_scout',
+              success: true,
+              abComparison: { promoted: false, delta: { expectancy: 0.1 * cycle } },
+            },
+          ],
+        };
+      },
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(result.cyclesCompleted, 2);
+    assert.equal(result.cyclesPlanned, 5);
+    assert.equal(result.completed, false);
+    assert.equal(result.remainingCycles, 3);
+    assert.equal(result.nextCycle, 3);
+  });
 });
 
 describe('resolveValidationTiersForCycle', () => {

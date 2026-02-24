@@ -650,7 +650,7 @@ export function createStrategyAgent(config) {
       } catch (e) {
         console.warn(`[${name}] Could not store promoted weights:`, e.message);
       }
-    } else if (blendFactor > 0) {
+    } else if (blendFactor > 0 && testDelta >= minImprovement) {
       // Bayesian incremental update: blend proportional to evidence strength
       const blendedWeights = blendWeights(controlWeights, variantWeights, blendFactor);
       try {

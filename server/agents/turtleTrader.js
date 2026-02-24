@@ -12,7 +12,7 @@ const turtleTrader = createStrategyAgent({
   agentType: 'turtle_trader',
   signalFamily: 'turtle',
   objective: 'expectancy',
-  minImprovement: 0.5,
+  minImprovement: 0.25,
   riskGates: {
     minTrades: 200,
     minProfitFactor: 1.5,

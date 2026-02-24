@@ -30,7 +30,7 @@ const breakoutTracker = createStrategyAgent({
   agentType: 'breakout_tracker',
   signalFamily: 'opus45',
   objective: 'expectancy',
-  minImprovement: 0.5,
+  minImprovement: 0.25,
   riskGates: {
     minTrades: 200,
     minProfitFactor: 1.5,

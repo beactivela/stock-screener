@@ -13,7 +13,7 @@ const maCrossover_10_20 = createStrategyAgent({
   agentType: 'ma_crossover_10_20',
   signalFamily: 'ma_crossover',
   objective: 'expectancy',
-  minImprovement: 0.5,
+  minImprovement: 0.25,
   riskGates: {
     minTrades: 200,
     minProfitFactor: 1.5,

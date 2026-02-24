@@ -477,7 +477,7 @@ export async function storeLearningRun(runData) {
       top_factors: runData.topFactors || [],
       promoted: runData.promoted || false,
       promotion_reason: runData.promotionReason || null,
-      min_improvement_threshold: runData.minImprovementThreshold ?? 0.5,
+      min_improvement_threshold: runData.minImprovementThreshold ?? 0.25,
       criteria_summary: runData.criteriaSummary || null,
       created_at: runData.completedAt || new Date().toISOString(),
     };
@@ -534,7 +534,7 @@ export async function storeLearningRun(runData) {
 
       promoted: runData.promoted || false,
       promotion_reason: runData.promotionReason || null,
-      min_improvement_threshold: runData.minImprovementThreshold ?? 0.5,
+      min_improvement_threshold: runData.minImprovementThreshold ?? 0.25,
       created_at: runData.completedAt || new Date().toISOString(),
     };
 
@@ -587,7 +587,7 @@ export async function storeLearningRun(runData) {
       top_factors: runData.topFactors || [],
       promoted: runData.promoted || false,
       promotion_reason: runData.promotionReason || null,
-      min_improvement_threshold: runData.minImprovementThreshold ?? 0.5,
+      min_improvement_threshold: runData.minImprovementThreshold ?? 0.25,
       criteria_summary: runData.criteriaSummary || null,
       created_at: runData.completedAt || new Date().toISOString(),
     });

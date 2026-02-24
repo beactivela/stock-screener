@@ -4431,6 +4431,7 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
     topDownFilter = true,
     stopOnError = false,
     resume = false,
+    maxCyclesPerRequest = 0,
     validationEnabled = false,
     validationWfoEveryNCycles = 10,
     validationWfoMcEveryNCycles = 25,
@@ -4556,11 +4557,20 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
 
     let startCycle = 1;
     let existingCycles = [];
+    const normalizedMaxCyclesPerRequest = Math.max(0, Number(maxCyclesPerRequest) || 0);
 
     if (resume) {
       const priorRun = await getBatchRun(runId);
       if (priorRun) {
-        existingCycles = priorRun?.finalResult?.cycles || [];
+        const cycleMap = new Map();
+        for (const c of priorRun?.finalResult?.cycles || []) {
+          if (c?.cycle != null) cycleMap.set(c.cycle, c);
+        }
+        for (const cp of priorRun?.checkpoints || []) {
+          const c = cp?.lastCycle;
+          if (c?.cycle != null) cycleMap.set(c.cycle, c);
+        }
+        existingCycles = [...cycleMap.values()].sort((a, b) => (a?.cycle || 0) - (b?.cycle || 0));
         const lastCheckpointCycle = priorRun?.checkpoints?.length > 0
           ? (priorRun.checkpoints[priorRun.checkpoints.length - 1]?.cycle || 0)
           : existingCycles.length;
@@ -4589,6 +4599,7 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
             topDownFilter,
             stopOnError,
             resume: true,
+            maxCyclesPerRequest: normalizedMaxCyclesPerRequest,
             validationPolicy,
           },
         });
@@ -4607,6 +4618,7 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
           topDownFilter,
           stopOnError,
           resume: false,
+          maxCyclesPerRequest: normalizedMaxCyclesPerRequest,
           validationPolicy,
         },
       });
@@ -4615,6 +4627,7 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
     const result = await runBatchLearningLoop({
       runId,
       cyclesPerAgent,
+      maxCycles: normalizedMaxCyclesPerRequest,
       startCycle,
       existingCycles,
       maxIterations,
@@ -4634,8 +4647,10 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
       },
     });
 
-    await finalizeBatchRun(runId, result);
-    send({ done: true, result });
+    if (result?.completed) {
+      await finalizeBatchRun(runId, result);
+    }
+    send({ done: true, result, partial: !result?.completed });
     res.end();
   } catch (e) {
     console.error('Batch multi-agent optimization error:', e);

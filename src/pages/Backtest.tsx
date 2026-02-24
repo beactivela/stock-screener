@@ -790,251 +790,295 @@ export default function Backtest() {
     setAgentProgress({})
 
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 60 * 60 * 1000)
-
-      const res = await fetch(`${API_BASE}/api/agents/optimize/batch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          runId: trimmedRunId,
-          cyclesPerAgent: batchCyclesPerAgent,
-          lookbackMonths,
-          tickerLimit: tickerLimit || 200,
-          maxIterations: 20,
-          targetProfit: 5,
-          topDownFilter,
-          resume: batchResume,
-          validationEnabled: batchValidationEnabled,
-          validationPromotedOnly: batchValidationPromotedOnly,
-          validationWfoEveryNCycles: batchValidationWfoEvery,
-          validationWfoMcEveryNCycles: batchValidationWfoMcEvery,
-          validationHoldoutOnFinalCycle: batchValidationHoldoutFinal,
-        }),
-        signal: controller.signal,
-      })
-
-      clearTimeout(timeoutId)
-
-      if (!res.ok) {
-        const maybeJson = await safeJsonParse(res.clone())
-        const rawText = await res.text().catch(() => '')
-        const normalizedMessage = formatBatchHttpError(
-          res.status,
-          res.statusText,
-          maybeJson?.error || maybeJson?.message || null,
-          rawText || null
-        )
-        throw new Error(normalizedMessage)
-      }
-
-      const reader = res.body?.getReader()
-      const decoder = new TextDecoder()
+      const host = typeof window !== 'undefined' ? window.location.hostname.toLowerCase() : ''
+      const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')
+      const useChunkedBatchMode = !API_BASE && !isLocalHost
+      const maxCyclesPerRequest = useChunkedBatchMode ? 1 : 0
+      let chunkResume = batchResume
+      let chunkRequestCount = 0
+      let lastCyclesCompleted = -1
       let finalResult: any = null
-      let streamError: string | null = null
-      let sawBatchProgress = false
 
-      const processSSELine = (line: string) => {
-        if (!line.startsWith('data: ')) return
+      const runBatchRequestChunk = async (resumeFlag: boolean) => {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 60 * 60 * 1000)
         try {
-          const data = JSON.parse(line.slice(6))
+          const res = await fetch(`${API_BASE}/api/agents/optimize/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              runId: trimmedRunId,
+              cyclesPerAgent: batchCyclesPerAgent,
+              lookbackMonths,
+              tickerLimit: tickerLimit || 200,
+              maxIterations: 20,
+              targetProfit: 5,
+              topDownFilter,
+              resume: resumeFlag,
+              maxCyclesPerRequest,
+              validationEnabled: batchValidationEnabled,
+              validationPromotedOnly: batchValidationPromotedOnly,
+              validationWfoEveryNCycles: batchValidationWfoEvery,
+              validationWfoMcEveryNCycles: batchValidationWfoMcEvery,
+              validationHoldoutOnFinalCycle: batchValidationHoldoutFinal,
+            }),
+            signal: controller.signal,
+          })
 
-          if (data.done) {
-            if (data.error) {
-              streamError = data.error
-              setError(data.error)
-            }
-            else if (data.result) finalResult = data.result
-            return
+          if (!res.ok) {
+            const maybeJson = await safeJsonParse(res.clone())
+            const rawText = await res.text().catch(() => '')
+            const normalizedMessage = formatBatchHttpError(
+              res.status,
+              res.statusText,
+              maybeJson?.error || maybeJson?.message || null,
+              rawText || null
+            )
+            throw new Error(normalizedMessage)
           }
 
-          if (data.phase) sawBatchProgress = true
+          const reader = res.body?.getReader()
+          const decoder = new TextDecoder()
+          let chunkResult: any = null
+          let streamError: string | null = null
+          let sawBatchProgress = false
 
-          switch (data.phase) {
-            case 'starting':
-              setScanPhase('Batch')
-              setRunningStep(data.message || 'Starting batch run...')
-              setBatchProgress(prev => ({
-                current: prev?.current ?? 0,
-                total: prev?.total || batchCyclesPerAgent,
-                status: 'starting',
-              }))
-              break
-            case 'batch_cycle_start':
-              setScanPhase('Batch')
-              setRunningStep(data.message || `Batch cycle ${data.cycle}/${data.cyclesPerAgent} started`)
-              setBatchProgress({
-                current: Math.max(0, (data.cycle || 1) - 1),
-                total: data.cyclesPerAgent || batchCyclesPerAgent,
-                status: 'running',
-              })
-              break
-            case 'batch_checkpoint':
-              setBatchCheckpoint(data.checkpoint || null)
-              setRunningStep(`Checkpoint saved — cycle ${data.checkpoint?.cycle ?? 'n/a'}/${data.checkpoint?.cyclesPerAgent ?? batchCyclesPerAgent}`)
-              setBatchProgress(prev => ({
-                current: data.checkpoint?.cycle ?? prev?.current ?? 0,
-                total: data.checkpoint?.cyclesPerAgent ?? prev?.total ?? batchCyclesPerAgent,
-                status: data.checkpoint?.status || 'running',
-              }))
-              if (data.checkpoint?.lastCycle?.agentResults) {
-                const completedCycle = Number(data.checkpoint?.cycle) || 0
-                const totalCycles = Number(data.checkpoint?.cyclesPerAgent) || batchCyclesPerAgent
-                const perCycleAgentTypes = (data.checkpoint.lastCycle.agentResults as any[])
-                  .map((ar) => ar?.agentType)
-                  .filter(Boolean)
-                if (perCycleAgentTypes.length > 0) {
-                  setBatchAgentProgress((prev) => {
-                    const next = { ...prev }
-                    for (const agentType of perCycleAgentTypes) {
-                      next[agentType] = {
-                        completed: Math.max(next[agentType]?.completed || 0, completedCycle),
-                        total: totalCycles,
-                      }
-                    }
-                    return next
+          const processSSELine = (line: string) => {
+            if (!line.startsWith('data: ')) return
+            try {
+              const data = JSON.parse(line.slice(6))
+
+              if (data.done) {
+                if (data.error) {
+                  streamError = data.error
+                  setError(data.error)
+                } else if (data.result) chunkResult = data.result
+                return
+              }
+
+              if (data.phase) sawBatchProgress = true
+
+              switch (data.phase) {
+                case 'starting':
+                  setScanPhase('Batch')
+                  setRunningStep(data.message || 'Starting batch run...')
+                  setBatchProgress(prev => ({
+                    current: prev?.current ?? 0,
+                    total: prev?.total || batchCyclesPerAgent,
+                    status: 'starting',
+                  }))
+                  break
+                case 'batch_cycle_start':
+                  setScanPhase('Batch')
+                  setRunningStep(data.message || `Batch cycle ${data.cycle}/${data.cyclesPerAgent} started`)
+                  setBatchProgress({
+                    current: Math.max(0, (data.cycle || 1) - 1),
+                    total: data.cyclesPerAgent || batchCyclesPerAgent,
+                    status: 'running',
                   })
-                }
+                  break
+                case 'batch_checkpoint':
+                  setBatchCheckpoint(data.checkpoint || null)
+                  setRunningStep(`Checkpoint saved — cycle ${data.checkpoint?.cycle ?? 'n/a'}/${data.checkpoint?.cyclesPerAgent ?? batchCyclesPerAgent}`)
+                  setBatchProgress(prev => ({
+                    current: data.checkpoint?.cycle ?? prev?.current ?? 0,
+                    total: data.checkpoint?.cyclesPerAgent ?? prev?.total ?? batchCyclesPerAgent,
+                    status: data.checkpoint?.status || 'running',
+                  }))
+                  if (data.checkpoint?.lastCycle?.agentResults) {
+                    const completedCycle = Number(data.checkpoint?.cycle) || 0
+                    const totalCycles = Number(data.checkpoint?.cyclesPerAgent) || batchCyclesPerAgent
+                    const perCycleAgentTypes = (data.checkpoint.lastCycle.agentResults as any[])
+                      .map((ar) => ar?.agentType)
+                      .filter(Boolean)
+                    if (perCycleAgentTypes.length > 0) {
+                      setBatchAgentProgress((prev) => {
+                        const next = { ...prev }
+                        for (const agentType of perCycleAgentTypes) {
+                          next[agentType] = {
+                            completed: Math.max(next[agentType]?.completed || 0, completedCycle),
+                            total: totalCycles,
+                          }
+                        }
+                        return next
+                      })
+                    }
+                  }
+                  break
+                case 'batch_cycle_complete':
+                  setRunningStep(data.message || `Batch cycle ${data.cycle}/${data.cyclesPerAgent} complete`)
+                  setBatchProgress({
+                    current: data.cycle || 0,
+                    total: data.cyclesPerAgent || batchCyclesPerAgent,
+                    status: 'running',
+                  })
+                  break
+                case 'batch_shared_pool_start':
+                  setScanPhase('Loading')
+                  setRunningStep(data.message || 'Preparing shared signal pool...')
+                  setBatchSharedPoolStatus((prev) => ({
+                    status: 'loading',
+                    signalCount: prev.signalCount,
+                    reuseCount: 0,
+                  }))
+                  break
+                case 'batch_shared_sector_start':
+                  setScanPhase('Loading')
+                  setRunningStep(data.message || 'Preparing shared sector map...')
+                  break
+                case 'batch_shared_pool_ready':
+                  setScanPhase('Ready')
+                  setRunningStep(data.message || 'Shared pool ready')
+                  setBatchSharedPoolStatus((prev) => ({
+                    status: prev.reuseCount > 0 ? 'reused' : 'ready',
+                    signalCount: Number.isFinite(Number(data.signalCount)) ? Number(data.signalCount) : prev.signalCount,
+                    reuseCount: prev.reuseCount,
+                  }))
+                  break
+                case 'batch_signal_pool_reuse':
+                  setScanPhase('Ready')
+                  setRunningStep(data.message || 'Reusing shared signal pool')
+                  setBatchSharedPoolStatus((prev) => {
+                    const incomingCycle = Number(data.cycle)
+                    const nextReuseCount = Number.isFinite(incomingCycle) && incomingCycle > 0
+                      ? Math.max(prev.reuseCount, incomingCycle)
+                      : prev.reuseCount + 1
+                    return {
+                      status: 'reused',
+                      signalCount: Number.isFinite(Number(data.signalCount)) ? Number(data.signalCount) : prev.signalCount,
+                      reuseCount: nextReuseCount,
+                    }
+                  })
+                  break
+                case 'batch_validation':
+                  setScanPhase('Validation')
+                  setRunningStep(data.message || `Running ${String(data.tier || '').toUpperCase()} validation...`)
+                  break
+                case 'batch_done':
+                  setRunningStep(data.message || 'Batch run complete')
+                  setBatchProgress(prev => ({
+                    current: prev?.total || batchCyclesPerAgent,
+                    total: prev?.total || batchCyclesPerAgent,
+                    status: 'completed',
+                  }))
+                  break
+                case 'regime':
+                  setScanPhase('Market Pulse')
+                  setRunningStep('Classifying market regime...')
+                  break
+                case 'regime_complete':
+                  setScanPhase('Market Pulse')
+                  setRunningStep(`Regime: ${data.regime} (${data.confidence}% confidence)`)
+                  if (data.regime) setRegime(data as MarketRegime)
+                  break
+                case 'scanning':
+                  setScanPhase('Scanning')
+                  setProgress({ current: data.current || 0, total: data.total || tickerLimit, ticker: data.ticker })
+                  setRunningStep(data.message || 'Scanning stocks...')
+                  break
+                case 'checking_db':
+                case 'db_cache':
+                  setScanPhase('Loading')
+                  setRunningStep(data.message || 'Checking signal cache...')
+                  if (data.fromCache) setProgress({ current: data.signalCount || 0, total: data.signalCount || 0 })
+                  break
+                case 'saving':
+                  setScanPhase('Saving')
+                  setRunningStep(data.message || 'Saving signals...')
+                  break
+                case 'signals_ready':
+                  setScanPhase('Ready')
+                  setRunningStep(`${data.signalCount} signals ready — deploying agents...`)
+                  break
+                case 'sector_rs':
+                case 'top_down_filter':
+                  setScanPhase('Top-down')
+                  setRunningStep(data.message || 'Applying top-down market->sector->VCP filter...')
+                  break
+                case 'agents_starting':
+                  setScanPhase('Agents')
+                  setRunningStep(`Deploying ${data.agents?.length || 4} agents...`)
+                  if (data.agents) {
+                    const initial: Record<string, AgentProgress> = {}
+                    data.agents.forEach((a: any) => {
+                      initial[a.type] = { iteration: 0, maxIterations: 20, phase: 'queued' }
+                    })
+                    setAgentProgress(initial)
+                  }
+                  break
+                case 'agent_iteration':
+                  setScanPhase(data.agentName || 'Agent')
+                  setRunningStep(`[${data.agentName}] Iteration ${data.iteration}/${data.maxIterations}`)
+                  if (data.agent) {
+                    setAgentProgress(prev => ({
+                      ...prev,
+                      [data.agent]: { iteration: data.iteration, maxIterations: data.maxIterations, phase: 'optimizing' },
+                    }))
+                  }
+                  break
+                default:
+                  if (data.message) setRunningStep(data.message)
               }
-              break
-            case 'batch_cycle_complete':
-              setRunningStep(data.message || `Batch cycle ${data.cycle}/${data.cyclesPerAgent} complete`)
-              setBatchProgress({
-                current: data.cycle || 0,
-                total: data.cyclesPerAgent || batchCyclesPerAgent,
-                status: 'running',
-              })
-              break
-            case 'batch_shared_pool_start':
-              setScanPhase('Loading')
-              setRunningStep(data.message || 'Preparing shared signal pool...')
-              setBatchSharedPoolStatus((prev) => ({
-                status: 'loading',
-                signalCount: prev.signalCount,
-                reuseCount: 0,
-              }))
-              break
-            case 'batch_shared_sector_start':
-              setScanPhase('Loading')
-              setRunningStep(data.message || 'Preparing shared sector map...')
-              break
-            case 'batch_shared_pool_ready':
-              setScanPhase('Ready')
-              setRunningStep(data.message || 'Shared pool ready')
-              setBatchSharedPoolStatus((prev) => ({
-                status: prev.reuseCount > 0 ? 'reused' : 'ready',
-                signalCount: Number.isFinite(Number(data.signalCount)) ? Number(data.signalCount) : prev.signalCount,
-                reuseCount: prev.reuseCount,
-              }))
-              break
-            case 'batch_signal_pool_reuse':
-              setScanPhase('Ready')
-              setRunningStep(data.message || 'Reusing shared signal pool')
-              setBatchSharedPoolStatus((prev) => {
-                const incomingCycle = Number(data.cycle)
-                const nextReuseCount = Number.isFinite(incomingCycle) && incomingCycle > 0
-                  ? Math.max(prev.reuseCount, incomingCycle)
-                  : prev.reuseCount + 1
-                return {
-                  status: 'reused',
-                  signalCount: Number.isFinite(Number(data.signalCount)) ? Number(data.signalCount) : prev.signalCount,
-                  reuseCount: nextReuseCount,
-                }
-              })
-              break
-            case 'batch_validation':
-              setScanPhase('Validation')
-              setRunningStep(data.message || `Running ${String(data.tier || '').toUpperCase()} validation...`)
-              break
-            case 'batch_done':
-              setRunningStep(data.message || 'Batch run complete')
-              setBatchProgress(prev => ({
-                current: prev?.total || batchCyclesPerAgent,
-                total: prev?.total || batchCyclesPerAgent,
-                status: 'completed',
-              }))
-              break
-            case 'regime':
-              setScanPhase('Market Pulse')
-              setRunningStep('Classifying market regime...')
-              break
-            case 'regime_complete':
-              setScanPhase('Market Pulse')
-              setRunningStep(`Regime: ${data.regime} (${data.confidence}% confidence)`)
-              if (data.regime) setRegime(data as MarketRegime)
-              break
-            case 'scanning':
-              setScanPhase('Scanning')
-              setProgress({ current: data.current || 0, total: data.total || tickerLimit, ticker: data.ticker })
-              setRunningStep(data.message || 'Scanning stocks...')
-              break
-            case 'checking_db':
-            case 'db_cache':
-              setScanPhase('Loading')
-              setRunningStep(data.message || 'Checking signal cache...')
-              if (data.fromCache) setProgress({ current: data.signalCount || 0, total: data.signalCount || 0 })
-              break
-            case 'saving':
-              setScanPhase('Saving')
-              setRunningStep(data.message || 'Saving signals...')
-              break
-            case 'signals_ready':
-              setScanPhase('Ready')
-              setRunningStep(`${data.signalCount} signals ready — deploying agents...`)
-              break
-            case 'sector_rs':
-            case 'top_down_filter':
-              setScanPhase('Top-down')
-              setRunningStep(data.message || 'Applying top-down market->sector->VCP filter...')
-              break
-            case 'agents_starting':
-              setScanPhase('Agents')
-              setRunningStep(`Deploying ${data.agents?.length || 4} agents...`)
-              if (data.agents) {
-                const initial: Record<string, AgentProgress> = {}
-                data.agents.forEach((a: any) => {
-                  initial[a.type] = { iteration: 0, maxIterations: 20, phase: 'queued' }
-                })
-                setAgentProgress(initial)
-              }
-              break
-            case 'agent_iteration':
-              setScanPhase(data.agentName || 'Agent')
-              setRunningStep(`[${data.agentName}] Iteration ${data.iteration}/${data.maxIterations}`)
-              if (data.agent) {
-                setAgentProgress(prev => ({
-                  ...prev,
-                  [data.agent]: { iteration: data.iteration, maxIterations: data.maxIterations, phase: 'optimizing' },
-                }))
-              }
-              break
-            default:
-              if (data.message) setRunningStep(data.message)
+            } catch {
+              // skip malformed SSE
+            }
           }
-        } catch {
-          // skip malformed SSE
+
+          if (reader) {
+            let buffer = ''
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) break
+              buffer += decoder.decode(value, { stream: true })
+              const lines = buffer.split('\n')
+              buffer = lines.pop() || ''
+              for (const line of lines) processSSELine(line)
+            }
+            if (buffer.trim()) processSSELine(buffer.trim())
+          }
+
+          if (!chunkResult) {
+            if (streamError) throw new Error(streamError)
+            if (sawBatchProgress) {
+              throw new Error('Batch stream ended before completion. In production this often means serverless timeout. Reduce cycles/ticker limit, or run batch on a long-running API.')
+            }
+            throw new Error('No batch result received')
+          }
+
+          return chunkResult
+        } finally {
+          clearTimeout(timeoutId)
         }
       }
 
-      if (reader) {
-        let buffer = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
-          for (const line of lines) processSSELine(line)
+      if (useChunkedBatchMode) {
+        setRunningStep('Serverless mode detected: processing batch in 1-cycle chunks with auto-resume...')
+      }
+
+      while (true) {
+        chunkRequestCount += 1
+        const chunkResult = await runBatchRequestChunk(chunkResume)
+        finalResult = chunkResult
+
+        const cyclesCompleted = Number(chunkResult?.cyclesCompleted) || 0
+        const cyclesPlanned = Number(chunkResult?.cyclesPlanned) || batchCyclesPerAgent
+        const completed = Boolean(chunkResult?.completed) || cyclesCompleted >= cyclesPlanned
+
+        if (!useChunkedBatchMode || completed) break
+
+        if (cyclesCompleted <= lastCyclesCompleted) {
+          throw new Error('Batch chunk did not advance to a new cycle. Stopping to avoid an infinite resume loop.')
         }
-        if (buffer.trim()) processSSELine(buffer.trim())
+        lastCyclesCompleted = cyclesCompleted
+        if (chunkRequestCount > batchCyclesPerAgent + 2) {
+          throw new Error('Batch chunk safety limit reached before completion. Reduce cycles per run or retry with Resume enabled.')
+        }
+
+        chunkResume = true
+        setRunningStep(`Chunk complete (${cyclesCompleted}/${cyclesPlanned}) — requesting next chunk...`)
       }
 
       if (!finalResult) {
-        if (streamError) return
-        if (sawBatchProgress) {
-          setError('Batch stream ended before completion. In production this often means serverless timeout. Reduce cycles/ticker limit, or run batch on a long-running API.')
-          return
-        }
         setError('No batch result received')
         return
       }
