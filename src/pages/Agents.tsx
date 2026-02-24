@@ -30,28 +30,6 @@ interface StrategyAgentMetrics {
   weightsLabel?: string
 }
 
-interface ConversationDecision {
-  id: string
-  ticker: string
-  action: 'TAKE' | 'PASS' | 'WATCH'
-  sizingPct: number
-  entryPlan: string
-  stopLoss: { price: number; rule: string }
-  targets: Array<{ price: number; rationale: string }>
-  killCriteria: string[]
-  rationale: string
-  dissentingAgents: string[]
-}
-
-interface ConversationRecord {
-  id: string
-  createdAt: string
-  ticker: string
-  regime: string | null
-  decision: ConversationDecision
-  transcript: { rounds: Array<{ name: string; outputs?: unknown; output?: unknown }> }
-}
-
 /** Default strategy metrics (from design); can be overridden by Marcus summary / API */
 const DEFAULT_STRATEGY_METRICS: Record<string, { metrics: StrategyAgentMetrics; description: string }> = {
   momentum_scout: {
@@ -81,19 +59,6 @@ interface ManifestResponse {
   subagents?: AgentMeta[]
 }
 
-type HeartbeatStatus = 'idle' | 'running' | 'done' | 'error'
-
-interface HeartbeatState {
-  status: HeartbeatStatus
-  lastRun?: string
-  lastPhase?: string
-  lastMessage?: string
-  regime?: string
-  signalCount?: number
-  successfulAgents?: number
-  elapsed?: string
-}
-
 /** Cron state from GET /api/heartbeat (5-min in-server scheduler) */
 interface HeartbeatCronState {
   enabled: boolean
@@ -117,15 +82,6 @@ function Card({ children, className = '' }: { children: React.ReactNode; classNa
   return (
     <div className={`rounded-xl border border-slate-700 bg-slate-800/40 ${className}`}>
       {children}
-    </div>
-  )
-}
-
-function Stat({ label, value, highlight = false }: { label: string; value: React.ReactNode; highlight?: boolean }) {
-  return (
-    <div className="bg-slate-900/60 rounded-lg p-3">
-      <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">{label}</div>
-      <div className={`text-sm font-medium ${highlight ? 'text-sky-300' : 'text-slate-200'}`}>{value}</div>
     </div>
   )
 }
@@ -170,24 +126,6 @@ function strategyAgentIcon(agent: AgentMeta): string {
   if (t === 'turtle_trader') return '🐢'
   if (t === 'ma_crossover_10_20') return '🔀'
   return '🤖'
-}
-
-// ─── Regime pill ─────────────────────────────────────────────────────────────
-
-const REGIME_COLORS: Record<string, string> = {
-  BULL:        'bg-emerald-900/60 text-emerald-300 border border-emerald-700',
-  UNCERTAIN:   'bg-yellow-900/60 text-yellow-300 border border-yellow-700',
-  CORRECTION:  'bg-orange-900/60 text-orange-300 border border-orange-700',
-  BEAR:        'bg-red-900/60 text-red-300 border border-red-700',
-}
-
-function RegimePill({ regime }: { regime?: string }) {
-  if (!regime) return <span className="text-sm text-slate-500">—</span>
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${REGIME_COLORS[regime] ?? 'bg-slate-700 text-slate-400'}`}>
-      {regime}
-    </span>
-  )
 }
 
 // ─── Connector lines ──────────────────────────────────────────────────────────
@@ -614,7 +552,6 @@ export default function Agents() {
   const [manifest, setManifest] = useState<ManifestResponse | null>(null)
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState<string | null>(null)
-  const [hb, setHb]             = useState<HeartbeatState>({ status: 'idle' })
   const [heartbeatCron, setHeartbeatCron] = useState<HeartbeatCronState | null>(null)
   const [cronToggleLoading, setCronToggleLoading] = useState(false)
 

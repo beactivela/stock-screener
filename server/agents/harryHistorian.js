@@ -312,6 +312,11 @@ function toPositiveInt(value, fallback = 0) {
   return rounded > 0 ? rounded : fallback;
 }
 
+export function resolveSignalCacheTimestamp(signal = null) {
+  if (!signal || typeof signal !== 'object') return null;
+  return signal.scanDate || signal.created_at || signal.entryDate || signal.entry_date || null;
+}
+
 export function normalizeBatchValidationPolicy(policy = {}, cyclesPerAgent = 0) {
   const cycleCap = toPositiveInt(cyclesPerAgent, 0);
   const normalizeInterval = (value) => {
@@ -409,6 +414,8 @@ export async function runMultiAgentOptimization(options = {}) {
     regimeOverride = null,
     topDownFilter = true,
     topDownProfile = null,
+    rawSignalPool = null,
+    precomputedSectorRankByTicker = null,
     batchRunId = null,
     batchCycle = null,
   } = options;
@@ -463,18 +470,29 @@ export async function runMultiAgentOptimization(options = {}) {
     };
   }
 
-  // ── Step 2: Fetch shared signal pool ──
-  if (onProgress) {
-    onProgress({ phase: 'scanning', message: 'Fetching historical signals...', current: 0, total: tickerLimit });
+  // ── Step 2: Fetch shared signal pool (or reuse batch-preloaded pool) ──
+  let rawSignals;
+  if (Array.isArray(rawSignalPool)) {
+    rawSignals = rawSignalPool;
+    if (onProgress) {
+      onProgress({
+        phase: 'batch_signal_pool_reuse',
+        signalCount: rawSignals.length,
+        message: `Reusing shared signal pool (${rawSignals.length} signals)`,
+      });
+    }
+  } else {
+    if (onProgress) {
+      onProgress({ phase: 'scanning', message: 'Fetching historical signals...', current: 0, total: tickerLimit });
+    }
+    rawSignals = await fetchSignalPool({
+      lookbackMonths,
+      tickerLimit,
+      forceRefresh,
+      signalFamilies: ['opus45', 'turtle', 'ma_crossover'],
+      onProgress,
+    });
   }
-
-  const rawSignals = await fetchSignalPool({
-    lookbackMonths,
-    tickerLimit,
-    forceRefresh,
-    signalFamilies: ['opus45', 'turtle', 'ma_crossover'],
-    onProgress,
-  });
 
   if (!rawSignals || rawSignals.length < 10) {
     return {
@@ -489,8 +507,11 @@ export async function runMultiAgentOptimization(options = {}) {
   if (topDownFilter) {
     if (onProgress) onProgress({ phase: 'sector_rs', message: 'Calculating sector relative strength...' });
     try {
-      const tvPayload = await fetchTradingViewIndustryReturns({ useCache: true });
-      const sectorRankByTicker = buildSectorRankByTicker(tvPayload);
+      let sectorRankByTicker = precomputedSectorRankByTicker;
+      if (!sectorRankByTicker || Object.keys(sectorRankByTicker).length === 0) {
+        const tvPayload = await fetchTradingViewIndustryReturns({ useCache: true });
+        sectorRankByTicker = buildSectorRankByTicker(tvPayload);
+      }
       const filtered = applyTopDownSignalFilter(rawSignals, {
         regime,
         profile: topDownProfile || buildTopDownFilterProfile(regime.regime),
@@ -630,6 +651,7 @@ export async function runBatchLearningLoop(options = {}) {
     runCycle = null,
     validationPolicy = null,
     runValidation = null,
+    loadSharedResources = null,
     onProgress = null,
     onCheckpoint = null,
     stopOnError = false,
@@ -647,11 +669,84 @@ export async function runBatchLearningLoop(options = {}) {
     failedValidations: 0,
   };
 
-  const execCycle = runCycle || (async ({ cycle, emitProgress }) => {
+  let sharedResources = { rawSignalPool: null, sectorRankByTicker: null };
+  if (typeof loadSharedResources === 'function') {
+    try {
+      const loaded = await loadSharedResources({ runId, cyclesPerAgent, agentTypes, options: rest });
+      if (loaded && typeof loaded === 'object') {
+        sharedResources = {
+          rawSignalPool: Array.isArray(loaded.rawSignalPool) ? loaded.rawSignalPool : null,
+          sectorRankByTicker: loaded.sectorRankByTicker && typeof loaded.sectorRankByTicker === 'object'
+            ? loaded.sectorRankByTicker
+            : null,
+        };
+      }
+    } catch (e) {
+      console.warn('Batch shared resource loader failed:', e?.message || e);
+      sharedResources = { rawSignalPool: null, sectorRankByTicker: null };
+    }
+  } else if (!runCycle) {
+    try {
+      if (onProgress) {
+        onProgress({
+          phase: 'batch_shared_pool_start',
+          runId,
+          cyclesPerAgent,
+          message: 'Preparing shared signal pool once for all cycles...',
+        });
+      }
+
+      const rawSignalPool = await fetchSignalPool({
+        lookbackMonths: rest.lookbackMonths ?? 60,
+        tickerLimit: rest.tickerLimit ?? 200,
+        forceRefresh: Boolean(rest.forceRefresh ?? false),
+        signalFamilies: ['opus45', 'turtle', 'ma_crossover'],
+        onProgress,
+      });
+
+      let sectorRankByTicker = null;
+      const shouldBuildSectorMap = rest.topDownFilter !== false;
+      if (shouldBuildSectorMap) {
+        if (onProgress) {
+          onProgress({
+            phase: 'batch_shared_sector_start',
+            runId,
+            cyclesPerAgent,
+            message: 'Preparing shared sector relative-strength map...',
+          });
+        }
+        try {
+          const tvPayload = await fetchTradingViewIndustryReturns({ useCache: true });
+          sectorRankByTicker = buildSectorRankByTicker(tvPayload);
+        } catch (e) {
+          console.warn('Batch shared sector map fallback:', e?.message || e);
+          sectorRankByTicker = null;
+        }
+      }
+
+      sharedResources = { rawSignalPool, sectorRankByTicker };
+      if (onProgress) {
+        onProgress({
+          phase: 'batch_shared_pool_ready',
+          runId,
+          cyclesPerAgent,
+          signalCount: rawSignalPool?.length || 0,
+          message: `Shared resources ready (${rawSignalPool?.length || 0} raw signals)`,
+        });
+      }
+    } catch (e) {
+      console.warn('Batch shared resource prefetch failed, falling back to per-cycle fetch:', e?.message || e);
+      sharedResources = { rawSignalPool: null, sectorRankByTicker: null };
+    }
+  }
+
+  const execCycle = runCycle || (async ({ cycle, emitProgress, sharedSignalPool, sharedSectorRankByTicker }) => {
     const payload = {
       ...rest,
       agentTypes,
       forceRefresh: cycle === 1 ? Boolean(rest.forceRefresh ?? false) : false,
+      rawSignalPool: sharedSignalPool,
+      precomputedSectorRankByTicker: sharedSectorRankByTicker,
       batchRunId: runId,
       batchCycle: cycle,
       onProgress: emitProgress || null,
@@ -681,7 +776,16 @@ export async function runBatchLearningLoop(options = {}) {
 
     let cycleResult;
     try {
-      cycleResult = await execCycle({ cycle, cyclesPerAgent, agentTypes, runId, emitProgress });
+      cycleResult = await execCycle({
+        cycle,
+        cyclesPerAgent,
+        agentTypes,
+        runId,
+        emitProgress,
+        sharedResources,
+        sharedSignalPool: sharedResources.rawSignalPool,
+        sharedSectorRankByTicker: sharedResources.sectorRankByTicker,
+      });
     } catch (e) {
       cycleResult = {
         success: false,
@@ -813,6 +917,12 @@ export async function runBatchLearningLoop(options = {}) {
  * Reuses the same caching logic as the single-agent optimizer.
  */
 async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, signalFamilies = ['opus45', 'turtle', 'ma_crossover'], onProgress, seedMode = false }) {
+  const fetchStartedAt = Date.now();
+  const cacheCheckStartedAt = Date.now();
+  let cacheCheckMs = 0;
+  let scanMs = 0;
+  let saveMs = 0;
+
   // Auto-seed for first-time runs so new agents can bootstrap a signal pool
   let hasStoredSignals = false;
   if (isSupabaseConfigured()) {
@@ -835,7 +945,7 @@ async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, sign
 
       if (storedSignals && storedSignals.length > 0) {
         const latestSignal = storedSignals[0];
-        const scanDate = latestSignal.scanDate || latestSignal.created_at;
+        const scanDate = resolveSignalCacheTimestamp(latestSignal);
         const storedExitVersion = latestSignal.exitStrategyVersion || 1;
         const needsTurtle = signalFamilies.includes('turtle');
         const hasTurtleSignals = needsTurtle
@@ -843,7 +953,10 @@ async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, sign
           : true;
 
         if (scanDate && storedExitVersion >= EXIT_STRATEGY_VERSION) {
-          const ageDays = (Date.now() - new Date(scanDate).getTime()) / (1000 * 60 * 60 * 24);
+          const scanDateMs = new Date(scanDate).getTime();
+          const ageDays = Number.isFinite(scanDateMs)
+            ? (Date.now() - scanDateMs) / (1000 * 60 * 60 * 24)
+            : Infinity;
 
           // Verify signals actually span the expected history window.
           // A real 5yr deep scan will have signals dating back to 2021-2022.
@@ -871,6 +984,7 @@ async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, sign
           );
 
           if (ageDays < maxCacheAgeDays && hasTurtleSignals) {
+            cacheCheckMs = Date.now() - cacheCheckStartedAt;
             if (onProgress) {
               onProgress({
                 phase: 'db_cache',
@@ -879,12 +993,17 @@ async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, sign
                 fromCache: true,
               });
             }
+            console.log(
+              `Harry Historian signal pool timing: cacheCheck=${cacheCheckMs}ms scan=0ms save=0ms total=${Date.now() - fetchStartedAt}ms (cache hit)`
+            );
             return storedSignals;
           }
         }
       }
     } catch (e) {
       console.warn('Harry Historian: DB cache check failed:', e.message);
+    } finally {
+      if (cacheCheckMs === 0) cacheCheckMs = Date.now() - cacheCheckStartedAt;
     }
   }
 
@@ -898,14 +1017,18 @@ async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, sign
     ? (p) => onProgress({ phase: 'scanning', ...p, message: `Scanning ${p.ticker}... (${p.current}/${p.total})` })
     : null;
 
+  const scanStartedAt = Date.now();
   let scanResults = await scanMultipleTickers(tickerList, lookbackMonths, progressCallback, { signalFamilies, seedMode: shouldSeed });
+  scanMs += Date.now() - scanStartedAt;
 
   // Auto-seed fallback: if strict scan yields 0 signals, retry with seedMode on Opus4.5
   if (!seedMode && (!scanResults.signals || scanResults.signals.length === 0)) {
     if (onProgress) {
       onProgress({ phase: 'seed_scan', message: 'No signals found. Retrying with seed mode to bootstrap signal pool...' });
     }
+    const seedScanStartedAt = Date.now();
     scanResults = await scanMultipleTickers(tickerList, lookbackMonths, progressCallback, { signalFamilies, seedMode: true });
+    scanMs += Date.now() - seedScanStartedAt;
   }
 
   // Persist to database for future runs
@@ -913,8 +1036,14 @@ async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, sign
     if (onProgress) {
       onProgress({ phase: 'saving', message: `Saving ${scanResults.signals.length} signals to database...` });
     }
+    const saveStartedAt = Date.now();
     await storeSignalsInDatabase(scanResults.signals);
+    saveMs = Date.now() - saveStartedAt;
   }
+
+  console.log(
+    `Harry Historian signal pool timing: cacheCheck=${cacheCheckMs}ms scan=${scanMs}ms save=${saveMs}ms total=${Date.now() - fetchStartedAt}ms`
+  );
 
   return scanResults.signals || [];
 }

@@ -127,6 +127,12 @@ interface BatchAgentProgress {
   total: number
 }
 
+interface BatchSharedPoolStatus {
+  status: 'idle' | 'loading' | 'ready' | 'reused'
+  signalCount: number | null
+  reuseCount: number
+}
+
 interface FactorAnalysis {
   factor: string
   factorName: string
@@ -245,6 +251,11 @@ export default function Backtest() {
   const [batchCheckpoint, setBatchCheckpoint] = useState<any>(null)
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null)
   const [batchAgentProgress, setBatchAgentProgress] = useState<Record<string, BatchAgentProgress>>({})
+  const [batchSharedPoolStatus, setBatchSharedPoolStatus] = useState<BatchSharedPoolStatus>({
+    status: 'idle',
+    signalCount: null,
+    reuseCount: 0,
+  })
 
   // Analysis
   const [, setFactorAnalysis] = useState<FactorAnalysis[] | null>(null)
@@ -749,6 +760,7 @@ export default function Backtest() {
     setBatchCheckpoint(null)
     setBatchProgress({ current: 0, total: batchCyclesPerAgent, status: 'starting' })
     setBatchAgentProgress({})
+    setBatchSharedPoolStatus({ status: 'idle', signalCount: null, reuseCount: 0 })
     setRunningStep(`Starting batch run ${trimmedRunId}...`)
     setProgress(null)
     setScanPhase('Batch')
@@ -854,6 +866,43 @@ export default function Backtest() {
                 current: data.cycle || 0,
                 total: data.cyclesPerAgent || batchCyclesPerAgent,
                 status: 'running',
+              })
+              break
+            case 'batch_shared_pool_start':
+              setScanPhase('Loading')
+              setRunningStep(data.message || 'Preparing shared signal pool...')
+              setBatchSharedPoolStatus((prev) => ({
+                status: 'loading',
+                signalCount: prev.signalCount,
+                reuseCount: 0,
+              }))
+              break
+            case 'batch_shared_sector_start':
+              setScanPhase('Loading')
+              setRunningStep(data.message || 'Preparing shared sector map...')
+              break
+            case 'batch_shared_pool_ready':
+              setScanPhase('Ready')
+              setRunningStep(data.message || 'Shared pool ready')
+              setBatchSharedPoolStatus((prev) => ({
+                status: prev.reuseCount > 0 ? 'reused' : 'ready',
+                signalCount: Number.isFinite(Number(data.signalCount)) ? Number(data.signalCount) : prev.signalCount,
+                reuseCount: prev.reuseCount,
+              }))
+              break
+            case 'batch_signal_pool_reuse':
+              setScanPhase('Ready')
+              setRunningStep(data.message || 'Reusing shared signal pool')
+              setBatchSharedPoolStatus((prev) => {
+                const incomingCycle = Number(data.cycle)
+                const nextReuseCount = Number.isFinite(incomingCycle) && incomingCycle > 0
+                  ? Math.max(prev.reuseCount, incomingCycle)
+                  : prev.reuseCount + 1
+                return {
+                  status: 'reused',
+                  signalCount: Number.isFinite(Number(data.signalCount)) ? Number(data.signalCount) : prev.signalCount,
+                  reuseCount: nextReuseCount,
+                }
               })
               break
             case 'batch_validation':
@@ -1132,6 +1181,29 @@ export default function Backtest() {
 
     return base
   }, [hierarchyResult, hierarchyTier])
+
+  const batchSharedPoolBadge = useMemo(() => {
+    if (batchSharedPoolStatus.status === 'idle') return null
+
+    if (batchSharedPoolStatus.status === 'loading') {
+      return {
+        text: 'Shared Pool: Loading',
+        className: 'bg-slate-800 text-slate-300 border-slate-700',
+      }
+    }
+
+    const countText = batchSharedPoolStatus.signalCount != null
+      ? ` · ${batchSharedPoolStatus.signalCount.toLocaleString()} signals`
+      : ''
+    const reuseText = batchSharedPoolStatus.reuseCount > 0
+      ? ` · reused ${batchSharedPoolStatus.reuseCount}x`
+      : ''
+
+    return {
+      text: `Shared Pool: Reused${countText}${reuseText}`,
+      className: 'bg-emerald-900/30 text-emerald-300 border-emerald-700/60',
+    }
+  }, [batchSharedPoolStatus])
 
   // ── Render ────────────────────────────────────────────────
 
@@ -1584,6 +1656,11 @@ export default function Backtest() {
                 Validation cadence: WFO/{batchValidationWfoEvery}, WFO+MC/{batchValidationWfoMcEvery}, Holdout {batchValidationHoldoutFinal ? 'final' : 'off'}.
               </span>
             )}
+            {batchSharedPoolBadge && (
+              <span className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${batchSharedPoolBadge.className}`}>
+                {batchSharedPoolBadge.text}
+              </span>
+            )}
           </div>
         </div>
         {error && (
@@ -1600,9 +1677,16 @@ export default function Backtest() {
           <div className="mb-4">
             <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
               <span>Batch progress</span>
-              <span>
-                {Math.min(batchProgress.current, batchProgress.total)}/{batchProgress.total} cycles
-              </span>
+              <div className="flex items-center gap-2">
+                {batchSharedPoolBadge && (
+                  <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${batchSharedPoolBadge.className}`}>
+                    {batchSharedPoolBadge.text}
+                  </span>
+                )}
+                <span>
+                  {Math.min(batchProgress.current, batchProgress.total)}/{batchProgress.total} cycles
+                </span>
+              </div>
             </div>
             <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
               <div

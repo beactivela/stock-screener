@@ -1,0 +1,30 @@
+---
+description: Use Vercel MCP for deployments, status, and logs
+alwaysApply: false
+globs: vercel.json,.vercel/**/*
+---
+
+# Vercel MCP integration
+
+When the user asks to deploy, check deployment status, view build/runtime logs, or debug Vercel issues, use the **user-Vercel** MCP via `call_mcp_tool`.
+
+## Tools (server: `user-Vercel`)
+
+- **list_teams** — No args. Use first to get `teamId` (or read `.vercel/project.json` for `orgId`).
+- **list_projects** — `{ "teamId": "team_xxx" }`. Find project ID for this repo.
+- **list_deployments** — `{ "projectId": "prj_xxx", "teamId": "team_xxx" }`.
+- **get_deployment** — `{ "idOrUrl": "<deploymentId or hostname>", "teamId": "team_xxx" }`.
+- **get_deployment_build_logs** — `{ "idOrUrl": "<id or url>", "teamId": "team_xxx", "limit": 100 }`. For failed builds.
+- **get_runtime_logs** — Runtime logs (check tool schema for args).
+- **deploy_to_vercel** — No args. Deploys current project.
+- **get_project** — Project details (check schema for projectId/teamId).
+- **search_vercel_documentation** — Look up Vercel docs when needed.
+
+## Workflow
+
+1. **Deploy**: Call `deploy_to_vercel` (no args).
+2. **Status / list**: `list_teams` → `list_projects` (with teamId) → `list_deployments` (projectId, teamId).
+3. **Debug failed build**: `get_deployment_build_logs` with deployment id/url and teamId.
+4. **Team/project IDs**: Prefer reading `.vercel/project.json` if present (fields `orgId`, `projectId`).
+
+Always read the tool schema under `mcps/user-Vercel/tools/<name>.json` before calling if unsure of parameters.

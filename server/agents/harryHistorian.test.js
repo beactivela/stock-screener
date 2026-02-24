@@ -9,12 +9,56 @@ import {
   resolveActiveAgents,
   buildTopDownFilterProfile,
   applyTopDownSignalFilter,
+  resolveSignalCacheTimestamp,
   runBatchLearningLoop,
   buildRegimeLeaderboard,
   buildRegimeProfile,
   buildSectorRsPercentileByTicker,
   resolveValidationTiersForCycle,
 } from './harryHistorian.js';
+
+describe('resolveSignalCacheTimestamp', () => {
+  it('prefers explicit scanDate when present', () => {
+    const out = resolveSignalCacheTimestamp({
+      scanDate: '2026-02-20T10:00:00.000Z',
+      created_at: '2026-02-19T10:00:00.000Z',
+      entryDate: '2026-02-18',
+      entry_date: '2026-02-17',
+    });
+    assert.equal(out, '2026-02-20T10:00:00.000Z');
+  });
+
+  it('falls back to created_at, then entryDate, then entry_date', () => {
+    assert.equal(
+      resolveSignalCacheTimestamp({
+        created_at: '2026-02-19T10:00:00.000Z',
+        entryDate: '2026-02-18',
+        entry_date: '2026-02-17',
+      }),
+      '2026-02-19T10:00:00.000Z'
+    );
+
+    assert.equal(
+      resolveSignalCacheTimestamp({
+        entryDate: '2026-02-18',
+        entry_date: '2026-02-17',
+      }),
+      '2026-02-18'
+    );
+
+    assert.equal(
+      resolveSignalCacheTimestamp({
+        entry_date: '2026-02-17',
+      }),
+      '2026-02-17'
+    );
+  });
+
+  it('returns null when no usable timestamp exists', () => {
+    assert.equal(resolveSignalCacheTimestamp({}), null);
+    assert.equal(resolveSignalCacheTimestamp(null), null);
+  });
+});
 
 describe('checkDataFreshness', () => {
   const now = Date.now();
@@ -367,6 +411,45 @@ describe('runBatchLearningLoop', () => {
     assert.equal(result.validationSummary.totalValidations, 3);
     assert.equal(result.cycles[1].validations.length, 1);
     assert.equal(result.cycles[2].validations.length, 2);
+  });
+
+  it('loads shared resources once and reuses them across cycles', async () => {
+    let sharedLoadCount = 0;
+    const sharedSignalPool = [{ ticker: 'AAPL', entryDate: '2026-01-01' }];
+    const sharedSectorRankByTicker = { AAPL: 12.3 };
+    const seen = [];
+
+    const result = await runBatchLearningLoop({
+      runId: 'shared-resources-test',
+      agentTypes: ['momentum_scout'],
+      cyclesPerAgent: 3,
+      loadSharedResources: async () => {
+        sharedLoadCount += 1;
+        return {
+          rawSignalPool: sharedSignalPool,
+          sectorRankByTicker: sharedSectorRankByTicker,
+        };
+      },
+      runCycle: async ({ cycle, sharedSignalPool: seenPool, sharedSectorRankByTicker: seenSector }) => {
+        seen.push({ cycle, seenPool, seenSector });
+        return {
+          regime: { regime: 'BULL' },
+          agentResults: [
+            {
+              agentType: 'momentum_scout',
+              success: true,
+              abComparison: { promoted: false, delta: { expectancy: 0.1 } },
+            },
+          ],
+        };
+      },
+    });
+
+    assert.equal(sharedLoadCount, 1);
+    assert.equal(result.cyclesCompleted, 3);
+    assert.equal(seen.length, 3);
+    assert.ok(seen.every((row) => row.seenPool === sharedSignalPool));
+    assert.ok(seen.every((row) => row.seenSector === sharedSectorRankByTicker));
   });
 });
 

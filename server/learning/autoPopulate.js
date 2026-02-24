@@ -526,6 +526,7 @@ export async function getStoredSignals(limit = 10000, opts = {}) {
       return data.map(row => ({
         ticker: row.ticker,
         entryDate: row.entry_date,
+        entry_date: row.entry_date,
         entryPrice: row.entry_price,
         exitDate: row.exit_date,
         exitPrice: row.exit_price,
@@ -546,6 +547,8 @@ export async function getStoredSignals(limit = 10000, opts = {}) {
         scanType: row.scan_type || 'deep_historical',
         lookbackMonths: row.lookback_months || 60,
         exitStrategyVersion: row.exit_strategy_version || 2,
+        created_at: row.created_at || null,
+        scanDate: row.created_at || row.updated_at || row.entry_date || null,
       }));
     }
   } catch (e) {
@@ -580,6 +583,7 @@ export async function getStoredSignals(limit = 10000, opts = {}) {
     const mapped = filtered.map(row => ({
       ticker: row.ticker,
       entryDate: row.entry_date,
+      entry_date: row.entry_date,
       entryPrice: row.entry_price,
       exitDate: row.exit_date,
       exitPrice: row.exit_price,
@@ -612,7 +616,9 @@ export async function getStoredSignals(limit = 10000, opts = {}) {
         relativeStrength: row.relative_strength,
         opus45Confidence: row.opus_45_confidence
       },
-      source: 'trade_context_snapshots'
+      source: 'trade_context_snapshots',
+      created_at: row.created_at || null,
+      scanDate: row.created_at || row.updated_at || row.entry_date || null,
     }));
     return mapped.length > 0 ? mapped : loadStoredSignalsFromFile(limit, opts);
   } catch (e) {
