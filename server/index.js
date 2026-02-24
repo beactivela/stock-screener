@@ -4502,56 +4502,117 @@ app.post('/api/agents/optimize/batch', async (req, res) => {
     };
 
     const runValidation = validationPolicy.enabled
-      ? async ({ tier, agentType, cycle }) => {
-          const hierarchyResult = await runBacktestHierarchy({
-            tier,
-            engine: 'vectorbt',
-            agentType,
-            startDate: validationDateRange.startDate,
-            endDate: validationDateRange.endDate,
-            holdoutPct: Number(validationHoldoutPct) || 0.2,
-            trainMonths: Number(validationTrainMonths) || 12,
-            testMonths: Number(validationTestMonths) || 3,
-            stepMonths: Number(validationStepMonths) || 3,
-            candidateHoldingPeriods: normalizedHoldingPeriods.length > 0 ? normalizedHoldingPeriods : [60, 90, 120],
-            optimizeMetric: 'expectancy',
-            topN: validationTopN ?? tickerLimit ?? null,
-            lookbackMonths,
-            forceRefresh: false,
-            warmupMonths: 12,
-            monteCarloTrials: Number(validationMonteCarloTrials) || 500,
-            monteCarloSeed: 42,
-          });
-
-          const learningRun = await buildLearningRunFromHierarchy({
-            agentType,
-            tier,
-            result: hierarchyResult,
-            objective: 'expectancy',
-            allowWeightUpdates: validationAllowWeightUpdates !== false,
-            minImprovement: Number(validationMinImprovement) || 0.25,
-          });
-
-          const m = summarizeHierarchyMetrics(tier, hierarchyResult);
-          return {
-            cycle,
-            tier,
-            agentType,
-            metrics: {
-              expectancy: m?.expectancy ?? null,
-              avgReturn: m?.avgReturn ?? null,
-              winRate: m?.winRate ?? null,
-              profitFactor: m?.profitFactor ?? null,
-              totalSignals: m?.totalSignals ?? null,
-            },
-            learningRun: {
-              stored: Boolean(learningRun?.stored),
-              promoted: Boolean(learningRun?.promoted),
-              objectiveDelta: learningRun?.objectiveDelta ?? null,
-              promotionReason: learningRun?.promotionReason ?? null,
-              weightUpdate: learningRun?.weightUpdate || null,
-            },
+      ? async ({ tier, agentType, cycle, cyclesPerAgent }) => {
+          const tierLabel = String(tier || '').toUpperCase();
+          const startedAtMs = Date.now();
+          const emitValidationProgress = (payload = {}) => {
+            send({
+              phase: 'batch_validation_progress',
+              tier,
+              agentType,
+              cycle,
+              cyclesPerAgent,
+              ...payload,
+            });
           };
+
+          emitValidationProgress({
+            status: 'start',
+            elapsedSec: 0,
+            message: `Validation ${tierLabel} started for ${agentType} (cycle ${cycle}/${cyclesPerAgent})`,
+          });
+
+          const heartbeat = setInterval(() => {
+            const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+            emitValidationProgress({
+              status: 'heartbeat',
+              elapsedSec,
+              message: `Validation ${tierLabel} running for ${agentType} (${elapsedSec}s elapsed)`,
+            });
+          }, 5000);
+
+          try {
+            const hierarchyResult = await runBacktestHierarchy({
+              tier,
+              engine: 'vectorbt',
+              agentType,
+              startDate: validationDateRange.startDate,
+              endDate: validationDateRange.endDate,
+              holdoutPct: Number(validationHoldoutPct) || 0.2,
+              trainMonths: Number(validationTrainMonths) || 12,
+              testMonths: Number(validationTestMonths) || 3,
+              stepMonths: Number(validationStepMonths) || 3,
+              candidateHoldingPeriods: normalizedHoldingPeriods.length > 0 ? normalizedHoldingPeriods : [60, 90, 120],
+              optimizeMetric: 'expectancy',
+              topN: validationTopN ?? tickerLimit ?? null,
+              lookbackMonths,
+              forceRefresh: false,
+              warmupMonths: 12,
+              monteCarloTrials: Number(validationMonteCarloTrials) || 500,
+              monteCarloSeed: 42,
+              onProgress: (evt) => {
+                const current = Number(evt?.current) || 0;
+                const total = Number(evt?.total) || 0;
+                const label = evt?.label ? String(evt.label) : 'Working';
+                emitValidationProgress({
+                  status: 'step',
+                  current,
+                  total,
+                  label,
+                  elapsedSec: Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)),
+                  message: `Validation ${tierLabel} ${current}/${total}: ${label}`,
+                });
+              },
+            });
+
+            const learningRun = await buildLearningRunFromHierarchy({
+              agentType,
+              tier,
+              result: hierarchyResult,
+              objective: 'expectancy',
+              allowWeightUpdates: validationAllowWeightUpdates !== false,
+              minImprovement: Number(validationMinImprovement) || 0.25,
+            });
+
+            const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+            emitValidationProgress({
+              status: 'complete',
+              elapsedSec,
+              message: `Validation ${tierLabel} complete for ${agentType} (${elapsedSec}s)`,
+            });
+
+            const m = summarizeHierarchyMetrics(tier, hierarchyResult);
+            return {
+              cycle,
+              tier,
+              agentType,
+              metrics: {
+                expectancy: m?.expectancy ?? null,
+                avgReturn: m?.avgReturn ?? null,
+                winRate: m?.winRate ?? null,
+                profitFactor: m?.profitFactor ?? null,
+                totalSignals: m?.totalSignals ?? null,
+              },
+              learningRun: {
+                stored: Boolean(learningRun?.stored),
+                promoted: Boolean(learningRun?.promoted),
+                objectiveDelta: learningRun?.objectiveDelta ?? null,
+                promotionReason: learningRun?.promotionReason ?? null,
+                weightUpdate: learningRun?.weightUpdate || null,
+              },
+            };
+          } catch (e) {
+            const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+            emitValidationProgress({
+              status: 'error',
+              elapsedSec,
+              error: e?.message || 'validation_failed',
+              message: `Validation ${tierLabel} failed for ${agentType}: ${e?.message || 'validation_failed'}`,
+            });
+            throw e;
+          } finally {
+            clearInterval(heartbeat);
+          }
         }
       : null;
 

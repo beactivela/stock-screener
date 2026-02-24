@@ -133,6 +133,19 @@ interface BatchSharedPoolStatus {
   reuseCount: number
 }
 
+interface BatchValidationProgress {
+  status: 'start' | 'heartbeat' | 'step' | 'complete' | 'error'
+  tier: string
+  agentType: string
+  cycle: number | null
+  cyclesPerAgent: number | null
+  current: number | null
+  total: number | null
+  label: string | null
+  elapsedSec: number | null
+  message: string | null
+}
+
 interface FactorAnalysis {
   factor: string
   factorName: string
@@ -256,6 +269,7 @@ export default function Backtest() {
     signalCount: null,
     reuseCount: 0,
   })
+  const [batchValidationProgress, setBatchValidationProgress] = useState<BatchValidationProgress | null>(null)
 
   // Analysis
   const [, setFactorAnalysis] = useState<FactorAnalysis[] | null>(null)
@@ -784,6 +798,7 @@ export default function Backtest() {
     setBatchProgress({ current: 0, total: batchCyclesPerAgent, status: 'starting' })
     setBatchAgentProgress({})
     setBatchSharedPoolStatus({ status: 'idle', signalCount: null, reuseCount: 0 })
+    setBatchValidationProgress(null)
     setRunningStep(`Starting batch run ${trimmedRunId}...`)
     setProgress(null)
     setScanPhase('Batch')
@@ -912,6 +927,7 @@ export default function Backtest() {
                     total: data.cyclesPerAgent || batchCyclesPerAgent,
                     status: 'running',
                   })
+                  setBatchValidationProgress(null)
                   break
                 case 'batch_shared_pool_start':
                   setScanPhase('Loading')
@@ -953,6 +969,36 @@ export default function Backtest() {
                 case 'batch_validation':
                   setScanPhase('Validation')
                   setRunningStep(data.message || `Running ${String(data.tier || '').toUpperCase()} validation...`)
+                  setBatchValidationProgress({
+                    status: 'start',
+                    tier: String(data.tier || ''),
+                    agentType: String(data.agentType || ''),
+                    cycle: Number.isFinite(Number(data.cycle)) ? Number(data.cycle) : null,
+                    cyclesPerAgent: Number.isFinite(Number(data.cyclesPerAgent)) ? Number(data.cyclesPerAgent) : null,
+                    current: null,
+                    total: null,
+                    label: null,
+                    elapsedSec: 0,
+                    message: data.message || null,
+                  })
+                  break
+                case 'batch_validation_progress':
+                  setScanPhase('Validation')
+                  setRunningStep(data.message || `Validation ${String(data.tier || '').toUpperCase()} in progress...`)
+                  setBatchValidationProgress({
+                    status: (['start', 'heartbeat', 'step', 'complete', 'error'].includes(String(data.status || ''))
+                      ? data.status
+                      : 'heartbeat') as BatchValidationProgress['status'],
+                    tier: String(data.tier || ''),
+                    agentType: String(data.agentType || ''),
+                    cycle: Number.isFinite(Number(data.cycle)) ? Number(data.cycle) : null,
+                    cyclesPerAgent: Number.isFinite(Number(data.cyclesPerAgent)) ? Number(data.cyclesPerAgent) : null,
+                    current: Number.isFinite(Number(data.current)) ? Number(data.current) : null,
+                    total: Number.isFinite(Number(data.total)) ? Number(data.total) : null,
+                    label: data.label ? String(data.label) : null,
+                    elapsedSec: Number.isFinite(Number(data.elapsedSec)) ? Number(data.elapsedSec) : null,
+                    message: data.message ? String(data.message) : null,
+                  })
                   break
                 case 'batch_done':
                   setRunningStep(data.message || 'Batch run complete')
@@ -961,6 +1007,7 @@ export default function Backtest() {
                     total: prev?.total || batchCyclesPerAgent,
                     status: 'completed',
                   }))
+                  setBatchValidationProgress(null)
                   break
                 case 'regime':
                   setScanPhase('Market Pulse')
@@ -1138,6 +1185,7 @@ export default function Backtest() {
       setProgress(null)
       setScanPhase(null)
       setAgentProgress({})
+      setBatchValidationProgress(null)
     }
   }, [
     agentManifest,
@@ -1790,6 +1838,44 @@ export default function Backtest() {
                 }}
               />
             </div>
+          </div>
+        )}
+        {isRunning && activeAgentRun === 'batch' && batchValidationProgress && (
+          <div className="mb-4 rounded-md border border-amber-800/40 bg-amber-950/20 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-amber-200">
+              <span className="font-semibold">Validation</span>
+              <span>{String(batchValidationProgress.tier || '').toUpperCase() || '—'}</span>
+              {batchValidationProgress.agentType && (
+                <span className="text-amber-300">• {getAgentLabel(batchValidationProgress.agentType)}</span>
+              )}
+              {batchValidationProgress.cycle != null && batchValidationProgress.cyclesPerAgent != null && (
+                <span className="text-amber-300">
+                  • cycle {batchValidationProgress.cycle}/{batchValidationProgress.cyclesPerAgent}
+                </span>
+              )}
+              {batchValidationProgress.elapsedSec != null && (
+                <span className="text-amber-400">• {batchValidationProgress.elapsedSec}s</span>
+              )}
+            </div>
+            <div className="mt-1 text-[11px] text-amber-100/90">
+              {batchValidationProgress.message || 'Validation in progress...'}
+            </div>
+            {batchValidationProgress.current != null && batchValidationProgress.total != null && batchValidationProgress.total > 0 && (
+              <div className="mt-2">
+                <div className="flex items-center justify-between text-[10px] text-amber-300 mb-1">
+                  <span>{batchValidationProgress.label || 'Working'}</span>
+                  <span>{Math.min(batchValidationProgress.current, batchValidationProgress.total)}/{batchValidationProgress.total}</span>
+                </div>
+                <div className="h-1.5 bg-amber-950/70 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-amber-400/80 transition-all duration-200 rounded-full"
+                    style={{
+                      width: `${Math.min(100, (Math.max(0, batchValidationProgress.current) / batchValidationProgress.total) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

@@ -574,14 +574,20 @@ export function createStrategyAgent(config) {
     const adaptiveRiskGates = resolveAdaptiveRiskGates(variantTestMetrics, mergedRiskGates);
     const controlRisk = passesRiskGates(controlTestMetrics, adaptiveRiskGates);
     const variantRisk = passesRiskGates(variantTestMetrics, adaptiveRiskGates);
-    const blendFactor = variantRisk.passed ? bayes.blendFactor : 0;
+    const deltaQualified = testDelta >= minImprovement;
+    const strongEvidence = bayes.bayesFactor >= 10;
+    const fullPromotionEligible = deltaQualified && variantRisk.passed && strongEvidence;
+    const blendFactor = deltaQualified ? Math.max(0.1, bayes.blendFactor || 0.1) : 0;
 
-    const promoted = variantRisk.passed && bayes.bayesFactor >= 10 && testDelta >= minImprovement; // evidence + delta + risk gates
-    const promotionReason = promoted
-      ? `[${strategy.name}] BF=${bayes.bayesFactor} (${bayes.evidence}), +${testDelta.toFixed(2)}% ${objective} on ${testSignals.length} out-of-sample signals`
-      : `[${strategy.name}] BF=${bayes.bayesFactor} (${bayes.evidence}), delta=${testDelta.toFixed(2)}% ${objective} — ${variantRisk.summary}`;
+    // User rule: if variant delta meets threshold, incorporate it across all agents.
+    const promoted = deltaQualified;
+    const promotionReason = fullPromotionEligible
+      ? `[${strategy.name}] Full promotion: BF=${bayes.bayesFactor} (${bayes.evidence}), +${testDelta.toFixed(2)}% ${objective} on ${testSignals.length} out-of-sample signals`
+      : promoted
+        ? `[${strategy.name}] Delta gate passed (+${testDelta.toFixed(2)}% ${objective} >= ${minImprovement.toFixed(2)}%) — incorporated via ${(blendFactor * 100).toFixed(0)}% blend`
+        : `[${strategy.name}] Rejected: delta=${testDelta.toFixed(2)}% ${objective} < ${minImprovement.toFixed(2)}% threshold`;
 
-    console.log(`   [${name}] Test: control=${controlObjective.toFixed(2)}% variant=${variantObjective.toFixed(2)}% (${objective}) | BF=${bayes.bayesFactor} (${bayes.evidence}) | blend=${(blendFactor * 100).toFixed(0)}%`);
+    console.log(`   [${name}] Test: control=${controlObjective.toFixed(2)}% variant=${variantObjective.toFixed(2)}% (${objective}) | BF=${bayes.bayesFactor} (${bayes.evidence}) | blend=${(blendFactor * 100).toFixed(0)}% | deltaGate=${deltaQualified ? 'pass' : 'fail'}`);
 
     // ── 6. Persist learning run ──────────────────────────────────────────────
     try {
@@ -627,7 +633,7 @@ export function createStrategyAgent(config) {
     }
 
     // ── 7. Update weights based on Bayesian evidence ─────────────────────────
-    if (promoted) {
+    if (fullPromotionEligible) {
       // Full promotion: variant decisively beat control on out-of-sample data
       try {
         await storeOptimizedWeights(
@@ -650,8 +656,8 @@ export function createStrategyAgent(config) {
       } catch (e) {
         console.warn(`[${name}] Could not store promoted weights:`, e.message);
       }
-    } else if (blendFactor > 0 && testDelta >= minImprovement) {
-      // Bayesian incremental update: blend proportional to evidence strength
+    } else if (promoted) {
+      // Delta-qualified incorporation: blend variant into control for continual learning.
       const blendedWeights = blendWeights(controlWeights, variantWeights, blendFactor);
       try {
         await storeOptimizedWeights(
@@ -670,13 +676,12 @@ export function createStrategyAgent(config) {
           },
           { activate: true, agentType }
         );
-        console.log(`   [${name}] 📈 "${strategy.name}" blended ${(blendFactor * 100).toFixed(0)}% into control (BF=${bayes.bayesFactor}, ${bayes.evidence})`);
+        console.log(`   [${name}] 📈 "${strategy.name}" incorporated via ${(blendFactor * 100).toFixed(0)}% blend (delta=${testDelta.toFixed(2)}%, BF=${bayes.bayesFactor})`);
       } catch (e) {
         console.warn(`[${name}] Could not store blended weights:`, e.message);
       }
     } else {
-      const gateNote = variantRisk.passed ? 'control unchanged' : `blocked by ${variantRisk.summary}`;
-      console.log(`   [${name}] ⚠️  "${strategy.name}" underperformed or failed risk gates — ${gateNote}`);
+      console.log(`   [${name}] ⚠️  "${strategy.name}" rejected — delta below threshold (${testDelta.toFixed(2)}% < ${minImprovement.toFixed(2)}%)`);
     }
 
     return {

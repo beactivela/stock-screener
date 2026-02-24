@@ -8,14 +8,48 @@ import YahooFinance from 'yahoo-finance2';
 
 const yahooFinance = new YahooFinance();
 
+function parseDateOnly(value) {
+  const normalized = String(value || '').slice(0, 10);
+  const parsed = new Date(`${normalized}T12:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return { normalized, parsed };
+}
+
+function addUtcDays(dateOnly, days) {
+  const base = parseDateOnly(dateOnly);
+  if (!base) return dateOnly;
+  base.parsed.setUTCDate(base.parsed.getUTCDate() + days);
+  return base.parsed.toISOString().slice(0, 10);
+}
+
+/**
+ * Yahoo rejects chart requests where period1 and period2 are equal.
+ * Ensure an ascending window and expand degenerate windows to one day.
+ */
+function normalizeChartWindow(period1, period2) {
+  const p1 = parseDateOnly(period1);
+  const p2 = parseDateOnly(period2);
+  if (!p1 || !p2) {
+    return { period1, period2 };
+  }
+  if (p2.parsed.getTime() <= p1.parsed.getTime()) {
+    return {
+      period1: p1.normalized,
+      period2: addUtcDays(p1.normalized, 1),
+    };
+  }
+  return { period1: p1.normalized, period2: p2.normalized };
+}
+
 /**
  * OHLC bars for a ticker. from/to = YYYY-MM-DD.
  * interval: '1d' | '1wk' | '1mo'. Returns array of { t, o, h, l, c, v } (t = ms).
  */
 async function getBars(ticker, from, to, interval = '1d') {
+  const window = normalizeChartWindow(from, to);
   const result = await yahooFinance.chart(ticker, {
-    period1: from,
-    period2: to,
+    period1: window.period1,
+    period2: window.period2,
     interval: interval === '1wk' || interval === '1mo' ? interval : '1d',
   });
   const quotes = result?.quotes ?? [];
@@ -159,4 +193,4 @@ async function getEarningsDates(ticker) {
   }
 }
 
-export { getBars, getDailyBars, getFundamentals, getQuoteName, getQuoteInfo, getEarningsDates };
+export { getBars, getDailyBars, getFundamentals, getQuoteName, getQuoteInfo, getEarningsDates, normalizeChartWindow };
