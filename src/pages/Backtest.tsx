@@ -291,6 +291,29 @@ export default function Backtest() {
     }
   }
 
+  const formatBatchHttpError = (status: number, statusText: string, apiError: string | null, rawText: string | null) => {
+    if (apiError && apiError.trim()) return apiError.trim()
+    const normalized = `${status} ${statusText} ${rawText || ''}`.toLowerCase()
+
+    if (status === 404) {
+      return 'Batch API route not found in production (HTTP 404). Redeploy latest build so /api/agents/optimize/batch is available.'
+    }
+    if (
+      status === 502 ||
+      status === 503 ||
+      status === 504 ||
+      normalized.includes('function_invocation_timeout') ||
+      normalized.includes('timed out')
+    ) {
+      return 'Batch run exceeded serverless runtime on Vercel. Reduce cycles/ticker limit, or run batch from a long-running API (local/server).'
+    }
+    if (status === 429) {
+      return 'Batch API is rate limited (HTTP 429). Wait a moment and retry.'
+    }
+
+    return `HTTP ${status} ${statusText}`.trim()
+  }
+
   const parseHoldingPeriods = useCallback((input: string) => {
     const values = input
       .split(',')
@@ -794,13 +817,22 @@ export default function Backtest() {
       clearTimeout(timeoutId)
 
       if (!res.ok) {
-        const maybeError = await safeJsonParse(res)
-        throw new Error(maybeError?.error || `HTTP ${res.status} ${res.statusText}`)
+        const maybeJson = await safeJsonParse(res.clone())
+        const rawText = await res.text().catch(() => '')
+        const normalizedMessage = formatBatchHttpError(
+          res.status,
+          res.statusText,
+          maybeJson?.error || maybeJson?.message || null,
+          rawText || null
+        )
+        throw new Error(normalizedMessage)
       }
 
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
       let finalResult: any = null
+      let streamError: string | null = null
+      let sawBatchProgress = false
 
       const processSSELine = (line: string) => {
         if (!line.startsWith('data: ')) return
@@ -808,10 +840,15 @@ export default function Backtest() {
           const data = JSON.parse(line.slice(6))
 
           if (data.done) {
-            if (data.error) setError(data.error)
+            if (data.error) {
+              streamError = data.error
+              setError(data.error)
+            }
             else if (data.result) finalResult = data.result
             return
           }
+
+          if (data.phase) sawBatchProgress = true
 
           switch (data.phase) {
             case 'starting':
@@ -993,6 +1030,11 @@ export default function Backtest() {
       }
 
       if (!finalResult) {
+        if (streamError) return
+        if (sawBatchProgress) {
+          setError('Batch stream ended before completion. In production this often means serverless timeout. Reduce cycles/ticker limit, or run batch on a long-running API.')
+          return
+        }
         setError('No batch result received')
         return
       }
@@ -1037,7 +1079,13 @@ export default function Backtest() {
       if (e instanceof Error && e.name === 'AbortError') {
         setError('Batch run timed out after 60 minutes.')
       } else {
-        setError(e instanceof Error ? e.message : 'Batch run failed')
+        const msg = e instanceof Error ? e.message : 'Batch run failed'
+        const normalized = String(msg).toLowerCase()
+        if (normalized.includes('failed to fetch') || normalized.includes('networkerror') || normalized.includes('load failed')) {
+          setError('Network/API request failed before batch could start. Verify deployment health and API availability, then retry.')
+        } else {
+          setError(msg)
+        }
       }
     } finally {
       setIsRunning(false)
