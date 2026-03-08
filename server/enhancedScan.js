@@ -81,9 +81,13 @@ export function getIndustryMultiplier(industryRank, totalIndustries) {
 
 /** Get last valid SMA value from closes. */
 function lastSma(closes, period) {
-  if (!closes || closes.length < period) return null;
-  const arr = sma(closes, period);
-  return arr[arr.length - 1];
+  if (!Array.isArray(closes) || closes.length < period) return null;
+  let sum = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const v = closes[i];
+    sum += Number.isFinite(v) ? v : 0;
+  }
+  return sum / period;
 }
 
 /**
@@ -104,9 +108,9 @@ function buildEnhancedData(vcpResult, bars, fundamentals = null, industryData = 
   const sma200 = lastSma(closes, 200) ?? sma50;
 
   // Contractions: from pullbacks when bars available, else from vcpResult.pullbackPcts
+  const pullbacks = bars && bars.length > 0 ? findPullbacks(bars, 80) : [];
   let contractions;
-  if (bars && bars.length > 0) {
-    const pullbacks = findPullbacks(bars, 80);
+  if (pullbacks.length > 0) {
     contractions = pullbacks.slice(-5).map((p) => ({ range: p.pct / 100, avgVolume: p.avgVolume }));
   } else {
     const pcts = vcpResult.pullbackPcts ?? [];
@@ -119,7 +123,6 @@ function buildEnhancedData(vcpResult, bars, fundamentals = null, industryData = 
   let upDayVol = null;
   if (bars && volumes.length >= 20) {
     volSma20 = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const pullbacks = findPullbacks(bars, 80);
     const lastPullback = pullbacks[pullbacks.length - 1];
     pullbackVol = lastPullback?.avgVolume ?? volSma20;
     const upDays = bars.filter((b, i) => i > 0 && (b.c ?? 0) > (bars[i - 1].c ?? 0));

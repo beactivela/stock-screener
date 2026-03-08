@@ -15,7 +15,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
-import { getBars, getFundamentals, getQuoteInfo } from './yahoo.js';
+import { getBars, getFundamentals, getFundamentalsBatch, getHistoryMetadata, getQuoteInfo } from './yahoo.js';
 import { checkVCP, assignIBDRelativeStrengthRatings, calculateRelativeStrength } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { fetchIndustrialsFromYahoo, fetchAllIndustriesFromYahoo, fetchSectorsFromYahoo, fetchIndustryReturns, industryPageUrl } from './industrials.js';
@@ -23,15 +23,21 @@ import { fetchTradingViewIndustryReturns, buildIndustryReturnsFromTVMap, normali
 import { listScanSnapshots, runBacktest, loadScanSnapshot } from './backtest.js';
 import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS, computeRankScore, isNewBuyToday, normalizeRs, normalizeIndustryRank } from './opus45Signal.js';
 import { loadOptimizedWeights, runLearningPipeline, getLearningStatus, applyWeightChanges, resetWeightsToDefault } from './opus45Learning.js';
-import { dateRange } from './scan.js';
+import { dateRange, backfillIndustryRanks } from './scan.js';
 import { runRetroBacktest, getTickersForBacktest } from './retroBacktest.js';
 import { runBacktestHierarchy } from './backtesting/index.js';
 import { buildLearningRunFromHierarchy } from './backtesting/learningBridge.js';
 import { loadCurrentRegime, loadRegimeBacktest } from './regimeHmm.js';
 import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
 import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
-import { loadScanResults as loadScanResultsFromDb, saveScanResults as saveScanResultsToDb } from './db/scanResults.js';
-import { getBars as getBarsFromDb, saveBars as saveBarsToDb } from './db/bars.js';
+import {
+  loadScanResults as loadScanResultsFromDb,
+  saveScanResults as saveScanResultsToDb,
+  createScanRun,
+  saveScanResultsBatch,
+  updateScanResultsBatch,
+} from './db/scanResults.js';
+import { getBars as getBarsFromDb, getBarsBatch as getBarsBatchFromDb, saveBars as saveBarsToDb } from './db/bars.js';
 import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
 import { loadOpus45Signals as loadOpus45SignalsFromDb, saveOpus45Signals as saveOpus45SignalsToDb } from './db/opus45.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
@@ -62,6 +68,7 @@ import { scanTickerForSignals } from './learning/historicalSignalScanner.js';
 import { buildAgentSignalOverlay } from './agents/agentSignalOverlay.js';
 import { translateCriteriaToSearchCriteria } from './agents/criteriaTranslator.js';
 import { summarizePercentiles } from './utils/percentiles.js';
+import { getScanPersistenceStrategy } from './scanPersistence.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -111,9 +118,77 @@ function getDefaultDateRange(years = 5) {
 }
 ensureDirs();
 
+const FUNDAMENTALS_RESPONSE_CACHE_TTL_MS = 60 * 1000;
+const SCAN_DATA_CACHE_TTL_MS = 15 * 1000;
+const SCAN_RESULTS_RESPONSE_CACHE_TTL_MS = 15 * 1000;
+const OPUS_PRICE_REFRESH_TTL_MS = 60 * 60 * 1000;
+
+function createMemoryCache() {
+  return {
+    value: null,
+    at: 0,
+    promise: null,
+  };
+}
+
+const fundamentalsMemoryCache = createMemoryCache();
+const latestScanDataMemoryCache = createMemoryCache();
+const latestScanResponseCache = new Map();
+
+function isCacheFresh(entry, ttlMs) {
+  return entry.value != null && Date.now() - entry.at <= ttlMs;
+}
+
+async function readThroughMemoryCache(entry, ttlMs, loader) {
+  if (isCacheFresh(entry, ttlMs)) return entry.value;
+  if (entry.promise) return entry.promise;
+
+  entry.promise = (async () => {
+    const value = await loader();
+    entry.value = value;
+    entry.at = Date.now();
+    return value;
+  })().finally(() => {
+    entry.promise = null;
+  });
+
+  return entry.promise;
+}
+
+function invalidateScanResponseCaches() {
+  latestScanDataMemoryCache.value = null;
+  latestScanDataMemoryCache.at = 0;
+  latestScanDataMemoryCache.promise = null;
+  latestScanResponseCache.clear();
+}
+
+function invalidateFundamentalsCache() {
+  fundamentalsMemoryCache.value = null;
+  fundamentalsMemoryCache.at = 0;
+  fundamentalsMemoryCache.promise = null;
+}
+
+function isOpusCacheCurrentForScan(scanData, cachedOpus) {
+  if (!scanData?.scannedAt || !cachedOpus?.computedAt) return false;
+  return new Date(cachedOpus.computedAt).getTime() >= new Date(scanData.scannedAt).getTime();
+}
+
+function shouldRefreshCachedOpusPrices(cachedOpus) {
+  const signals = cachedOpus?.signals || [];
+  if (!signals.some((signal) => signal.entryPrice != null && signal.currentPrice == null && signal.ticker)) {
+    return false;
+  }
+  if (!cachedOpus?.computedAt) return true;
+  return Date.now() - new Date(cachedOpus.computedAt).getTime() > OPUS_PRICE_REFRESH_TTL_MS;
+}
+
 /** Wrappers that delegate to db layer (Supabase when configured, else files) */
 async function loadFundamentals() {
-  return loadFundamentalsFromDb();
+  return readThroughMemoryCache(
+    fundamentalsMemoryCache,
+    FUNDAMENTALS_RESPONSE_CACHE_TTL_MS,
+    () => loadFundamentalsFromDb(),
+  );
 }
 
 /** Load industry returns from TradingView for given fundamentals. */
@@ -138,6 +213,7 @@ function loadFundamentalsFilteredSync(raw) {
 
 // Cached fundamentals (% held by inst, qtr earnings YoY)
 app.get('/api/fundamentals', async (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   try {
     res.json(await loadFundamentals());
   } catch (e) {
@@ -201,7 +277,7 @@ app.post('/api/agents/criteria/translate', async (req, res) => {
 });
 
 // Fetch fundamentals from Yahoo for given tickers. Throttled, cached to data/fundamentals.json.
-const FUNDAMENTALS_DELAY_MS = 200;
+const FUNDAMENTALS_BATCH_CONCURRENCY = Math.max(1, Number(process.env.FUNDAMENTALS_BATCH_CONCURRENCY) || 5);
 let lastFundamentalsFetch = 0;
 app.post('/api/fundamentals/fetch', async (req, res) => {
   if (Date.now() - lastFundamentalsFetch < 5000) {
@@ -229,8 +305,8 @@ app.post('/api/fundamentals/fetch', async (req, res) => {
   const filteredForCheck = loadFundamentalsFilteredSync(fullCache);
   const CACHE_TTL_FUND = 24 * 60 * 60 * 1000; // 24h
 
+  const pendingFetches = [];
   for (let i = 0; i < tickers.length; i++) {
-    if (i > 0) await new Promise((r) => setTimeout(r, FUNDAMENTALS_DELAY_MS));
     const ticker = String(tickers[i]).toUpperCase();
     const existing = fullCache[ticker];
     const cachedEntry = filteredForCheck[ticker];
@@ -241,32 +317,30 @@ app.post('/api/fundamentals/fetch', async (req, res) => {
       send({ ticker, ...existing, cached: true, index: i + 1, total: tickers.length });
       continue;
     }
-    try {
-      // Fetch both in parallel; quote() is often more reliable for company name than quoteSummary price
-      const [f, quoteResult] = await Promise.allSettled([getFundamentals(ticker), getQuoteInfo(ticker)]);
-      const fund = f.status === 'fulfilled' ? f.value : null;
-      const quoteInfo = quoteResult.status === 'fulfilled' ? quoteResult.value : null;
-      if (!fund) throw new Error(f.reason?.message ?? 'Fundamentals fetch failed');
-      const industry = fund.industry ?? null;
-      const sector = fund.sector ?? null;
-      const companyName = (quoteInfo?.name && String(quoteInfo.name).trim()) || (fund.companyName && String(fund.companyName).trim()) || null;
-      const entry = {
-        pctHeldByInst: fund.pctHeldByInst ?? null,
-        qtrEarningsYoY: fund.qtrEarningsYoY ?? null,
-        profitMargin: fund.profitMargin ?? null,
-        operatingMargin: fund.operatingMargin ?? null,
-        industry,
-        sector,
-        ...(companyName && String(companyName).trim() ? { companyName: String(companyName).trim() } : {}),
-        fetchedAt: new Date().toISOString(),
-      };
-      fullCache[ticker] = entry;
-      send({ ticker, ...entry, index: i + 1, total: tickers.length });
-    } catch (e) {
-      send({ ticker, error: e.message, index: i + 1, total: tickers.length });
-    }
+    pendingFetches.push({ ticker, index: i });
   }
-  await saveFundamentalsToDb(fullCache);
+
+  await getFundamentalsBatch(
+    pendingFetches.map((item) => item.ticker),
+    {
+      concurrency: FUNDAMENTALS_BATCH_CONCURRENCY,
+      onResult: (result, batchIndex) => {
+        const pending = pendingFetches[batchIndex];
+        if (!pending) return;
+        if (result?.status === 'fulfilled') {
+          fullCache[pending.ticker] = result.entry;
+          send({ ticker: pending.ticker, ...result.entry, index: pending.index + 1, total: tickers.length });
+          return;
+        }
+        send({ ticker: pending.ticker, error: result?.error ?? 'Fundamentals fetch failed', index: pending.index + 1, total: tickers.length });
+      },
+    }
+  );
+
+  if (Object.keys(fullCache).length > 0) {
+    await saveFundamentalsToDb(fullCache);
+  }
+  invalidateFundamentalsCache();
   send({ done: true, total: tickers.length });
   res.end();
 });
@@ -285,27 +359,45 @@ app.get('/api/quote/:ticker', async (req, res) => {
 
 /** Load scan results (DB or file), optionally filtered by tickers. */
 async function loadScanData() {
-  const data = await loadScanResultsFromDb();
-  if (!data || !data.results?.length) return { ...data, results: data?.results ?? [], totalTickers: 0, vcpBullishCount: 0 };
-  const tickers = await loadTickersFromDb();
-  const tickerSet = new Set(tickers);
-  const results = tickerSet.size > 0 ? data.results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase())) : data.results;
-  const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
-  return { ...data, results, totalTickers: results.length, vcpBullishCount };
+  return readThroughMemoryCache(
+    latestScanDataMemoryCache,
+    SCAN_DATA_CACHE_TTL_MS,
+    async () => {
+      const data = await loadScanResultsFromDb();
+      if (!data || !data.results?.length) {
+        return { ...data, results: data?.results ?? [], totalTickers: 0, vcpBullishCount: 0 };
+      }
+      const tickers = await loadTickersFromDb();
+      const tickerSet = new Set(tickers);
+      const results = tickerSet.size > 0 ? data.results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase())) : data.results;
+      const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
+      return { ...data, results, totalTickers: results.length, vcpBullishCount };
+    },
+  );
 }
 
 // Latest scan results. Filtered to tickers in tickers.txt (source of truth).
 // When ?includeOpus=true (default), merges Opus4.5 scores into each result for unified payload.
 app.get('/api/scan-results', async (req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
   try {
-    const data = await loadScanData();
     const includeOpus = req.query.includeOpus !== 'false';
+    const cacheKey = includeOpus ? 'with-opus' : 'without-opus';
+    const cachedResponse = latestScanResponseCache.get(cacheKey);
+    if (cachedResponse && Date.now() - cachedResponse.at <= SCAN_RESULTS_RESPONSE_CACHE_TTL_MS) {
+      return res.json(cachedResponse.payload);
+    }
+
+    const data = await loadScanData();
 
     if (!data.scannedAt || !data.results?.length) {
-      return res.json({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0, opus45Signals: [], opus45Stats: null });
+      const emptyPayload = { scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0, opus45Signals: [], opus45Stats: null };
+      latestScanResponseCache.set(cacheKey, { at: Date.now(), payload: emptyPayload });
+      return res.json(emptyPayload);
     }
 
     if (!includeOpus) {
+      latestScanResponseCache.set(cacheKey, { at: Date.now(), payload: data });
       return res.json(data);
     }
 
@@ -315,8 +407,10 @@ app.get('/api/scan-results', async (req, res) => {
     let opus45Stats = null;
     const opusByTicker = new Map();
 
-    if (cached?.signals?.length >= 0) {
-      await enrichCachedSignalsWithCurrentPrice(cached.signals);
+    if (cached?.signals?.length >= 0 && isOpusCacheCurrentForScan(data, cached)) {
+      if (shouldRefreshCachedOpusPrices(cached)) {
+        await enrichCachedSignalsWithCurrentPrice(cached.signals);
+      }
       opus45Signals = cached.signals;
       opus45Stats = cached.stats ?? getSignalStats(cached.signals);
       const allScores = mapCachedSignalsToAllScores(cached.signals);
@@ -353,12 +447,25 @@ app.get('/api/scan-results', async (req, res) => {
       };
     });
 
-    res.json({
+    const payload = {
       ...data,
       results: resultsWithOpus,
       opus45Signals,
       opus45Stats,
-    });
+    };
+    latestScanResponseCache.set(cacheKey, { at: Date.now(), payload });
+    res.json(payload);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One-time backfill to populate industryRank for existing scan results.
+app.post('/api/industry-rank/backfill', async (req, res) => {
+  try {
+    const batchSize = Number(req.body?.batchSize) || 20;
+    const result = await backfillIndustryRanks({ batchSize });
+    res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -393,27 +500,23 @@ app.get('/api/rs/ibd-compare', async (req, res) => {
     const fromStr = from.toISOString().slice(0, 10);
     const toStr = to.toISOString().slice(0, 10);
 
-    const loadBarsCached = async (ticker) => {
-      let bars = null;
-      try {
-        bars = await getBarsFromDb(ticker, fromStr, toStr, interval);
-      } catch (_) {
-        // DB not configured; fall through to Yahoo fetch.
-      }
-      if (!bars) {
-        bars = await getBars(ticker, fromStr, toStr, interval);
-        try {
-          await saveBarsToDb(ticker, fromStr, toStr, bars, interval);
-        } catch (_) {
-          // Save failed; response still usable.
-        }
-      }
-      return [...(bars || [])].sort((a, b) => a.t - b.t);
-    };
+    const batchOutputs = await getBarsBatchFromDb(
+      IBD_RS_SAMPLE.map((row) => ({
+        ticker: row.ticker,
+        from: fromStr,
+        to: toStr,
+        interval,
+      })),
+      { concurrency: BARS_BATCH_CONCURRENCY }
+    );
 
     const sampleRows = [];
-    for (const row of IBD_RS_SAMPLE) {
-      const bars = await loadBarsCached(row.ticker);
+    for (let i = 0; i < IBD_RS_SAMPLE.length; i++) {
+      const row = IBD_RS_SAMPLE[i];
+      const output = batchOutputs[i];
+      const bars = output?.status === 'fulfilled'
+        ? [...(output.bars || [])].sort((a, b) => a.t - b.t)
+        : [];
       if (!bars.length) {
         sampleRows.push({ ...row, rsRaw: null, ourRating: null, error: 'no_bars' });
         continue;
@@ -499,6 +602,161 @@ function generateScanId() {
   return `scan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
+function sortScanResultsByScore(results) {
+  return [...results].sort((a, b) => {
+    const aE = a.enhancedScore ?? a.score ?? 0;
+    const bE = b.enhancedScore ?? b.score ?? 0;
+    return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
+  });
+}
+
+async function persistFinalScanResults({ scanRunId, scannedAt, from, to, results, batchSize = 20, mode = 'insert' }) {
+  const vcpBullishCount = results.filter((row) => row.vcpBullish).length;
+  const meta = {
+    scannedAt,
+    from,
+    to,
+    totalTickers: results.length,
+    vcpBullishCount,
+  };
+
+  for (let i = 0; i < results.length; i += batchSize) {
+    const chunk = results.slice(i, i + batchSize);
+    if (mode === 'update') {
+      await updateScanResultsBatch({
+        scanRunId,
+        results: chunk,
+        meta,
+      });
+    } else {
+      await saveScanResultsBatch({
+        scanRunId,
+        results: chunk,
+        meta,
+      });
+    }
+  }
+
+  return meta;
+}
+
+function queueOpus45Recompute(context = {}) {
+  console.log('Opus4.5: Computing scores after scan...');
+  void computeAndSaveOpus45Scores(context)
+    .then(() => {
+      invalidateScanResponseCaches();
+    })
+    .catch((error) => {
+      console.error('Opus4.5 compute error:', error);
+    });
+}
+
+async function executeManagedScan({ onProgress } = {}) {
+  const { runScanStream, applyRatingsAndEnhancements, resolveScanExecutionConfig } = await import('./scan.js');
+  const { from: fromStr, to: toStr } = dateRange(420);
+  const scannedAt = new Date().toISOString();
+  const fundamentals = await loadFundamentals();
+  const industryReturns = await loadIndustryReturnsForScan(fundamentals);
+  const industryRanks = rankIndustries(industryReturns);
+  const barsByTicker = new Map();
+  const snapshotsByTicker = new Map();
+  const results = [];
+  const pendingBatch = [];
+  let vcpBullishCount = 0;
+  let totalTickers = 0;
+  const persistenceStrategy = getScanPersistenceStrategy();
+  const { batchSize } = resolveScanExecutionConfig();
+
+  const { scanRunId } = await createScanRun({
+    scannedAt,
+    from: fromStr,
+    to: toStr,
+    totalTickers,
+    vcpBullishCount: 0,
+  });
+
+  const flushScanBatch = async () => {
+    if (pendingBatch.length === 0) return;
+    await saveScanResultsBatch({
+      scanRunId,
+      results: pendingBatch.splice(0, pendingBatch.length),
+      meta: {
+        scannedAt,
+        from: fromStr,
+        to: toStr,
+        totalTickers: totalTickers || results.length,
+        vcpBullishCount,
+      },
+    });
+  };
+
+  for await (const { result, index, total, bars, snapshots } of runScanStream()) {
+    results.push(result);
+    pendingBatch.push(result);
+    totalTickers = total;
+    if (result.vcpBullish) vcpBullishCount++;
+    if (bars && result.ticker) barsByTicker.set(result.ticker, bars);
+    if (snapshots && result.ticker) snapshotsByTicker.set(result.ticker, snapshots);
+    if (persistenceStrategy === 'stream_batches' && pendingBatch.length >= batchSize) {
+      await flushScanBatch();
+    }
+    if (typeof onProgress === 'function') {
+      await onProgress({ result, index, total, vcpBullishCount, bars, snapshots });
+    }
+  }
+  if (persistenceStrategy === 'stream_batches') {
+    await flushScanBatch();
+  }
+
+  const rated = applyRatingsAndEnhancements({
+    results,
+    fundamentals,
+    industryRanks,
+    barsByTicker,
+    snapshotsByTicker,
+  });
+  const sorted = sortScanResultsByScore(rated);
+  const meta = await persistFinalScanResults({
+    scanRunId,
+    scannedAt,
+    from: fromStr,
+    to: toStr,
+    results: sorted,
+    batchSize,
+    mode: persistenceStrategy === 'stream_batches' ? 'update' : 'insert',
+  });
+  invalidateScanResponseCaches();
+
+  try {
+    const { saveScanSnapshot } = await import('./backtest.js');
+    await saveScanSnapshot(sorted, new Date());
+  } catch (e) {
+    console.warn('Could not save backtest snapshot:', e.message);
+  }
+
+  queueOpus45Recompute({
+    scanData: {
+      scannedAt,
+      from: fromStr,
+      to: toStr,
+      totalTickers: meta.totalTickers,
+      vcpBullishCount: meta.vcpBullishCount,
+      results: sorted,
+    },
+    fundamentals,
+    barsByTicker,
+  });
+
+  return {
+    scannedAt,
+    from: fromStr,
+    to: toStr,
+    totalTickers: meta.totalTickers,
+    vcpBullishCount: meta.vcpBullishCount,
+    results: sorted,
+  };
+}
+
 // Get current scan progress
 app.get('/api/scan/progress', (req, res) => {
   res.json({
@@ -553,81 +811,29 @@ app.post('/api/scan', async (req, res) => {
   send({ scanId: activeScan.id, started: true, startedAt: activeScan.progress.startedAt });
 
   try {
-    const { runScanStream, applyRatingsAndEnhancements } = await import('./scan.js');
-    const { from: fromStr, to: toStr } = dateRange(320);
-    const fundamentals = await loadFundamentals();
-    const industryReturns = await loadIndustryReturnsForScan(fundamentals);
-    const industryRanks = rankIndustries(industryReturns);
-    const barsByTicker = new Map();
-    const snapshotsByTicker = new Map();
-
-    const results = [];
-    let vcpBullishCount = 0;
-
-    for await (const { result, index, total, bars, snapshots } of runScanStream()) {
-      results.push(result);
-      activeScan.results.push(result);
-      if (result.vcpBullish) vcpBullishCount++;
-      if (bars && result.ticker) barsByTicker.set(result.ticker, bars);
-      if (snapshots && result.ticker) snapshotsByTicker.set(result.ticker, snapshots);
-      
-      // Update global progress
-      activeScan.progress.index = index;
-      activeScan.progress.total = total;
-      activeScan.progress.vcpBullishCount = vcpBullishCount;
-      
-      send({ result, index, total, vcpBullishCount, scanId: activeScan.id });
-      
-      // Write partial results every 25 tickers (survives refresh)
-      if (results.length % 25 === 0 || results.length === total) {
-        const rated = applyRatingsAndEnhancements({
-          results,
-          fundamentals,
-          industryRanks,
-          barsByTicker,
-          snapshotsByTicker,
-        });
-        const sorted = [...rated].sort((a, b) => {
-          const aE = a.enhancedScore ?? a.score ?? 0;
-          const bE = b.enhancedScore ?? b.score ?? 0;
-          return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
-        });
-        await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: total, vcpBullishCount, results: sorted });
-      }
-    }
-
-    const rated = applyRatingsAndEnhancements({
-      results,
-      fundamentals,
-      industryRanks,
-      barsByTicker,
-      snapshotsByTicker,
+    const completedScan = await executeManagedScan({
+      onProgress: async ({ result, index, total, vcpBullishCount }) => {
+        activeScan.results.push(result);
+        activeScan.progress.index = index;
+        activeScan.progress.total = total;
+        activeScan.progress.vcpBullishCount = vcpBullishCount;
+        send({ result, index, total, vcpBullishCount, scanId: activeScan.id });
+      },
     });
-    const sorted = rated.sort((a, b) => {
-      const aE = a.enhancedScore ?? a.score ?? 0;
-      const bE = b.enhancedScore ?? b.score ?? 0;
-      return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
-    });
-    await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: results.length, vcpBullishCount, results: sorted });
 
-    // Save backtest snapshot for future learning (needs 30+ days to run backtest)
-    try {
-      const { saveScanSnapshot } = await import('./backtest.js');
-      await saveScanSnapshot(sorted, new Date());
-    } catch (e) {
-      console.warn('Could not save backtest snapshot:', e.message);
-    }
-    
-    // Compute and cache Opus4.5 scores immediately after scan completes
-    // This runs in background so dashboard loads instantly
-    console.log('Opus4.5: Computing scores after scan...');
-    await computeAndSaveOpus45Scores();
-    
-    // Mark scan as complete
+    activeScan.results = completedScan.results;
     activeScan.running = false;
     activeScan.progress.completedAt = new Date().toISOString();
+    activeScan.progress.index = completedScan.totalTickers;
+    activeScan.progress.total = completedScan.totalTickers;
+    activeScan.progress.vcpBullishCount = completedScan.vcpBullishCount;
 
-    send({ done: true, total: results.length, vcpBullishCount, scanId: activeScan.id });
+    send({
+      done: true,
+      total: completedScan.totalTickers,
+      vcpBullishCount: completedScan.vcpBullishCount,
+      scanId: activeScan.id,
+    });
   } catch (e) {
     console.error('Scan failed:', e);
     activeScan.running = false;
@@ -669,68 +875,21 @@ app.post('/api/cron/scan', async (req, res) => {
   // Run full scan in background (same as /api/scan but no SSE)
   (async () => {
     try {
-      const { runScanStream, applyRatingsAndEnhancements } = await import('./scan.js');
-      const to = new Date();
-      const from = new Date(to);
-      from.setDate(from.getDate() - 180);
-      const fromStr = from.toISOString().slice(0, 10);
-      const toStr = to.toISOString().slice(0, 10);
-      const results = [];
-      let vcpBullishCount = 0;
-      const fundamentals = await loadFundamentals();
-      const industryReturns = await loadIndustryReturnsForScan(fundamentals);
-      const industryRanks = rankIndustries(industryReturns);
-      const barsByTicker = new Map();
-      const snapshotsByTicker = new Map();
-      for await (const { result, index, total, bars, snapshots } of runScanStream()) {
-        results.push(result);
-        activeScan.results.push(result);
-        if (result.vcpBullish) vcpBullishCount++;
-        if (bars && result.ticker) barsByTicker.set(result.ticker, bars);
-        if (snapshots && result.ticker) snapshotsByTicker.set(result.ticker, snapshots);
-        activeScan.progress.index = index;
-        activeScan.progress.total = total;
-        activeScan.progress.vcpBullishCount = vcpBullishCount;
-        if (results.length % 25 === 0 || results.length === total) {
-          const rated = applyRatingsAndEnhancements({
-            results,
-            fundamentals,
-            industryRanks,
-            barsByTicker,
-            snapshotsByTicker,
-          });
-          const sorted = [...rated].sort((a, b) => {
-            const aE = a.enhancedScore ?? a.score ?? 0;
-            const bE = b.enhancedScore ?? b.score ?? 0;
-            return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
-          });
-          await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: total, vcpBullishCount, results: sorted });
-        }
-      }
-      const rated = applyRatingsAndEnhancements({
-        results,
-        fundamentals,
-        industryRanks,
-        barsByTicker,
-        snapshotsByTicker,
+      const completedScan = await executeManagedScan({
+        onProgress: async ({ result, index, total, vcpBullishCount }) => {
+          activeScan.results.push(result);
+          activeScan.progress.index = index;
+          activeScan.progress.total = total;
+          activeScan.progress.vcpBullishCount = vcpBullishCount;
+        },
       });
-      const sorted = rated.sort((a, b) => {
-        const aE = a.enhancedScore ?? a.score ?? 0;
-        const bE = b.enhancedScore ?? b.score ?? 0;
-        return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
-      });
-      await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: results.length, vcpBullishCount, results: sorted });
-      try {
-        const { saveScanSnapshot } = await import('./backtest.js');
-        await saveScanSnapshot(sorted, new Date());
-      } catch (e) {
-        console.warn('Could not save backtest snapshot:', e.message);
-      }
-      console.log('Opus4.5: Computing scores after cron scan...');
-      await computeAndSaveOpus45Scores();
+      activeScan.results = completedScan.results;
       activeScan.running = false;
       activeScan.progress.completedAt = new Date().toISOString();
-      console.log('Cron scan completed:', results.length, 'tickers,', vcpBullishCount, 'VCP bullish');
+      activeScan.progress.index = completedScan.totalTickers;
+      activeScan.progress.total = completedScan.totalTickers;
+      activeScan.progress.vcpBullishCount = completedScan.vcpBullishCount;
+      console.log('Cron scan completed:', completedScan.totalTickers, 'tickers,', completedScan.vcpBullishCount, 'VCP bullish');
     } catch (e) {
       console.error('Cron scan failed:', e);
       activeScan.running = false;
@@ -785,6 +944,33 @@ app.get('/api/bars/:ticker', async (req, res) => {
   // lightweight-charts requires asc by time; Yahoo can return unsorted
   const sorted = [...bars].sort((a, b) => a.t - b.t);
   res.json({ ticker, from: fromStr, to: toStr, interval, results: sorted });
+});
+
+app.get('/api/history-metadata/:ticker', async (req, res) => {
+  const { ticker } = req.params;
+  let interval = req.query.interval;
+  if (Array.isArray(interval)) interval = interval[0];
+  const intervalStr = String(interval || '').toLowerCase();
+  interval = ['1d', '1wk', '1mo'].includes(intervalStr) ? intervalStr : '1d';
+  let days = Number(req.query.days) || 180;
+  if (interval === '1wk') days = Math.max(days, 730);
+  if (interval === '1mo') days = Math.max(days, 1825);
+
+  const to = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - days);
+
+  try {
+    const metadata = await getHistoryMetadata(
+      ticker,
+      from.toISOString().slice(0, 10),
+      to.toISOString().slice(0, 10),
+      interval,
+    );
+    res.json(metadata);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 /**
@@ -955,7 +1141,7 @@ async function computeIndustrySymbolReturns(symbol, fromStr365, toStr) {
   }
 }
 
-const BARS_FETCH_DELAY_MS = 200;
+const BARS_BATCH_CONCURRENCY = Math.max(1, Number(process.env.BARS_BATCH_CONCURRENCY) || 8);
 let lastIndustryFetch = 0;
 const INDUSTRY_FETCH_COOLDOWN_MS = 5000;
 
@@ -996,54 +1182,51 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
   const needFundamentals = results.map((r) => r.ticker).filter(Boolean);
   let fundamentalsFetched = 0;
   let fundamentalsFailed = 0;
-  const FUND_DELAY_MS = 200;
-  for (let i = 0; i < needFundamentals.length; i++) {
-    await new Promise((r) => setTimeout(r, i > 0 ? FUND_DELAY_MS : 0));
-    const ticker = needFundamentals[i];
-    try {
-      const f = await getFundamentals(ticker);
-      const entry = {
-        pctHeldByInst: f.pctHeldByInst ?? null,
-        qtrEarningsYoY: f.qtrEarningsYoY ?? null,
-        profitMargin: f.profitMargin ?? null,
-        operatingMargin: f.operatingMargin ?? null,
-        industry: f.industry ?? null,
-        sector: f.sector ?? null,
-        fetchedAt: new Date().toISOString(),
-      };
-      fundamentals[ticker] = entry;
-      fundamentalsFetched++;
-      send({ phase: 'fundamentals', ticker, index: i + 1, total: needFundamentals.length });
-    } catch (e) {
+  await getFundamentalsBatch(needFundamentals, {
+    concurrency: FUNDAMENTALS_BATCH_CONCURRENCY,
+    onResult: (result, index) => {
+      const ticker = needFundamentals[index];
+      if (!ticker) return;
+      if (result?.status === 'fulfilled') {
+        fundamentals[ticker] = result.entry;
+        fundamentalsFetched++;
+        send({ phase: 'fundamentals', ticker, index: index + 1, total: needFundamentals.length });
+        return;
+      }
       fundamentalsFailed++;
-      send({ phase: 'fundamentals', ticker, error: e.message });
-    }
-  }
+      send({ phase: 'fundamentals', ticker, error: result?.error ?? 'Fundamentals fetch failed' });
+    },
+  });
   await saveFundamentalsToDb(fundamentals);
+  invalidateFundamentalsCache();
 
   const industriesCount = new Set(
     Object.values(fundamentals).filter((e) => e && e.industry).map((e) => e.industry)
   ).size;
 
-  // 2. Fetch 365-day bars for tickers missing data (used for both 3M and 1Y return)
-  const needBars = [];
-  for (const r of results) {
-    const b = await getBarsForTrend(r.ticker, fromStr365, toStr);
-    if (!b) needBars.push(r);
-  }
+  // 2. Load/fetch 365-day bars in one shared batch path (used for both 3M and 1Y return)
   let barsFetched = 0;
   let barsFailed = 0;
-  for (let i = 0; i < needBars.length; i++) {
-    await new Promise((r) => setTimeout(r, i > 0 ? BARS_FETCH_DELAY_MS : 0));
-    const r = needBars[i];
-    try {
-      const bars = await fetchBarsForTrend(r.ticker, fromStr365, toStr);
-      if (bars && bars.length >= 2) barsFetched++;
-      else barsFailed++;
-      send({ phase: 'bars', ticker: r.ticker, index: i + 1, total: needBars.length, hasBars: !!bars });
-    } catch (e) {
+  const barRequests = results.map((row) => ({
+    ticker: row.ticker,
+    from: fromStr365,
+    to: toStr,
+    interval: '1d',
+  }));
+  const barResults = await getBarsBatchFromDb(barRequests, { concurrency: BARS_BATCH_CONCURRENCY });
+  for (let i = 0; i < barResults.length; i++) {
+    const output = barResults[i];
+    const ticker = barRequests[i]?.ticker;
+    const hasBars = !!(output?.status === 'fulfilled' && output.bars?.length >= 2);
+    if (output?.status === 'fulfilled' && output.source === 'yahoo' && hasBars) {
+      barsFetched++;
+    } else if (!hasBars) {
       barsFailed++;
-      send({ phase: 'bars', ticker: r.ticker, error: e.message });
+    }
+    if (output?.status === 'rejected') {
+      send({ phase: 'bars', ticker, error: output.error });
+    } else {
+      send({ phase: 'bars', ticker, index: i + 1, total: barRequests.length, hasBars, source: output?.source ?? 'cache' });
     }
   }
 
@@ -1055,7 +1238,7 @@ app.post('/api/industry-trend/fetch', async (req, res) => {
     fundamentalsTotal: needFundamentals.length,
     barsFetched,
     barsFailed,
-    barsTotal: needBars.length,
+    barsTotal: barRequests.length,
     industriesCount,
   });
   res.end();
@@ -2117,15 +2300,18 @@ app.post('/api/backtest/hierarchy/stream', async (req, res) => {
  * Compute Opus4.5 scores for all tickers and save to cache.
  * Called after scan completes to pre-compute scores for instant dashboard load.
  */
-async function computeAndSaveOpus45Scores() {
+async function computeAndSaveOpus45Scores(context = {}) {
   try {
-    const scanData = await loadScanData();
+    const scanData = context.scanData ?? await loadScanData();
     if (!scanData.results?.length) {
       console.log('Opus4.5: No scan results to score.');
       return null;
     }
     const results = scanData.results || [];
-    const [fundamentals, weights] = await Promise.all([loadFundamentals(), loadOptimizedWeights()]);
+    const [fundamentals, weights] = await Promise.all([
+      context.fundamentals ?? loadFundamentals(),
+      context.weights ?? loadOptimizedWeights(),
+    ]);
     const industryNames = [...new Set(results.map((r) => fundamentals[r.ticker]?.industry).filter(Boolean))];
     const { returnsMap: tvMap } = await fetchTradingViewIndustryReturns();
     const industryReturns = buildIndustryReturnsFromTVMap(tvMap, industryNames);
@@ -2139,13 +2325,19 @@ async function computeAndSaveOpus45Scores() {
     const toStr = to.toISOString().slice(0, 10);
 
     const resultsToAnalyze = results;
+    const preloadedBarsByTicker = context.barsByTicker instanceof Map
+      ? Object.fromEntries(context.barsByTicker.entries())
+      : (context.barsByTicker || {});
 
     // Collect tickers that need a bar fetch. Try Opus cache (_1d.json) first, then scan cache (.json).
     const needFetch = [];
     for (const r of resultsToAnalyze) {
       try {
-        const safeTicker = r.ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-        let bars = null;
+        let bars = preloadedBarsByTicker[r.ticker] ?? null;
+        if (bars && bars.length >= 200) {
+          barsByTicker[r.ticker] = [...bars].sort((a, b) => a.t - b.t);
+          continue;
+        }
         // 1) DB cache
         bars = await getBarsFromDb(r.ticker, fromStr365, toStr, '1d');
         if (bars && bars.length >= 200) {
@@ -2157,24 +2349,27 @@ async function computeAndSaveOpus45Scores() {
       }
     }
 
-    // Fetch missing bars in batches
-    const BATCH_SIZE = 15;
-    for (let i = 0; i < needFetch.length; i += BATCH_SIZE) {
-      const chunk = needFetch.slice(i, i + BATCH_SIZE);
-      const chunkPromises = chunk.map((r) =>
-        getBars(r.ticker, fromStr365, toStr, '1d')
-          .then((fetchedBars) => {
-            if (fetchedBars && fetchedBars.length >= 200) {
-              barsByTicker[r.ticker] = [...fetchedBars].sort((a, b) => a.t - b.t);
-              saveBarsToDb(r.ticker, fromStr365, toStr, fetchedBars, '1d');
-            }
-          })
-          .catch((e) => console.error(`Fetch failed for ${r.ticker}:`, e.message))
+    // Fetch missing bars in one cache-aware batch path (DB cache -> yahoo-finance2 v3 -> batch upsert)
+    if (needFetch.length > 0) {
+      const batchOutputs = await getBarsBatchFromDb(
+        needFetch.map((row) => ({
+          ticker: row.ticker,
+          from: fromStr365,
+          to: toStr,
+          interval: '1d',
+        })),
+        { concurrency: BARS_BATCH_CONCURRENCY }
       );
-      await Promise.all(chunkPromises);
-      if (needFetch.length > BATCH_SIZE && i > 0 && i % 60 === 0) {
-        console.log(`Opus4.5: Fetched bars for ${Math.min(i + BATCH_SIZE, needFetch.length)}/${needFetch.length} tickers...`);
+      for (let i = 0; i < batchOutputs.length; i++) {
+        const output = batchOutputs[i];
+        const ticker = needFetch[i]?.ticker;
+        if (output?.status === 'fulfilled' && output.bars?.length >= 200) {
+          barsByTicker[ticker] = [...output.bars].sort((a, b) => a.t - b.t);
+        } else if (output?.status === 'rejected') {
+          console.error(`Fetch failed for ${ticker}:`, output.error);
+        }
       }
+      console.log(`Opus4.5: Resolved bars for ${needFetch.length} tickers via shared batch fetch.`);
     }
 
     // Generate Opus4.5 signals and scores for every ticker
@@ -2321,10 +2516,22 @@ app.get('/api/opus45/debug', async (req, res) => {
     const fromStr365 = from365.toISOString().slice(0, 10);
     const toStr = to.toISOString().slice(0, 10);
     
+    const topRows = results.slice(0, 10);
     const debugResults = [];
+    const debugBarsResults = await getBarsBatchFromDb(
+      topRows.map((row) => ({
+        ticker: row.ticker,
+        from: fromStr365,
+        to: toStr,
+        interval: '1d',
+      })),
+      { concurrency: BARS_BATCH_CONCURRENCY }
+    );
     
     // Analyze top 10 stocks
-    for (const r of results.slice(0, 10)) {
+    for (let i = 0; i < topRows.length; i++) {
+      const r = topRows[i];
+      const batchOutput = debugBarsResults[i];
       const debug = {
         ticker: r.ticker,
         enhancedScore: r.enhancedScore,
@@ -2338,40 +2545,11 @@ app.get('/api/opus45/debug', async (req, res) => {
         barsLoaded: 0,
         signalResult: null
       };
-      
-      // Try to load bars from cache
-      const safeTicker = r.ticker.replace(/[^A-Za-z0-9.-]/g, '_');
-      const filePath = path.join(BARS_CACHE_DIR, `${safeTicker}_1d.json`);
-      
-      let bars = null;
-      if (fs.existsSync(filePath)) {
-        try {
-          const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-          bars = raw.results || [];
-          debug.barsLoaded = bars.length;
-          debug.barsCacheFrom = raw.from;
-          debug.barsCacheTo = raw.to;
-        } catch (e) {
-          debug.signalResult = { error: e.message };
-        }
-      }
-      
-      // Fetch fresh bars if cache is insufficient
-      if (!bars || bars.length < 200) {
-        try {
-          debug.fetchingBars = true;
-          bars = await getBars(r.ticker, fromStr365, toStr, '1d');
-          if (bars && bars.length > 0) {
-            debug.barsLoaded = bars.length;
-            debug.barsFetched = true;
-            // Cache for future
-            if (bars.length >= 200) {
-              saveBarsToDb(r.ticker, fromStr365, toStr, bars, '1d');
-            }
-          }
-        } catch (e) {
-          debug.fetchError = e.message;
-        }
+      const bars = batchOutput?.status === 'fulfilled' ? (batchOutput.bars || []) : null;
+      debug.barsLoaded = bars?.length || 0;
+      debug.barsFetched = batchOutput?.source === 'yahoo';
+      if (batchOutput?.status === 'rejected') {
+        debug.fetchError = batchOutput.error;
       }
       
       if (bars && bars.length >= 200) {
@@ -4320,6 +4498,7 @@ function stopHeartbeatCron() {
 
 app.get('/api/heartbeat', (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=30');
     res.json({
       enabled: heartbeatState.enabled,
       status: heartbeatState.running ? 'running' : 'idle',
@@ -4356,6 +4535,7 @@ app.post('/api/heartbeat/stop', (req, res) => {
 // Get full agent hierarchy manifest (Marcus + all subagents)
 app.get('/api/agents/manifest', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
     const { getMarcusManifest } = await import('./agents/marcus.js');
     res.json(getMarcusManifest());
   } catch (e) {

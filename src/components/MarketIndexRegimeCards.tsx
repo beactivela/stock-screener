@@ -4,6 +4,7 @@ import { ColorType, createChart } from 'lightweight-charts'
 import { API_BASE } from '../utils/api'
 import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
+import { BREADTH_TREND_SEGMENTS, getBreadthTrendRatingFromRecentMa50 } from '../utils/breadthTrendRating.js'
 
 interface Bar {
   t: number
@@ -34,7 +35,7 @@ const CHART_OPTIONS = {
 function getRegimeTone(regime: MarketRegimeLabel): string {
   if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
   if (regime === 'Neutral') return 'text-yellow-300 bg-yellow-500/15 border-yellow-700/50'
-  return 'text-red-300 bg-red-500/15 border-red-700/50' // Mild Bearish / Bearish
+  return 'text-red-100 bg-red-500/30 border-red-400/70' // Mild Bearish / Bearish: brighter for dark cards
 }
 
 function formatChange(value: number): string {
@@ -100,6 +101,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     ma20Last,
     ma50Last,
     regime,
+    breadthRating,
   } = useMemo(() => {
     if (bars.length === 0) {
       return {
@@ -114,6 +116,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
         ma20Last: null as number | null,
         ma50Last: null as number | null,
         regime: 'Risk OFF' as MarketRegimeLabel,
+        breadthRating: getBreadthTrendRatingFromRecentMa50([]),
       }
     }
 
@@ -135,6 +138,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       recentMa20: sma20.slice(-12),
       recentMa50: sma50.slice(-12),
     })
+    const breadthRating = getBreadthTrendRatingFromRecentMa50(sma50.slice(-10))
 
     return {
       candleData: bars.map((b) => ({ time: toTime(b.t), open: b.o, high: b.h, low: b.l, close: b.c })),
@@ -148,6 +152,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       ma20Last,
       ma50Last,
       regime,
+      breadthRating,
     }
   }, [bars])
 
@@ -223,6 +228,32 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
             {formatChange(change)} ({formatChange(changePct)}%)
           </div>
         )}
+      </div>
+
+      <div className="px-3 py-2 border-b border-slate-800">
+        <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
+          <span className="text-slate-400">Breadth trend rating</span>
+          <span className="font-medium text-slate-200">
+            {breadthRating.label} ({breadthRating.score}/7)
+          </span>
+        </div>
+        <div
+          className="grid grid-cols-7 overflow-hidden rounded-sm border-2 border-slate-500"
+          aria-label={`Breadth trend rating ${breadthRating.score} of 7 (${breadthRating.label})`}
+        >
+          {BREADTH_TREND_SEGMENTS.map((segment) => {
+            const isActive = segment.score === breadthRating.score
+            return (
+              <div
+                key={segment.score}
+                className={`${segment.className} ${
+                  isActive ? 'border-2 border-slate-100 opacity-100' : 'border border-slate-900/40 opacity-40'
+                } min-h-[24px]`}
+                title={`${segment.score}/7 ${segment.label}`}
+              />
+            )
+          })}
+        </div>
       </div>
 
       {loading ? (

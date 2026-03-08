@@ -113,6 +113,100 @@ export function vcpContraction(bars: Bar[], maxPullbacks = 6): (number | null)[]
   return out
 }
 
+export interface VcpStage2Options {
+  relativeStrengthRating?: number | null
+  rsThreshold?: number
+  maRiseLookback?: number
+  pullbackLookback?: number
+}
+
+export interface ChartLinePoint {
+  time: number
+  value?: number
+}
+
+export interface BuildLineSeriesOptions {
+  fallbackValue?: number
+}
+
+export function buildLineSeriesWithTimeline(
+  bars: Bar[],
+  values: Array<number | null | undefined>,
+  options: BuildLineSeriesOptions = {}
+): ChartLinePoint[] {
+  const { fallbackValue } = options
+  return bars.map((bar, index) => {
+    const value = values[index]
+    const time = Math.floor(bar.t / 1000)
+    if (value == null || Number.isNaN(value)) {
+      return fallbackValue == null ? { time } : { time, value: fallbackValue }
+    }
+    return { time, value }
+  })
+}
+
+function hasHigherHighsAndHigherLows(pullbacks: Pullback[]): boolean {
+  if (pullbacks.length < 2) return false
+  const prev = pullbacks[pullbacks.length - 2]
+  const last = pullbacks[pullbacks.length - 1]
+  return last.highPrice > prev.highPrice && last.lowPrice > prev.lowPrice
+}
+
+/**
+ * Strict Stage 2 status for each bar:
+ * - Price above rising 50 MA
+ * - Price above rising 150 MA
+ * - Recent swing structure shows a higher high and higher low
+ * - Current RS rating clears the configured threshold
+ *
+ * Returns a series aligned to bars:
+ * - `1` = strict Stage 2 pass
+ * - `0` = evaluated but failed
+ * - `null` = warmup period before 150 MA/rising checks are available
+ */
+export function vcpStage2Indicator(
+  bars: Bar[],
+  options: VcpStage2Options = {}
+): (number | null)[] {
+  const {
+    relativeStrengthRating = null,
+    rsThreshold = 80,
+    maRiseLookback = 20,
+    pullbackLookback = 120,
+  } = options
+
+  if (!Array.isArray(bars) || bars.length === 0) return []
+
+  const closes = bars.map((bar) => Number(bar.c) || 0)
+  const sma50 = sma(closes, 50)
+  const sma150 = sma(closes, 150)
+  const minReadyIndex = 149 + Math.max(1, maRiseLookback)
+  const hasStrongRs =
+    typeof relativeStrengthRating === 'number' &&
+    Number.isFinite(relativeStrengthRating) &&
+    relativeStrengthRating >= rsThreshold
+
+  return bars.map((bar, index) => {
+    if (index < minReadyIndex) return null
+
+    const close = Number(bar.c) || 0
+    const ma50 = sma50[index]
+    const ma150 = sma150[index]
+    const prior50 = index - maRiseLookback >= 0 ? sma50[index - maRiseLookback] : null
+    const prior150 = index - maRiseLookback >= 0 ? sma150[index - maRiseLookback] : null
+
+    if (ma50 == null || ma150 == null || prior50 == null || prior150 == null) return null
+
+    const aboveRising50 = close > ma50 && ma50 > prior50
+    const aboveRising150 = close > ma150 && ma150 > prior150
+    const structureOk = hasHigherHighsAndHigherLows(
+      findPullbacks(bars.slice(0, index + 1), pullbackLookback)
+    )
+
+    return aboveRising50 && aboveRising150 && structureOk && hasStrongRs ? 1 : 0
+  })
+}
+
 /**
  * Ideal pullback: 5-10 day pullback, vol high at last high, vol push from higher low.
  * Returns bar times (ms) for yellow buy markers, using same bars as chart.

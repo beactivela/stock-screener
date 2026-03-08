@@ -7,6 +7,53 @@
 import YahooFinance from 'yahoo-finance2';
 
 const yahooFinance = new YahooFinance();
+const DEFAULT_YAHOO_BATCH_CONCURRENCY = Math.max(1, Number(process.env.YAHOO_BATCH_CONCURRENCY) || 8);
+
+function normalizeChartInterval(interval) {
+  return interval === '1wk' || interval === '1mo' ? interval : '1d';
+}
+
+function toMilliseconds(value) {
+  if (value == null) return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+}
+
+async function runWithConcurrency(items, worker, opts = {}) {
+  const safeConcurrency = Math.max(1, Number(opts.concurrency) || DEFAULT_YAHOO_BATCH_CONCURRENCY);
+  const inFlight = new Set();
+  let cursor = 0;
+  const results = new Array(items.length);
+
+  const launchNext = () => {
+    while (cursor < items.length && inFlight.size < safeConcurrency) {
+      const item = items[cursor];
+      const itemIndex = cursor;
+      cursor += 1;
+
+      let taskPromise;
+      taskPromise = (async () => {
+        const result = await worker(item, itemIndex);
+        results[itemIndex] = result;
+        if (typeof opts.onResult === 'function') {
+          await opts.onResult(result, itemIndex);
+        }
+      })().finally(() => {
+        inFlight.delete(taskPromise);
+      });
+
+      inFlight.add(taskPromise);
+    }
+  };
+
+  launchNext();
+  while (inFlight.size > 0) {
+    await Promise.race(inFlight);
+    launchNext();
+  }
+  return results;
+}
 
 function parseDateOnly(value) {
   const normalized = String(value || '').slice(0, 10);
@@ -41,17 +88,63 @@ function normalizeChartWindow(period1, period2) {
   return { period1: p1.normalized, period2: p2.normalized };
 }
 
+async function fetchChart(ticker, from, to, interval = '1d') {
+  const window = normalizeChartWindow(from, to);
+  const normalizedInterval = normalizeChartInterval(interval);
+  const result = await yahooFinance.chart(ticker, {
+    period1: window.period1,
+    period2: window.period2,
+    interval: normalizedInterval,
+  });
+  return { result, window, interval: normalizedInterval };
+}
+
+function normalizeHistoryMetadata(ticker, window, interval, meta = {}) {
+  const symbol = String(meta?.symbol || ticker || '').trim().toUpperCase();
+  return {
+    ticker: symbol,
+    symbol,
+    period1: window.period1,
+    period2: window.period2,
+    interval,
+    exchangeName: meta?.exchangeName ?? null,
+    fullExchangeName: meta?.fullExchangeName ?? null,
+    instrumentType: meta?.instrumentType ?? null,
+    currency: meta?.currency ?? null,
+    timezone: meta?.exchangeTimezoneName ?? null,
+    timezoneShortName: meta?.exchangeTimezoneShortName ?? null,
+    gmtoffset: Number.isFinite(meta?.gmtoffset) ? meta.gmtoffset : null,
+    dataGranularity: meta?.dataGranularity ?? interval,
+    validRanges: Array.isArray(meta?.validRanges) ? meta.validRanges : [],
+    firstTradeDateMs: toMilliseconds(meta?.firstTradeDate),
+    regularMarketTimeMs: toMilliseconds(meta?.regularMarketTime),
+  };
+}
+
+function buildFundamentalsEntry(ticker, fund, quoteInfo = null, fetchedAt = new Date().toISOString()) {
+  const companyName = (quoteInfo?.name && String(quoteInfo.name).trim())
+    || (fund?.companyName && String(fund.companyName).trim())
+    || null;
+
+  return {
+    ticker: String(ticker || '').trim().toUpperCase(),
+    pctHeldByInst: fund?.pctHeldByInst ?? null,
+    qtrEarningsYoY: fund?.qtrEarningsYoY ?? null,
+    profitMargin: fund?.profitMargin ?? null,
+    operatingMargin: fund?.operatingMargin ?? null,
+    industry: fund?.industry ?? null,
+    sector: fund?.sector ?? null,
+    ...(companyName ? { companyName } : {}),
+    fetchedAt,
+  };
+}
+
 /**
  * OHLC bars for a ticker. from/to = YYYY-MM-DD.
  * interval: '1d' | '1wk' | '1mo'. Returns array of { t, o, h, l, c, v } (t = ms).
  */
 async function getBars(ticker, from, to, interval = '1d') {
-  const window = normalizeChartWindow(from, to);
-  const result = await yahooFinance.chart(ticker, {
-    period1: window.period1,
-    period2: window.period2,
-    interval: interval === '1wk' || interval === '1mo' ? interval : '1d',
-  });
+  const { result } = await fetchChart(ticker, from, to, interval);
   const quotes = result?.quotes ?? [];
   return quotes
     .filter((q) => q.open != null && q.close != null)
@@ -66,6 +159,49 @@ async function getBars(ticker, from, to, interval = '1d') {
 }
 
 const getDailyBars = (ticker, from, to) => getBars(ticker, from, to, '1d');
+
+async function getBarsBatch(requests, opts = {}) {
+  const normalizedRequests = Array.isArray(requests) ? requests : [];
+  return runWithConcurrency(normalizedRequests, async (request) => {
+    const ticker = String(request?.ticker || '').trim().toUpperCase();
+    try {
+      const bars = await getBars(ticker, request?.from, request?.to, request?.interval ?? '1d');
+      return {
+        status: 'fulfilled',
+        ticker,
+        from: request?.from,
+        to: request?.to,
+        interval: normalizeChartInterval(request?.interval ?? '1d'),
+        bars,
+      };
+    } catch (error) {
+      return {
+        status: 'rejected',
+        ticker,
+        from: request?.from,
+        to: request?.to,
+        interval: normalizeChartInterval(request?.interval ?? '1d'),
+        error: error?.message || String(error),
+      };
+    }
+  }, opts);
+}
+
+async function getHistoryMetadata(ticker, from, to, interval = '1d') {
+  const normalizedTicker = String(ticker || '').trim().toUpperCase();
+  try {
+    const { result, window, interval: normalizedInterval } = await fetchChart(ticker, from, to, interval);
+    if (!result?.meta) {
+      throw new Error(`No chart metadata returned for ${normalizedTicker}`);
+    }
+    return normalizeHistoryMetadata(ticker, window, normalizedInterval, result.meta);
+  } catch (error) {
+    if (error?.message?.startsWith('No chart metadata returned for')) {
+      throw error;
+    }
+    throw new Error(`Failed to fetch history metadata for ${normalizedTicker}: ${error.message}`);
+  }
+}
 
 /**
  * Fundamentals: % held by institutions, quarterly earnings YoY, profit margin, operating margin.
@@ -123,6 +259,36 @@ async function getFundamentals(ticker) {
   const companyName = (price?.displayName && String(price.displayName).trim()) || (price?.shortName && String(price.shortName).trim()) || (price?.longName && String(price.longName).trim()) || null;
 
   return { ticker, pctHeldByInst, qtrEarningsYoY, profitMargin, operatingMargin, industry, sector, companyName };
+}
+
+async function getFundamentalsEntry(ticker) {
+  const [fundamentalsResult, quoteResult] = await Promise.allSettled([getFundamentals(ticker), getQuoteInfo(ticker)]);
+  if (fundamentalsResult.status !== 'fulfilled') {
+    throw fundamentalsResult.reason;
+  }
+  const quoteInfo = quoteResult.status === 'fulfilled' ? quoteResult.value : null;
+  return buildFundamentalsEntry(ticker, fundamentalsResult.value, quoteInfo);
+}
+
+async function getFundamentalsBatch(tickers, opts = {}) {
+  const normalizedTickers = Array.isArray(tickers) ? tickers : [];
+  return runWithConcurrency(normalizedTickers, async (tickerInput) => {
+    const ticker = String(tickerInput || '').trim().toUpperCase();
+    try {
+      const entry = await getFundamentalsEntry(ticker);
+      return {
+        status: 'fulfilled',
+        ticker,
+        entry,
+      };
+    } catch (error) {
+      return {
+        status: 'rejected',
+        ticker,
+        error: error?.message || String(error),
+      };
+    }
+  }, opts);
 }
 
 /** Company name for display. Prefer displayName (e.g. "The Home Depot"), else shortName, else longName. */
@@ -193,4 +359,13 @@ async function getEarningsDates(ticker) {
   }
 }
 
-export { getBars, getDailyBars, getFundamentals, getQuoteName, getQuoteInfo, getEarningsDates, normalizeChartWindow };
+const __testing = {
+  yahooFinance,
+  normalizeChartInterval,
+  normalizeHistoryMetadata,
+  toMilliseconds,
+  buildFundamentalsEntry,
+  runWithConcurrency,
+};
+
+export { getBars, getBarsBatch, getDailyBars, getFundamentals, getFundamentalsBatch, getFundamentalsEntry, getHistoryMetadata, getQuoteName, getQuoteInfo, getEarningsDates, normalizeChartWindow, __testing };

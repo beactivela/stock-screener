@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getNextSortState } from './dashboardSort.js'
+import { getNextSortState, getDefaultSortForFilter } from './dashboardSort.js'
 
 test('toggles direction when clicking the active column', () => {
   assert.deepEqual(
@@ -24,5 +24,19 @@ test('uses descending as default when switching to any non-ticker column', () =>
   assert.deepEqual(
     getNextSortState({ sortColumn: 'ticker', sortDir: 'asc' }, 'pl'),
     { sortColumn: 'pl', sortDir: 'desc' },
+  )
+})
+
+test('uses Opus descending as default sort for All filter', () => {
+  assert.deepEqual(
+    getDefaultSortForFilter('all'),
+    { sortColumn: 'opus45', sortDir: 'desc' },
+  )
+})
+
+test('uses score descending as fallback for non-All filters', () => {
+  assert.deepEqual(
+    getDefaultSortForFilter('breakout_tracker'),
+    { sortColumn: 'score', sortDir: 'desc' },
   )
 })

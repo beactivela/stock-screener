@@ -71,7 +71,7 @@ function toUnixTime(time: Time | undefined): number | null {
 function getRegimeTone(regime: MarketRegimeLabel): string {
   if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
   if (regime === 'Neutral') return 'text-yellow-300 bg-yellow-500/15 border-yellow-700/50'
-  return 'text-red-300 bg-red-500/15 border-red-700/50' // Mild Bearish / Bearish
+  return 'text-red-100 bg-red-500/30 border-red-400/70' // Mild Bearish / Bearish: brighter for dark cards
 }
 
 function formatChange(value: number): string {

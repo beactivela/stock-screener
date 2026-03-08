@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useParams, useLocation, Link, useNavigate } from 'react-router-dom'
 import { createChart, ColorType } from 'lightweight-charts'
-import { sma, rsi, findPullbacks, vcpContraction, findIdealPullbackBarTimes, findVolumePriceBreakouts, calculateRelativeStrength } from '../utils/chartIndicators'
+import { sma, rsi, findPullbacks, vcpContraction, vcpStage2Indicator, buildLineSeriesWithTimeline, findIdealPullbackBarTimes, findVolumePriceBreakouts, calculateRelativeStrength } from '../utils/chartIndicators'
 import { Opus45Marker } from '../utils/opus45Indicators'
 import { AGENT_CHART_LIST, AGENT_CHART_ORDER, AgentSignalHistoryResponse, AgentType, toAgentChartMarkers } from '../utils/agentSignalMarkers'
 import { API_BASE } from '../utils/api'
@@ -48,6 +48,7 @@ interface VCPInfo {
   idealPullbackSetup?: boolean
   idealPullbackBarTimes?: number[]
   barCount?: number
+  relativeStrength?: number | null
   score?: number
   enhancedScore?: number
   recommendation?: 'buy' | 'hold' | 'avoid'
@@ -166,9 +167,11 @@ export default function StockDetail() {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const rsiChartRef = useRef<HTMLDivElement>(null)
   const vcpChartRef = useRef<HTMLDivElement>(null)
+  const stage2ChartRef = useRef<HTMLDivElement>(null)
   const chartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const rsiChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const vcpChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
+  const stage2ChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const lastHoverTimeRef = useRef<ChartTime | null>(null)
 
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; time: ChartTime | null }>({
@@ -501,8 +504,8 @@ export default function StockDetail() {
     window.dispatchEvent(new CustomEvent('watchlist:changed'))
   }
 
-  const { candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes } = useMemo(() => {
-    const empty = { candleData: [], ma10Data: [], ma20Data: [], ma50Data: [], ma150Data: [], volumeData: [], ma20VolumeData: [], rsiData: [], vcpContractionData: [], rsIndustryData: [], pullbacks: [], idealPullbackBarTimes: [], volumePriceBreakoutTimes: [] }
+  const { candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, vcpStage2Data, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes } = useMemo(() => {
+    const empty = { candleData: [], ma10Data: [], ma20Data: [], ma50Data: [], ma150Data: [], volumeData: [], ma20VolumeData: [], rsiData: [], vcpContractionData: [], vcpStage2Data: [], rsIndustryData: [], pullbacks: [], idealPullbackBarTimes: [], volumePriceBreakoutTimes: [] }
     if (bars.length === 0) return empty
     try {
       // lightweight-charts requires data asc by time; Yahoo can return unsorted bars
@@ -516,6 +519,12 @@ export default function StockDetail() {
       const sma20Vol = sma(volumes, 20)
       const rsi14 = rsi(closes, 14)
       const vcpContr = vcpContraction(sorted, 6)
+      const stage2RsRating =
+        vcp?.relativeStrength ??
+        scanResult?.relativeStrength ??
+        scanFallback?.relativeStrength ??
+        (ticker ? scanRsByTicker[ticker.toUpperCase()] ?? null : null)
+      const stage2Series = vcpStage2Indicator(sorted, { relativeStrengthRating: stage2RsRating })
       
       // RS vs industry: same formula (stock/benchmark normalized to 1000); only when we have industry bars
       const rsIndustryValues = industryBars.length > 0 ? calculateRelativeStrength(sorted, industryBars) : []
@@ -552,6 +561,7 @@ export default function StockDetail() {
           const pad = sorted.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
           return [...pad, ...filtered]
         })(),
+        vcpStage2Data: buildLineSeriesWithTimeline(sorted, stage2Series, { fallbackValue: 0 }),
         rsIndustryData: (() => {
           const filtered = sorted.map((b, i) => ({ time: toTime(b.t), value: rsIndustryValues[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
           if (filtered.length === 0) return []
@@ -581,7 +591,7 @@ export default function StockDetail() {
       console.error('Chart indicators error:', e)
       return empty
     }
-  }, [bars, industryBars])
+  }, [bars, industryBars, scanFallback, scanResult, scanRsByTicker, ticker, vcp])
 
   const formatChartTimeToDate = (time: ChartTime | null) => {
     if (!time) return null
@@ -619,7 +629,7 @@ export default function StockDetail() {
   }
 
   useEffect(() => {
-    if (!chartWrapperRef.current || !chartContainerRef.current || !rsiChartRef.current || !vcpChartRef.current || bars.length === 0) return
+    if (!chartWrapperRef.current || !chartContainerRef.current || !rsiChartRef.current || !vcpChartRef.current || !stage2ChartRef.current || bars.length === 0) return
     if (chartInstance.current) {
       chartInstance.current.remove()
       chartInstance.current = null
@@ -631,6 +641,10 @@ export default function StockDetail() {
     if (vcpChartInstance.current) {
       vcpChartInstance.current.remove()
       vcpChartInstance.current = null
+    }
+    if (stage2ChartInstance.current) {
+      stage2ChartInstance.current.remove()
+      stage2ChartInstance.current = null
     }
     const w = chartWrapperRef.current?.clientWidth ?? 0
     if (w <= 0) return
@@ -647,18 +661,34 @@ export default function StockDetail() {
       ...CHART_OPTIONS,
       width: w,
       height: 140,
-      rightPriceScale: { borderColor: '#334155', minimumWidth: 60, scaleMargins: { top: 0.1, bottom: 0.1 } },
+      leftPriceScale: { visible: true, borderColor: '#334155', minimumWidth: 60, scaleMargins: { top: 0.1, bottom: 0.1 } },
+      rightPriceScale: { visible: false },
     })
     const vcpChart = createChart(vcpChartRef.current, {
       ...CHART_OPTIONS,
       width: w,
       height: 100,
-      rightPriceScale: {
+      leftPriceScale: {
+        visible: true,
         borderColor: '#334155',
         minimumWidth: 60,
         scaleMargins: { top: 0.1, bottom: 0.1 },
         autoScale: true,
       },
+      rightPriceScale: { visible: false },
+    })
+    const stage2Chart = createChart(stage2ChartRef.current, {
+      ...CHART_OPTIONS,
+      width: w,
+      height: 90,
+      leftPriceScale: {
+        visible: true,
+        borderColor: '#334155',
+        minimumWidth: 60,
+        scaleMargins: { top: 0.15, bottom: 0.15 },
+        autoScale: true,
+      },
+      rightPriceScale: { visible: false },
     })
     const sortByTime = <T extends { time: string | number }>(arr: T[]) =>
       [...arr].sort((a, b) => (a.time as number) - (b.time as number))
@@ -771,7 +801,7 @@ export default function StockDetail() {
       rsIndustryMainSeries.setData(dedupeByTime(rsIndustryData))
     }
 
-    const rsiSeries = rsiChart.addLineSeries({ color: '#06b6d4', lineWidth: 2 })
+    const rsiSeries = rsiChart.addLineSeries({ color: '#06b6d4', lineWidth: 2, priceScaleId: 'left' })
     rsiSeries.setData(dedupeByTime(rsiData))
 
     // Add RSI reference lines at 70 (overbought) and 30 (oversold)
@@ -792,8 +822,32 @@ export default function StockDetail() {
       title: 'Oversold' 
     })
 
-    const vcpSeries = vcpChart.addLineSeries({ color: '#a855f7', lineWidth: 2 })
+    const vcpSeries = vcpChart.addLineSeries({ color: '#a855f7', lineWidth: 2, priceScaleId: 'left' })
     vcpSeries.setData(dedupeByTime(vcpContractionData))
+    const stage2Series = stage2Chart.addLineSeries({
+      color: '#22c55e',
+      lineWidth: 2,
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceScaleId: 'left',
+    })
+    stage2Series.setData(dedupeByTime(vcpStage2Data) as any)
+    stage2Series.createPriceLine({
+      price: 1,
+      color: '#16a34a',
+      lineWidth: 1,
+      lineStyle: 1,
+      axisLabelVisible: true,
+      title: 'Pass',
+    })
+    stage2Series.createPriceLine({
+      price: 0,
+      color: '#475569',
+      lineWidth: 1,
+      lineStyle: 1,
+      axisLabelVisible: true,
+      title: 'Fail',
+    })
 
     // Sync crosshair across all panes: when hovering any chart, show vertical line on all
     const findValAtTime = (data: { time: string | number; value?: number; close?: number }[], time: string | number | undefined) => {
@@ -814,6 +868,7 @@ export default function StockDetail() {
         mainChart.setCrosshairPosition(mainPriceAtTime(time), timeVal, candle)
         rsiChart.setCrosshairPosition(findValAtTime(rsiData, time), timeVal, rsiSeries)
         vcpChart.setCrosshairPosition(findValAtTime(vcpContractionData, time), timeVal, vcpSeries)
+        stage2Chart.setCrosshairPosition(findValAtTime(vcpStage2Data, time), timeVal, stage2Series)
       } finally {
         crosshairSyncing = false
       }
@@ -823,6 +878,7 @@ export default function StockDetail() {
       mainChart.clearCrosshairPosition()
       rsiChart.clearCrosshairPosition()
       vcpChart.clearCrosshairPosition()
+      stage2Chart.clearCrosshairPosition()
     }
     mainChart.subscribeCrosshairMove((param) => {
       if (param.time != null) {
@@ -845,6 +901,13 @@ export default function StockDetail() {
       }
       else clearCrosshair()
     })
+    stage2Chart.subscribeCrosshairMove((param) => {
+      if (param.time != null) {
+        lastHoverTimeRef.current = param.time as ChartTime
+        syncCrosshair(param.time as string | number)
+      }
+      else clearCrosshair()
+    })
 
     // Sync by logical range so right margin is preserved (time range strips it)
     let syncing = false
@@ -853,12 +916,14 @@ export default function StockDetail() {
       syncing = true
       rsiChart.timeScale().setVisibleLogicalRange(range)
       vcpChart.timeScale().setVisibleLogicalRange(range)
+      stage2Chart.timeScale().setVisibleLogicalRange(range)
       mainChart.timeScale().setVisibleLogicalRange(range)
       syncing = false
     }
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
     rsiChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
     vcpChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
+    stage2Chart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
 
     // Fit content first, then add right margin (50px gap)
     mainChart.timeScale().fitContent()
@@ -868,15 +933,18 @@ export default function StockDetail() {
     mainChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
     rsiChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
     vcpChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
+    stage2Chart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
     const logicalRange = mainChart.timeScale().getVisibleLogicalRange()
     if (logicalRange) {
       rsiChart.timeScale().setVisibleLogicalRange(logicalRange)
       vcpChart.timeScale().setVisibleLogicalRange(logicalRange)
+      stage2Chart.timeScale().setVisibleLogicalRange(logicalRange)
     }
 
     chartInstance.current = mainChart
     rsiChartInstance.current = rsiChart
     vcpChartInstance.current = vcpChart
+    stage2ChartInstance.current = stage2Chart
 
     const resize = () => {
       const w = chartWrapperRef.current?.clientWidth ?? 0
@@ -884,6 +952,7 @@ export default function StockDetail() {
         mainChart.applyOptions({ width: w })
         rsiChart.applyOptions({ width: w })
         vcpChart.applyOptions({ width: w })
+        stage2Chart.applyOptions({ width: w })
       }
     }
     const ro = new ResizeObserver(resize)
@@ -895,11 +964,13 @@ export default function StockDetail() {
       mainChart.remove()
       rsiChart.remove()
       vcpChart.remove()
+      stage2Chart.remove()
       chartInstance.current = null
       rsiChartInstance.current = null
       vcpChartInstance.current = null
+      stage2ChartInstance.current = null
     }
-  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry])
+  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, vcpStage2Data, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry])
 
   // Adjust visible range when timeframe changes (zoom in/out while keeping all 12 months of data loaded)
   useEffect(() => {
@@ -921,6 +992,7 @@ export default function StockDetail() {
       chartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
       if (rsiChartInstance.current) rsiChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
       if (vcpChartInstance.current) vcpChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
+      if (stage2ChartInstance.current) stage2ChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
     }
   }, [timeframe, bars])
 
@@ -1293,6 +1365,15 @@ export default function StockDetail() {
               <div ref={vcpChartRef} style={{ height: 100 }} />
               <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-purple-400 font-medium pointer-events-none border border-purple-500/50 shadow-lg">
                 VCP Score (consecutive smaller pullbacks)
+              </div>
+            </div>
+          </div>
+          <div className="border-t border-slate-800">
+            <div className="px-3 py-1.5 text-xs font-semibold text-emerald-400 bg-slate-900/50">VCP Stage 2 - Strict Minervini Filter</div>
+            <div className="relative">
+              <div ref={stage2ChartRef} style={{ height: 90 }} />
+              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-emerald-400 font-medium pointer-events-none border border-emerald-500/50 shadow-lg">
+                Pass = price above rising 50/150 MA + higher highs/lows + current RS ≥ 80
               </div>
             </div>
           </div>

@@ -15,3 +15,15 @@ export function getNextSortState(current, clickedColumn) {
     sortDir: clickedColumn === 'ticker' ? 'asc' : 'desc',
   }
 }
+
+/**
+ * Returns the default sort for a selected Signal Agent filter.
+ * - All: Opus score descending (strongest setups first)
+ * - Others: score descending
+ */
+export function getDefaultSortForFilter(filterId) {
+  if (filterId === 'all') {
+    return { sortColumn: 'opus45', sortDir: 'desc' }
+  }
+  return { sortColumn: 'score', sortDir: 'desc' }
+}

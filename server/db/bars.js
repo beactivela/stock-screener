@@ -11,15 +11,51 @@
  */
 
 import { getSupabase, isSupabaseConfigured } from '../supabase.js';
-import { getBars as fetchFromYahoo } from '../yahoo.js';
+import { getBars as fetchFromYahoo, getBarsBatch as fetchBarsBatchFromYahoo } from '../yahoo.js';
 
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
 // 5-year historical bars are immutable — cache for 90 days
 const DEEP_CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 // A "deep" date range is anything going back more than 18 months
 const DEEP_RANGE_THRESHOLD_DAYS = 540;
+const DEFAULT_BARS_BATCH_CONCURRENCY = Math.max(1, Number(process.env.BARS_BATCH_CONCURRENCY) || 8);
 
 const barsMemoryCache = new Map();
+
+async function runWithConcurrency(items, worker, opts = {}) {
+  const safeConcurrency = Math.max(1, Number(opts.concurrency) || DEFAULT_BARS_BATCH_CONCURRENCY);
+  const inFlight = new Set();
+  let cursor = 0;
+  const results = new Array(items.length);
+
+  const launchNext = () => {
+    while (cursor < items.length && inFlight.size < safeConcurrency) {
+      const item = items[cursor];
+      const itemIndex = cursor;
+      cursor += 1;
+
+      let taskPromise;
+      taskPromise = (async () => {
+        const result = await worker(item, itemIndex);
+        results[itemIndex] = result;
+        if (typeof opts.onResult === 'function') {
+          await opts.onResult(result, itemIndex);
+        }
+      })().finally(() => {
+        inFlight.delete(taskPromise);
+      });
+
+      inFlight.add(taskPromise);
+    }
+  };
+
+  launchNext();
+  while (inFlight.size > 0) {
+    await Promise.race(inFlight);
+    launchNext();
+  }
+  return results;
+}
 
 function isDeepRange(from, to) {
   const spanDays = (new Date(to) - new Date(from)) / (1000 * 60 * 60 * 24);
@@ -86,6 +122,19 @@ function filterBarsToRange(bars, from, to) {
   });
 }
 
+function buildBarsCacheRows(entries, fetchedAt = new Date().toISOString()) {
+  return (entries || [])
+    .filter((entry) => entry?.ticker && entry?.from && entry?.to && Array.isArray(entry?.results))
+    .map((entry) => ({
+      ticker: String(entry.ticker).trim().toUpperCase(),
+      interval: entry.interval ?? '1d',
+      date_from: entry.from,
+      date_to: entry.to,
+      fetched_at: fetchedAt,
+      results: entry.results,
+    }));
+}
+
 /**
  * Decide whether cached bars are fresh enough for a target end date.
  * Allows a small lag window to account for weekends/holidays.
@@ -108,6 +157,106 @@ export function isBarsUpToDate(bars, to, opts = {}) {
 }
 
 /**
+ * Read bars from memory / Supabase cache only.
+ * Does not fall through to Yahoo.
+ *
+ * @param {string} ticker
+ * @param {string} from
+ * @param {string} to
+ * @param {string} interval
+ * @returns {Promise<Array<{t:number,o:number,h:number,l:number,c:number,v:number}>|null>}
+ */
+export async function getCachedBars(ticker, from, to, interval = '1d') {
+  const key = `${ticker}:${interval}:${from}:${to}`;
+  const cacheTtl = isDeepRange(from, to) ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
+
+  const mem = barsMemoryCache.get(key);
+  if (mem && Date.now() - mem.at < cacheTtl) return mem.data;
+
+  if (!isSupabaseConfigured()) return null;
+
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase
+      .from('bars_cache')
+      .select('*')
+      .eq('ticker', ticker)
+      .eq('interval', interval)
+      .single();
+
+    if (!error && data) {
+      const age = Date.now() - new Date(data.fetched_at).getTime();
+      const storedIsDeep = isDeepRange(data.date_from, data.date_to);
+      const ttl = storedIsDeep ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
+
+      if (age <= ttl) {
+        const results = data.results || [];
+        const rawFrom = data.date_from;
+        const rawTo = data.date_to;
+
+        if (rawFrom === from && rawTo === to && results.length > 0) {
+          const fresh = isBarsUpToDate(results, to);
+          if (fresh) {
+            barsMemoryCache.set(key, { data: results, at: Date.now() - age });
+            return results;
+          }
+        }
+
+        if (rawFrom <= from && rawTo >= to && results.length > 0) {
+          const filtered = results.filter((b) => {
+            const d = new Date(b.t).toISOString().slice(0, 10);
+            return d >= from && d <= to;
+          });
+          if (filtered.length > 0) {
+            const fresh = isBarsUpToDate(filtered, to);
+            if (fresh) {
+              barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
+              return filtered;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`bars_cache lookup failed for ${ticker}: ${e.message}`);
+  }
+
+  try {
+    const supabase = getSupabase();
+    const dateCols = ['date', 'trade_date', 'd'];
+    for (const dateCol of dateCols) {
+      const { data: rows, error } = await supabase
+        .from('bars')
+        .select('*')
+        .eq('ticker', ticker)
+        .gte(dateCol, from)
+        .lte(dateCol, to)
+        .order(dateCol, { ascending: true });
+      if (error || !rows || rows.length < 250) continue;
+      const o = rows[0].open != null ? 'open' : 'o';
+      const h = rows[0].high != null ? 'high' : 'h';
+      const l = rows[0].low != null ? 'low' : 'l';
+      const c = rows[0].close != null ? 'close' : 'c';
+      const v = rows[0].volume != null ? 'volume' : 'v';
+      const results = rows.map((r) => {
+        const d = r[dateCol] ?? r.date ?? r.trade_date ?? r.d;
+        const t = typeof d === 'number' ? d : new Date(d).getTime();
+        return { t, o: r[o], h: r[h], l: r[l], c: r[c], v: r[v] ?? 0 };
+      });
+      if (results.length > 0) {
+        barsMemoryCache.set(key, { data: results, at: Date.now() });
+        return results;
+      }
+      break;
+    }
+  } catch (e) {
+    // "bars" table may not exist or have different schema
+  }
+
+  return null;
+}
+
+/**
  * Get bars with Supabase cache → Yahoo Finance fallback.
  * Automatically saves fetched bars to Supabase for future runs.
  *
@@ -119,95 +268,8 @@ export function isBarsUpToDate(bars, to, opts = {}) {
  */
 export async function getBars(ticker, from, to, interval = '1d') {
   const key = `${ticker}:${interval}:${from}:${to}`;
-  const cacheTtl = isDeepRange(from, to) ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
-
-  // 1. Memory cache
-  const mem = barsMemoryCache.get(key);
-  if (mem && Date.now() - mem.at < cacheTtl) return mem.data;
-
-  // 2. Supabase cache
-  if (isSupabaseConfigured()) {
-    try {
-      const supabase = getSupabase();
-      const { data, error } = await supabase
-        .from('bars_cache')
-        .select('*')
-        .eq('ticker', ticker)
-        .eq('interval', interval)
-        .single();
-
-      if (!error && data) {
-        const age = Date.now() - new Date(data.fetched_at).getTime();
-        const storedIsDeep = isDeepRange(data.date_from, data.date_to);
-        const ttl = storedIsDeep ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
-
-        if (age <= ttl) {
-          const results = data.results || [];
-          const rawFrom = data.date_from;
-          const rawTo = data.date_to;
-
-          // Exact match
-          if (rawFrom === from && rawTo === to && results.length > 0) {
-            const fresh = isBarsUpToDate(results, to);
-            if (fresh) {
-              barsMemoryCache.set(key, { data: results, at: Date.now() - age });
-              return results;
-            }
-          }
-
-          // Stored range covers the requested range — slice it
-          if (rawFrom <= from && rawTo >= to && results.length > 0) {
-            const filtered = results.filter((b) => {
-              const d = new Date(b.t).toISOString().slice(0, 10);
-              return d >= from && d <= to;
-            });
-            if (filtered.length > 0) {
-              const fresh = isBarsUpToDate(filtered, to);
-              if (fresh) {
-                barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
-                return filtered;
-              }
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn(`bars_cache lookup failed for ${ticker}: ${e.message}`);
-    }
-
-    // 2b. Fallback: flat "bars" table (one row per day) — common when data is imported elsewhere
-    try {
-      const supabase = getSupabase();
-      const dateCols = ['date', 'trade_date', 'd'];
-      for (const dateCol of dateCols) {
-        const { data: rows, error } = await supabase
-          .from('bars')
-          .select('*')
-          .eq('ticker', ticker)
-          .gte(dateCol, from)
-          .lte(dateCol, to)
-          .order(dateCol, { ascending: true });
-        if (error || !rows || rows.length < 250) continue;
-        const o = rows[0].open != null ? 'open' : 'o';
-        const h = rows[0].high != null ? 'high' : 'h';
-        const l = rows[0].low != null ? 'low' : 'l';
-        const c = rows[0].close != null ? 'close' : 'c';
-        const v = rows[0].volume != null ? 'volume' : 'v';
-        const results = rows.map((r) => {
-          const d = r[dateCol] ?? r.date ?? r.trade_date ?? r.d;
-          const t = typeof d === 'number' ? d : new Date(d).getTime();
-          return { t, o: r[o], h: r[h], l: r[l], c: r[c], v: r[v] ?? 0 };
-        });
-        if (results.length > 0) {
-          barsMemoryCache.set(key, { data: results, at: Date.now() });
-          return results;
-        }
-        break;
-      }
-    } catch (e) {
-      // "bars" table may not exist or have different schema
-    }
-  }
+  const cached = await getCachedBars(ticker, from, to, interval);
+  if (cached && cached.length > 0) return cached;
 
   // 3. Fetch from Yahoo: full range or incremental (only missing dates) when we have existing cache
   try {
@@ -282,6 +344,78 @@ export async function getBars(ticker, from, to, interval = '1d') {
   }
 }
 
+export async function getBarsBatch(requests, opts = {}) {
+  const normalizedRequests = Array.isArray(requests) ? requests : [];
+  const results = new Array(normalizedRequests.length);
+  const missing = [];
+
+  await runWithConcurrency(normalizedRequests, async (request, index) => {
+    const normalized = {
+      ticker: String(request?.ticker || '').trim().toUpperCase(),
+      from: request?.from,
+      to: request?.to,
+      interval: request?.interval ?? '1d',
+    };
+    const bars = await getCachedBars(normalized.ticker, normalized.from, normalized.to, normalized.interval);
+    return { index, request: normalized, bars };
+  }, {
+    concurrency: opts.cacheConcurrency ?? opts.concurrency,
+    onResult: ({ index, request, bars }) => {
+      if (bars && bars.length > 0) {
+        results[index] = {
+          status: 'fulfilled',
+          source: 'cache',
+          ticker: request.ticker,
+          from: request.from,
+          to: request.to,
+          interval: request.interval,
+          bars,
+        };
+      } else {
+        missing.push({ index, request });
+      }
+    },
+  });
+
+  if (missing.length > 0) {
+    const fetched = await fetchBarsBatchFromYahoo(
+      missing.map(({ request }) => request),
+      { concurrency: opts.yahooConcurrency ?? opts.concurrency }
+    );
+    const toSave = [];
+
+    for (let i = 0; i < fetched.length; i++) {
+      const output = fetched[i];
+      const pending = missing[i];
+      if (!pending) continue;
+      if (output?.status === 'fulfilled') {
+        results[pending.index] = { ...output, source: 'yahoo' };
+        if (output.bars?.length > 0) {
+          toSave.push({
+            ticker: output.ticker,
+            from: output.from,
+            to: output.to,
+            interval: output.interval,
+            results: output.bars,
+          });
+        }
+      } else {
+        results[pending.index] = { ...output, source: 'yahoo' };
+      }
+    }
+
+    if (toSave.length > 0 && isSupabaseConfigured()) {
+      try {
+        await saveBarsBatch(toSave);
+      } catch (e) {
+        console.warn(`Failed to batch cache bars: ${e.message}`);
+      }
+    }
+  }
+
+  return results;
+}
+
 /**
  * @param {string} ticker
  * @param {string} from
@@ -290,15 +424,24 @@ export async function getBars(ticker, from, to, interval = '1d') {
  * @param {string} interval
  */
 export async function saveBars(ticker, from, to, results, interval = '1d') {
-  const fetchedAt = new Date().toISOString();
-  barsMemoryCache.set(`${ticker}:${interval}:${from}:${to}`, { data: results, at: Date.now() });
+  await saveBarsBatch([{ ticker, from, to, results, interval }]);
+}
 
+export async function saveBarsBatch(entries, opts = {}) {
+  const fetchedAt = opts.fetchedAt ?? new Date().toISOString();
+  const rows = buildBarsCacheRows(entries, fetchedAt);
+
+  for (const row of rows) {
+    barsMemoryCache.set(`${row.ticker}:${row.interval}:${row.date_from}:${row.date_to}`, {
+      data: row.results,
+      at: Date.now(),
+    });
+  }
+
+  if (rows.length === 0) return;
   if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
   const supabase = getSupabase();
-  const { error } = await supabase.from('bars_cache').upsert(
-    { ticker, interval, date_from: from, date_to: to, fetched_at: fetchedAt, results },
-    { onConflict: 'ticker,interval' }
-  );
+  const { error } = await supabase.from('bars_cache').upsert(rows, { onConflict: 'ticker,interval' });
   if (error) throw new Error(error.message);
 }
 
@@ -400,3 +543,10 @@ export async function getTickersFromBarsCache(opts = {}) {
 
   return [];
 }
+
+const __testing = {
+  buildBarsCacheRows,
+  runWithConcurrency,
+};
+
+export { __testing };

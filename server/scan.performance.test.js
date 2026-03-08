@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { measureScanDuration, applyRatingsAndEnhancements } from './scan.js';
+import {
+  measureScanDuration,
+  applyRatingsAndEnhancements,
+  shouldBuildSignalSnapshots,
+  runTasksWithConcurrency,
+  resolveScanExecutionConfig,
+} from './scan.js';
 import { checkVCP, buildSignalSnapshots } from './vcp.js';
 
 function buildBars({ days = 260, start = 100, step = 0.6 }) {
@@ -67,6 +73,65 @@ describe('applyRatingsAndEnhancements', () => {
     assert.equal(rated[0].relativeStrength, 99);
     assert.equal(rated[0].rsData?.rsRating, 99);
     assert.ok(typeof rated[0].enhancedScore === 'number');
+    assert.ok(Array.isArray(rated[0].signalSetups));
     assert.ok(Array.isArray(rated[0].signalSetupsRecent));
+  });
+});
+
+describe('checkVCP lite mode', () => {
+  it('skips pattern detection but keeps core signals stable', () => {
+    const bars = buildBars({});
+    const full = checkVCP(bars);
+    const lite = checkVCP(bars, { lite: true });
+
+    assert.equal(lite.vcpBullish, full.vcpBullish);
+    assert.equal(lite.contractions, full.contractions);
+    assert.equal(lite.atMa10, full.atMa10);
+    assert.equal(lite.atMa20, full.atMa20);
+    assert.equal(lite.atMa50, full.atMa50);
+    assert.equal(lite.volumeDryUp, full.volumeDryUp);
+    assert.equal(lite.pattern, 'None');
+    assert.equal(lite.patternConfidence, 0);
+  });
+});
+
+describe('scan scheduling helpers', () => {
+  it('caps concurrent scan work at the requested limit', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const completed = [];
+
+    await runTasksWithConcurrency({
+      items: ['A', 'B', 'C', 'D'],
+      concurrency: 2,
+      worker: async (ticker) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return ticker;
+      },
+      onResolved: async (ticker) => {
+        completed.push(ticker);
+      },
+    });
+
+    assert.equal(maxActive, 2);
+    assert.equal(completed.length, 4);
+  });
+
+  it('builds signal snapshots only for actionable rows', () => {
+    assert.equal(shouldBuildSignalSnapshots({ vcpBullish: true, recommendation: 'avoid' }), true);
+    assert.equal(shouldBuildSignalSnapshots({ vcpBullish: false, recommendation: 'buy' }), true);
+    assert.equal(shouldBuildSignalSnapshots({ vcpBullish: false, recommendation: 'hold' }), true);
+    assert.equal(shouldBuildSignalSnapshots({ vcpBullish: false, recommendation: 'avoid' }), false);
+  });
+
+  it('uses batch-friendly scan defaults', () => {
+    const cfg = resolveScanExecutionConfig({});
+    assert.equal(cfg.batchSize, 20);
+    assert.equal(cfg.scanConcurrency, 20);
+    assert.equal(cfg.yahooConcurrency, 20);
+    assert.equal(cfg.delayMs, 40);
   });
 });

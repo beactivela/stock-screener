@@ -7,6 +7,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { API_BASE } from '../utils/api'
+import { readLocalDataCache, writeLocalDataCache } from '../utils/localDataCache.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,10 +49,6 @@ const DEFAULT_STRATEGY_METRICS: Record<string, { metrics: StrategyAgentMetrics; 
     description: 'Donchian 20/55d breakouts, 2N stop, 10/20d exit',
     metrics: { avgReturnPct: 4.3, winRatePct: 52.5, profitFactor: 2.2, activityPct: 25, runs: 8, promoted: 0, weightsLabel: 'Default weights' },
   },
-  ma_crossover_10_20: {
-    description: 'Buy on 10/20 MA cross, exit below 10 MA',
-    metrics: { avgReturnPct: 3.2, winRatePct: 50.4, profitFactor: 1.8, activityPct: 15, runs: 0, promoted: 0, weightsLabel: 'Default weights' },
-  },
 }
 
 interface ManifestResponse {
@@ -67,6 +64,11 @@ interface HeartbeatCronState {
   lastResult: { regime?: string; signalCount?: number; elapsedMs?: number; error?: string } | null
   nextRun: string | null
 }
+
+const AGENTS_MANIFEST_CACHE_KEY = 'stock-screener:agents:manifest'
+const AGENTS_HEARTBEAT_CACHE_KEY = 'stock-screener:agents:heartbeat'
+const AGENTS_MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000
+const AGENTS_HEARTBEAT_CACHE_TTL_MS = 30 * 1000
 
 // ─── Shared UI primitives ─────────────────────────────────────────────────────
 
@@ -124,7 +126,6 @@ function strategyAgentIcon(agent: AgentMeta): string {
   if (t === 'base_hunter') return '🔍'
   if (t === 'breakout_tracker') return '🚀'
   if (t === 'turtle_trader') return '🐢'
-  if (t === 'ma_crossover_10_20') return '🔀'
   return '🤖'
 }
 
@@ -556,19 +557,45 @@ export default function Agents() {
   const [cronToggleLoading, setCronToggleLoading] = useState(false)
 
   useEffect(() => {
+    const cached = readLocalDataCache<ManifestResponse>(AGENTS_MANIFEST_CACHE_KEY, {
+      ttlMs: AGENTS_MANIFEST_CACHE_TTL_MS,
+      allowStale: true,
+    })
+    if (cached?.payload) {
+      setManifest(cached.payload)
+      setLoading(false)
+    }
+
     fetch(`${API_BASE}/api/agents/manifest`)
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then((data) => { setManifest(data); setLoading(false) })
-      .catch((e)  => { setError(e.message); setLoading(false) })
+      .then((data) => {
+        setManifest(data)
+        writeLocalDataCache(AGENTS_MANIFEST_CACHE_KEY, data)
+        setLoading(false)
+      })
+      .catch((e)  => {
+        setError(e.message)
+        setLoading(false)
+      })
   }, [])
 
   const fetchHeartbeat = useCallback(() => {
-    fetch(`${API_BASE}/api/heartbeat`, { cache: 'no-store' })
+    fetch(`${API_BASE}/api/heartbeat`)
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then(setHeartbeatCron)
+      .then((data) => {
+        setHeartbeatCron(data)
+        writeLocalDataCache(AGENTS_HEARTBEAT_CACHE_KEY, data)
+      })
       .catch(() => { /* keep previous state so toggle doesn’t reset on network/500 */ })
   }, [])
-  useEffect(() => { fetchHeartbeat() }, [fetchHeartbeat])
+  useEffect(() => {
+    const cached = readLocalDataCache<HeartbeatCronState>(AGENTS_HEARTBEAT_CACHE_KEY, {
+      ttlMs: AGENTS_HEARTBEAT_CACHE_TTL_MS,
+      allowStale: true,
+    })
+    if (cached?.payload) setHeartbeatCron(cached.payload)
+    fetchHeartbeat()
+  }, [fetchHeartbeat])
   useEffect(() => {
     if (!heartbeatCron?.enabled) return
     const t = setInterval(fetchHeartbeat, 30_000)
@@ -601,7 +628,9 @@ export default function Agents() {
 
   const allSubagents   = manifest?.subagents ?? []
   const dataAgents     = allSubagents.filter((a) => a.role === 'Data Fetcher')
-  const strategyAgents = allSubagents.filter((a) => a.role === 'Signal Agent' || a.role === 'Strategy Agent')
+  const strategyAgents = allSubagents.filter(
+    (a) => (a.role === 'Signal Agent' || a.role === 'Strategy Agent') && a.agentType !== 'ma_crossover_10_20'
+  )
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">

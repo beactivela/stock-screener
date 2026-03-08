@@ -59,7 +59,7 @@ export function classifyMovingAverageRegime(params) {
  * @param {Array<number>} values - Recent MA50 values
  * @returns {number} - Angle in degrees
  */
-function calculateMA50Angle(values) {
+export function calculateMA50Angle(values) {
   const n = values.length
   if (n < 2) return 0
 

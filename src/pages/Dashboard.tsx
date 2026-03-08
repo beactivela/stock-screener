@@ -1,16 +1,17 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import TickerChart from '../components/TickerChart'
 import SortHeader from '../components/SortHeader'
-import MarketIndexRegimeCards from '../components/MarketIndexRegimeCards'
 import { useScan } from '../contexts/ScanContext'
 import { buildIndustryMaps } from '../utils/industryMaps'
 import { API_BASE } from '../utils/api'
-import { resolveSignalAgentLabel, formatSignalPL, SIGNAL_AGENT_CRITERIA } from '../utils/signalAgentDisplay'
+import { resolveSignalAgentLabel, formatSignalPL, SIGNAL_AGENT_CRITERIA, getEffectiveSignalSetups } from '../utils/signalAgentDisplay'
 import { evaluateCompiledCriteria, type CompiledCriterion } from '../utils/agentCriteriaRuntime'
 import { readWatchlist, getWatchlistTickersSet } from '../utils/watchlistStorage.js'
 import { buildTopRs50 } from '../utils/topRsScreen.js'
-import { getNextSortState } from '../utils/dashboardSort.js'
+import { getNextSortState, getDefaultSortForFilter } from '../utils/dashboardSort.js'
+import { getOpusDisplayState } from '../utils/opusScoreDisplay.js'
+import { readLocalDataCache, writeLocalDataCache } from '../utils/localDataCache.js'
+import { getInitialChartCount, getNextChartCount } from '../utils/chartRenderWindow.js'
 
 interface ScanResult {
   ticker: string
@@ -96,6 +97,15 @@ interface ScanPayload {
 
 const CRITERIA_OVERRIDES_KEY = 'stock-screener:signalAgentCriteriaOverrides'
 const COMPILED_CRITERIA_OVERRIDES_KEY = 'stock-screener:signalAgentCompiledCriteriaOverrides'
+const DASHBOARD_SCAN_CACHE_KEY = 'stock-screener:dashboard:scan-results'
+const DASHBOARD_FUNDAMENTALS_CACHE_KEY = 'stock-screener:dashboard:fundamentals'
+const DASHBOARD_INDUSTRY_TREND_CACHE_KEY = 'stock-screener:dashboard:industry-trend'
+const DASHBOARD_SCAN_CACHE_TTL_MS = 15 * 1000
+const DASHBOARD_FUNDAMENTALS_CACHE_TTL_MS = 5 * 60 * 1000
+const DASHBOARD_INDUSTRY_TREND_CACHE_TTL_MS = 5 * 60 * 1000
+const CHART_BATCH_SIZE = 12
+const LazyTickerChart = lazy(() => import('../components/TickerChart'))
+const LazyMarketIndexRegimeCards = lazy(() => import('../components/MarketIndexRegimeCards'))
 
 function isCompiledCriterion(value: unknown): value is CompiledCriterion {
   if (!value || typeof value !== 'object') return false
@@ -193,9 +203,11 @@ export default function Dashboard() {
   const [industryTrendMapYtd, setIndustryTrendMapYtd] = useState<Record<string, number>>({})
   const [fetchingFundamentals, setFetchingFundamentals] = useState(false)
   const [fundamentalsProgress, setFundamentalsProgress] = useState<{ index: number; total: number } | null>(null)
-  const [sortColumn, setSortColumn] = useState<string>('score')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const initialSort = getDefaultSortForFilter('all')
+  const [sortColumn, setSortColumn] = useState<string>(initialSort.sortColumn)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(initialSort.sortDir)
   const [viewMode, setViewMode] = useState<'table' | 'charts'>('table')
+  const [visibleChartCount, setVisibleChartCount] = useState(CHART_BATCH_SIZE)
   /** Agent id for Edit criteria modal (null = closed) */
   const [editCriteriaAgent, setEditCriteriaAgent] = useState<string | null>(null)
   /** Editable criteria in modal (synced when modal opens) */
@@ -221,72 +233,82 @@ export default function Dashboard() {
     setWatchlistTickers(new Set(Object.keys(map)))
   }, [])
 
+  const applyIndustryTrendPayload = useCallback((payload: { industries?: Parameters<typeof buildIndustryMaps>[0] } | null | undefined) => {
+    const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(payload?.industries)
+    setIndustryTrendMap(map3m)
+    setIndustryTrendMap6M(map6m)
+    setIndustryTrendMap1Y(map1y)
+    setIndustryTrendMapYtd(mapYtd)
+  }, [])
+
+  const applyScanPayload = useCallback((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
+    setData(d)
+    setApiError(null)
+
+    if (d.opus45Signals != null) {
+      setOpus45Signals(d.opus45Signals)
+      setOpus45Stats(d.opus45Stats ?? null)
+      const byTicker = (d.opus45Signals as Opus45Signal[]).reduce<Record<string, Opus45Signal>>((acc, s) => {
+        acc[s.ticker] = s
+        return acc
+      }, {})
+      setOpus45AllScores(
+        (d.results || []).map((r) => {
+          const sig = byTicker[r.ticker]
+          const res = r as { opus45Confidence?: number; opus45Grade?: string; entryDate?: string | number; daysSinceBuy?: number; isNewBuyToday?: boolean; rankScore?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
+          const base = {
+            ticker: r.ticker,
+            opus45Confidence: res.opus45Confidence ?? sig?.opus45Confidence ?? 0,
+            opus45Grade: res.opus45Grade ?? sig?.opus45Grade ?? 'F',
+          }
+          const openTrade = res.entryDate != null || res.daysSinceBuy != null || res.pctChange != null
+            ? { entryDate: res.entryDate, daysSinceBuy: res.daysSinceBuy, isNewBuyToday: res.isNewBuyToday, rankScore: res.rankScore, pctChange: res.pctChange, entryPrice: res.entryPrice, stopLossPrice: res.stopLossPrice, riskRewardRatio: res.riskRewardRatio }
+            : (sig?.entryDate != null || sig?.daysSinceBuy != null || sig?.pctChange != null)
+              ? { entryDate: sig.entryDate, daysSinceBuy: sig.daysSinceBuy, isNewBuyToday: sig.isNewBuyToday, rankScore: sig.rankScore, pctChange: sig.pctChange, entryPrice: sig.entryPrice, stopLossPrice: sig.stopLossPrice, riskRewardRatio: sig.riskRewardRatio }
+              : null
+          return openTrade ? { ...base, ...openTrade } : base
+        })
+      )
+      return
+    }
+
+    setOpus45Signals([])
+    setOpus45AllScores([])
+    setOpus45Stats(null)
+  }, [])
+
   // Load scan-results (includes Opus4.5 when ?includeOpus=true) — single fetch for unified payload
   useEffect(() => {
     let cancelled = false
+    const cached = readLocalDataCache<ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }>(
+      DASHBOARD_SCAN_CACHE_KEY,
+      { ttlMs: DASHBOARD_SCAN_CACHE_TTL_MS, allowStale: true },
+    )
+    if (cached?.payload) {
+      applyScanPayload(cached.payload)
+      setLoading(false)
+    }
     setOpus45Loading(true)
-    fetch(`${API_BASE}/api/scan-results`, { cache: 'no-store' })
+    fetch(`${API_BASE}/api/scan-results`)
       .then((r) => {
         if (!r.ok) throw new Error(`API ${r.status}`)
         return r.json()
       })
       .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
         if (!cancelled) {
-          setData(d)
-          setApiError(null)
-          // Opus merged into scan-results: use embedded signals/stats, derive allScores from results
-          if (d.opus45Signals != null) {
-            setOpus45Signals(d.opus45Signals)
-            setOpus45Stats(d.opus45Stats ?? null)
-            const byTicker = (d.opus45Signals as Opus45Signal[]).reduce<Record<string, Opus45Signal>>((acc, s) => {
-              acc[s.ticker] = s
-              return acc
-            }, {})
-            setOpus45AllScores(
-              (d.results || []).map((r) => {
-                const sig = byTicker[r.ticker]
-                const res = r as { opus45Confidence?: number; opus45Grade?: string; entryDate?: string | number; daysSinceBuy?: number; isNewBuyToday?: boolean; rankScore?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
-                const base = {
-                  ticker: r.ticker,
-                  opus45Confidence: res.opus45Confidence ?? sig?.opus45Confidence ?? 0,
-                  opus45Grade: res.opus45Grade ?? sig?.opus45Grade ?? 'F',
-                }
-                const openTrade = res.entryDate != null || res.daysSinceBuy != null || res.pctChange != null
-                  ? { entryDate: res.entryDate, daysSinceBuy: res.daysSinceBuy, isNewBuyToday: res.isNewBuyToday, rankScore: res.rankScore, pctChange: res.pctChange, entryPrice: res.entryPrice, stopLossPrice: res.stopLossPrice, riskRewardRatio: res.riskRewardRatio }
-                  : (sig?.entryDate != null || sig?.daysSinceBuy != null || sig?.pctChange != null)
-                    ? { entryDate: sig.entryDate, daysSinceBuy: sig.daysSinceBuy, isNewBuyToday: sig.isNewBuyToday, rankScore: sig.rankScore, pctChange: sig.pctChange, entryPrice: sig.entryPrice, stopLossPrice: sig.stopLossPrice, riskRewardRatio: sig.riskRewardRatio }
-                    : null
-                return openTrade ? { ...base, ...openTrade } : base
-              })
-            )
-          } else {
-            // Fallback: fetch Opus separately (older API)
-            fetch(`${API_BASE}/api/opus45/signals`, { cache: 'no-store' })
-              .then((r) => r.json())
-              .then((od) => {
-                if (!cancelled) {
-                  setOpus45Signals(od.signals || [])
-                  setOpus45AllScores(od.allScores || [])
-                  setOpus45Stats(od.stats ?? null)
-                }
-              })
-              .catch(() => {
-                if (!cancelled) {
-                  setOpus45Signals([])
-                  setOpus45AllScores([])
-                  setOpus45Stats(null)
-                }
-              })
-          }
+          writeLocalDataCache(DASHBOARD_SCAN_CACHE_KEY, d)
+          applyScanPayload(d)
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
+          if (!cached?.payload) {
+            setData({ scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 })
+            setOpus45Signals([])
+            setOpus45AllScores([])
+            setOpus45Stats(null)
+          }
           setApiError(err instanceof Error ? err.message : 'Cannot reach app')
-          setOpus45Signals([])
-          setOpus45AllScores([])
-          setOpus45Stats(null)
         }
       })
       .finally(() => {
@@ -296,66 +318,57 @@ export default function Dashboard() {
         }
       })
     return () => { cancelled = true }
-  }, [])
+  }, [applyScanPayload])
 
   // Reload data when scan completes (scan-results includes Opus from updated cache)
   useEffect(() => {
     if (!scanState.running && scanState.progress.completedAt) {
       setOpus45Loading(true)
-      fetch(`${API_BASE}/api/scan-results`, { cache: 'no-store' })
+      fetch(`${API_BASE}/api/scan-results`)
         .then((r) => r.json())
         .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
-          setData(d)
-          if (d.opus45Signals != null) {
-            setOpus45Signals(d.opus45Signals)
-            setOpus45Stats(d.opus45Stats ?? null)
-            const byTicker = (d.opus45Signals as Opus45Signal[]).reduce<Record<string, Opus45Signal>>((acc, s) => {
-              acc[s.ticker] = s
-              return acc
-            }, {})
-            setOpus45AllScores(
-              (d.results || []).map((r) => {
-                const sig = byTicker[r.ticker]
-                const res = r as { opus45Confidence?: number; opus45Grade?: string; entryDate?: string | number; daysSinceBuy?: number; isNewBuyToday?: boolean; rankScore?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
-                const base = {
-                  ticker: r.ticker,
-                  opus45Confidence: res.opus45Confidence ?? sig?.opus45Confidence ?? 0,
-                  opus45Grade: res.opus45Grade ?? sig?.opus45Grade ?? 'F',
-                }
-                const openTrade = res.entryDate != null || res.daysSinceBuy != null || res.pctChange != null
-                  ? { entryDate: res.entryDate, daysSinceBuy: res.daysSinceBuy, isNewBuyToday: res.isNewBuyToday, rankScore: res.rankScore, pctChange: res.pctChange, entryPrice: res.entryPrice, stopLossPrice: res.stopLossPrice, riskRewardRatio: res.riskRewardRatio }
-                  : (sig?.entryDate != null || sig?.daysSinceBuy != null || sig?.pctChange != null)
-                    ? { entryDate: sig.entryDate, daysSinceBuy: sig.daysSinceBuy, isNewBuyToday: sig.isNewBuyToday, rankScore: sig.rankScore, pctChange: sig.pctChange, entryPrice: sig.entryPrice, stopLossPrice: sig.stopLossPrice, riskRewardRatio: sig.riskRewardRatio }
-                    : null
-                return openTrade ? { ...base, ...openTrade } : base
-              })
-            )
+          writeLocalDataCache(DASHBOARD_SCAN_CACHE_KEY, d)
+          applyScanPayload(d)
+          if ((d.results || []).length > 0) {
+            void fetchFundamentals(d.results || [])
           }
         })
         .catch(() => {})
         .finally(() => setOpus45Loading(false))
     }
-  }, [scanState.running, scanState.progress.completedAt])
+  }, [applyScanPayload, scanState.running, scanState.progress.completedAt])
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/fundamentals`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then(setFundamentals)
-      .catch(() => {})
-  }, [])
+    const cached = readLocalDataCache<Record<string, { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null; sector?: string | null; companyName?: string | null }>>(
+      DASHBOARD_FUNDAMENTALS_CACHE_KEY,
+      { ttlMs: DASHBOARD_FUNDAMENTALS_CACHE_TTL_MS, allowStale: true },
+    )
+    if (cached?.payload) setFundamentals(cached.payload)
 
-  useEffect(() => {
-    fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
+    fetch(`${API_BASE}/api/fundamentals`)
       .then((r) => r.json())
-      .then((d) => {
-        const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(d?.industries)
-        setIndustryTrendMap(map3m)
-        setIndustryTrendMap6M(map6m)
-        setIndustryTrendMap1Y(map1y)
-        setIndustryTrendMapYtd(mapYtd)
+      .then((payload) => {
+        setFundamentals(payload)
+        writeLocalDataCache(DASHBOARD_FUNDAMENTALS_CACHE_KEY, payload)
       })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    const cached = readLocalDataCache<{ industries?: Parameters<typeof buildIndustryMaps>[0] }>(
+      DASHBOARD_INDUSTRY_TREND_CACHE_KEY,
+      { ttlMs: DASHBOARD_INDUSTRY_TREND_CACHE_TTL_MS, allowStale: true },
+    )
+    if (cached?.payload) applyIndustryTrendPayload(cached.payload)
+
+    fetch(`${API_BASE}/api/industry-trend`)
+      .then((r) => r.json())
+      .then((d) => {
+        applyIndustryTrendPayload(d)
+        writeLocalDataCache(DASHBOARD_INDUSTRY_TREND_CACHE_KEY, d)
+      })
+      .catch(() => {})
+  }, [applyIndustryTrendPayload])
 
   useEffect(() => {
     syncWatchlist()
@@ -370,33 +383,14 @@ export default function Dashboard() {
 
   const runScan = async () => {
     try {
-      // Start the scan
-      await triggerScan();
-      
-      // Wait for scan to complete, then fetch fundamentals automatically
-      const checkAndFetch = setInterval(async () => {
-        if (!scanState.running && scanState.progress.completedAt) {
-          clearInterval(checkAndFetch);
-          
-          // Refresh results
-          const resultsResponse = await fetch(`${API_BASE}/api/scan-results`);
-          const resultsData = await resultsResponse.json();
-          setData(resultsData);
-          
-          // Auto-fetch fundamentals for all tickers
-          const tickers = resultsData.results?.map((r: ScanResult) => r.ticker).filter(Boolean) || [];
-          if (tickers.length > 0) {
-            await fetchFundamentals();
-          }
-        }
-      }, 1000);
+      await triggerScan()
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to start scan');
+      alert(error instanceof Error ? error.message : 'Failed to start scan')
     }
   }
 
-  const fetchFundamentals = async () => {
-    const tickers = (data?.results ?? []).map((r) => r.ticker).filter(Boolean)
+  async function fetchFundamentals(sourceResults: ScanResult[] = data?.results ?? []) {
+    const tickers = sourceResults.map((r) => r.ticker).filter(Boolean)
     if (tickers.length === 0) {
       alert('Run a scan first to get tickers.')
       return
@@ -466,18 +460,17 @@ export default function Dashboard() {
           }
         }
       }
-      const finalRes = await fetch(`${API_BASE}/api/fundamentals?t=${Date.now()}`, { cache: 'no-store' })
+      const finalRes = await fetch(`${API_BASE}/api/fundamentals?t=${Date.now()}`)
       const final = await finalRes.json()
-      setFundamentals({ ...final, ...merged })
+      const nextFundamentals = { ...final, ...merged }
+      setFundamentals(nextFundamentals)
+      writeLocalDataCache(DASHBOARD_FUNDAMENTALS_CACHE_KEY, nextFundamentals)
       // Refetch industry trend so Industry 3M/6M/1Y/YTD columns update with new industry groupings
-      fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
+      fetch(`${API_BASE}/api/industry-trend`)
         .then((r) => r.json())
         .then((d) => {
-          const { map3m, map6m, map1y, mapYtd } = buildIndustryMaps(d?.industries)
-          setIndustryTrendMap(map3m)
-          setIndustryTrendMap6M(map6m)
-          setIndustryTrendMap1Y(map1y)
-          setIndustryTrendMapYtd(mapYtd)
+          applyIndustryTrendPayload(d)
+          writeLocalDataCache(DASHBOARD_INDUSTRY_TREND_CACHE_KEY, d)
         })
         .catch(() => {})
     } finally {
@@ -518,8 +511,7 @@ export default function Dashboard() {
 
   const { filtered, filterMeta } = useMemo(() => {
     const matchesAgentFilter = (row: ScanResult, filterId: typeof filter): boolean => {
-      const recentSetups = row.signalSetupsRecent ?? row.signalSetups ?? []
-      return recentSetups.includes(filterId)
+      return getEffectiveSignalSetups(row.signalSetupsRecent, row.signalSetups).includes(filterId)
     }
 
     if (filter === 'all') {
@@ -586,7 +578,10 @@ export default function Dashboard() {
       case 'openTrade':
         return ot?.daysSinceBuy ?? -Infinity
       case 'signalAgent':
-        return resolveSignalAgentLabel(r.signalSetupsRecent ?? r.signalSetups ?? [], activeSignalLabelFilter)
+        return resolveSignalAgentLabel(
+          getEffectiveSignalSetups(r.signalSetupsRecent, r.signalSetups),
+          activeSignalLabelFilter,
+        )
       case 'pl':
         return ot?.pctChange ?? -Infinity
       case 'patternConfidence':
@@ -636,20 +631,37 @@ export default function Dashboard() {
     ? watchlistFiltered.filter((row) => topRsTickerSet.has(row.ticker))
     : watchlistFiltered
 
-  const sorted = [...topRsFiltered].sort((a, b) => {
-    const va = getSortValue(a, sortColumn)
-    const vb = getSortValue(b, sortColumn)
-    const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb))
-    const primary = sortDir === 'asc' ? cmp : -cmp
-    // Secondary sort: when primary equal and sorting by opus45, break tie by Industry 1Y (desc)
-    if (primary !== 0) return primary
-    if (sortColumn === 'opus45') {
-      const i1yA = industryTrendMap1Y[fundamentals[a.ticker]?.industry ?? ''] ?? -Infinity
-      const i1yB = industryTrendMap1Y[fundamentals[b.ticker]?.industry ?? ''] ?? -Infinity
-      return i1yB - i1yA
-    }
-    return 0
-  })
+  const sorted = useMemo(() => {
+    return [...topRsFiltered].sort((a, b) => {
+      const va = getSortValue(a, sortColumn)
+      const vb = getSortValue(b, sortColumn)
+      const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb))
+      const primary = sortDir === 'asc' ? cmp : -cmp
+      // Secondary sort: when primary equal and sorting by opus45, break tie by Industry 1Y (desc)
+      if (primary !== 0) return primary
+      if (sortColumn === 'opus45') {
+        const i1yA = industryTrendMap1Y[fundamentals[a.ticker]?.industry ?? ''] ?? -Infinity
+        const i1yB = industryTrendMap1Y[fundamentals[b.ticker]?.industry ?? ''] ?? -Infinity
+        return i1yB - i1yA
+      }
+      return 0
+    })
+  }, [
+    activeSignalLabelFilter,
+    fundamentals,
+    industryTrendMap,
+    industryTrendMap6M,
+    industryTrendMap1Y,
+    industryTrendMapYtd,
+    opus45ByTicker,
+    sortColumn,
+    sortDir,
+    topRsFiltered,
+  ])
+
+  useEffect(() => {
+    setVisibleChartCount(getInitialChartCount(sorted.length, CHART_BATCH_SIZE))
+  }, [sorted.length, viewMode])
 
   const handleSort = useCallback((col: string) => {
     const next = getNextSortState({ sortColumn, sortDir }, col)
@@ -700,7 +712,9 @@ export default function Dashboard() {
   return (
     <div className="w-full">
       <div className="space-y-8">
-      <MarketIndexRegimeCards />
+      <Suspense fallback={<div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">Loading market regime cards…</div>}>
+        <LazyMarketIndexRegimeCards />
+      </Suspense>
 
       {/* Banner when the app can't load data (single server – no separate API) */}
       {apiError && (
@@ -760,8 +774,9 @@ export default function Dashboard() {
                   onClick={() => {
                     setFilter(f.id)
                     if (f.id === 'all') {
-                      setSortColumn('score')
-                      setSortDir('desc')
+                      const next = getDefaultSortForFilter('all')
+                      setSortColumn(next.sortColumn)
+                      setSortDir(next.sortDir)
                     }
                   }}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
@@ -817,9 +832,9 @@ export default function Dashboard() {
                 ? 'bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
             }`}
-            title="Show only the Top 50 RS shortlist"
+            title="Show only the Top 50 ranked by RS + Industry Rank"
           >
-            {topRsOnly ? 'Top 50 RS On' : 'Top 50 RS'}
+            {topRsOnly ? 'Top 50 RS+Ind On' : 'Top 50 RS+Ind'}
           </button>
         </div>
         <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
@@ -881,33 +896,70 @@ export default function Dashboard() {
             No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.
           </div>
         ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {sorted.map((r) => (
-            <TickerChart
-              key={r.ticker}
-              ticker={r.ticker}
-              score={r.score}
-              recommendation={r.recommendation}
-            />
-          ))}
-        </div>
+        <>
+        <Suspense fallback={<div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-500">Loading chart components…</div>}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {sorted.slice(0, visibleChartCount).map((r) => (
+              <LazyTickerChart
+                key={r.ticker}
+                ticker={r.ticker}
+                score={r.score}
+                recommendation={r.recommendation}
+              />
+            ))}
+          </div>
+        </Suspense>
+        {visibleChartCount < sorted.length && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setVisibleChartCount((prev) => getNextChartCount(prev, sorted.length, CHART_BATCH_SIZE))}
+              className="px-4 py-2 rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700 text-sm font-medium"
+            >
+              Load {Math.min(CHART_BATCH_SIZE, sorted.length - visibleChartCount)} more charts
+            </button>
+          </div>
+        )}
+        </>
         )
       ) : (
       <>
-      {/* Keep only horizontal overflow so thead can stick to the browser viewport top. */}
-      <div className="rounded-xl border border-slate-800 overflow-x-auto min-w-0">
-        <table className="w-full min-w-[2000px]">
-            <thead className="bg-slate-900 shadow-[0_1px_0_0_rgba(148,163,184,0.1)]">
+      <div className="rounded-xl border border-slate-800 overflow-x-auto">
+        <table className="w-full min-w-[2000px] table-fixed">
+            <colgroup>
+              <col className="w-40" />
+              <col className="w-28" />
+              <col className="w-16" />
+              <col className="w-20" />
+              <col className="w-36" />
+              <col className="w-20" />
+              <col className="w-20" />
+              <col className="w-40" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-16" />
+              <col className="w-16" />
+              <col className="w-16" />
+              <col className="w-32" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-40" />
+              <col className="w-32" />
+              <col className="w-32" />
+            </colgroup>
+            <thead>
               <tr className="border-b border-slate-800 bg-slate-900">
                 <SortHeader col="ticker" label="Ticker" {...sortHeaderProps} sticky stickyLeft="0" />
                 <SortHeader col="opus45" label="Opus" {...sortHeaderProps} alignRight sticky stickyLeft="10rem" />
                 <SortHeader col="relativeStrength" label="RS" {...sortHeaderProps} alignRight />
                 <SortHeader col="industryRank" label="Ind.Rank" {...sortHeaderProps} alignRight />
-                <SortHeader col="openTrade" label="Open Trade" {...sortHeaderProps} alignRight />
-                <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
                 <SortHeader col="signalAgent" label="Signal Agent" {...sortHeaderProps} />
                 <SortHeader col="pl" label="P/L" {...sortHeaderProps} alignRight />
                 <SortHeader col="close" label="Price" {...sortHeaderProps} alignRight />
+                <SortHeader col="openTrade" label="Open Trade" {...sortHeaderProps} alignRight />
+                <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
                 <SortHeader col="contractions" label="Contractions" {...sortHeaderProps} alignRight />
                 <SortHeader col="ma10" label="10 MA" {...sortHeaderProps} alignRight />
                 <SortHeader col="ma20" label="20 MA" {...sortHeaderProps} alignRight />
@@ -928,10 +980,10 @@ export default function Dashboard() {
                     <td colSpan={21} className="px-4 py-8 text-center text-slate-500">
                     {watchlistOnly
                       ? topRsOnly
-                        ? 'No watchlist stocks currently qualify for Top 50 RS in this Signal Agent filter.'
+                        ? 'No watchlist stocks currently qualify for Top 50 RS+Ind in this Signal Agent filter.'
                         : 'No watchlist matches for this Signal Agent filter.'
                       : topRsOnly
-                        ? 'No stocks qualify for Top 50 RS in the current filter. Try All + Run Scan.'
+                        ? 'No stocks qualify for Top 50 RS+Ind in the current filter. Try All + Run Scan.'
                       : <>No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.</>}
                   </td>
                 </tr>
@@ -939,19 +991,21 @@ export default function Dashboard() {
                 sorted.map((r) => (
                   <tr key={r.ticker} className="group border-b border-slate-800/80 hover:bg-slate-800/40">
                     <td className="sticky left-0 z-10 min-w-[10rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium" target="_blank" rel="noopener noreferrer">
-                          {r.ticker}
-                        </Link>
-                        {watchlistTickers.has(r.ticker) && (
-                          <span
-                            className="text-amber-300 text-xs"
-                            title={watchlistMap[r.ticker]?.note || 'In watchlist'}
-                            aria-label="In watchlist"
-                          >
-                            ★
-                          </span>
-                        )}
+                      <div className="flex w-full items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium" style={{ fontSize: '14pt' }} target="_blank" rel="noopener noreferrer">
+                            {r.ticker}
+                          </Link>
+                          {watchlistTickers.has(r.ticker) && (
+                            <span
+                              className="text-amber-300 text-xs"
+                              title={watchlistMap[r.ticker]?.note || 'In watchlist'}
+                              aria-label="In watchlist"
+                            >
+                              ★
+                            </span>
+                          )}
+                        </div>
                       </div>
                       {(fundamentals[r.ticker]?.companyName ?? fundamentals[r.ticker]?.industry) && (
                         <div className="text-slate-400 mt-1 truncate" style={{ fontSize: '10pt' }}>
@@ -987,12 +1041,16 @@ export default function Dashboard() {
                       })()}
                     </td>
                     {/* Opus: primary strength with card-style green/yellow color coding */}
-                    <td className="sticky left-[10rem] z-10 min-w-[5rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3 font-mono tabular-nums text-right">
+                    <td className="sticky left-[10rem] z-10 min-w-[7rem] align-top bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3 font-mono tabular-nums text-right">
                       {opus45ByTicker[r.ticker] ? (
                         (() => {
                           const o = opus45ByTicker[r.ticker]
-                          const conf = o.opus45Confidence ?? 0
-                          const grade = o.opus45Grade ?? 'F'
+                          const display = getOpusDisplayState(o)
+                          if (!display.hasActiveSetup) {
+                            return <span className="text-slate-500">–</span>
+                          }
+                          const conf = display.confidence
+                          const grade = display.grade
                           const isStrong = grade === 'A+' || grade === 'A' || conf >= 80
                           const isModerate = grade === 'B+' || grade === 'B' || (conf >= 60 && conf < 80)
                           const badgeClass = isStrong
@@ -1004,10 +1062,10 @@ export default function Dashboard() {
                                 : 'text-slate-500'
                           return (
                             <span
-                              className={`inline-block whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium ${badgeClass}`}
+                              className={`inline-block whitespace-nowrap px-2 py-0.5 rounded text-sm font-medium ${badgeClass}`}
                               title="Opus4.5 signal strength (entry quality, pattern, volume)"
                             >
-                              {o.opus45Confidence}% {o.opus45Grade}
+                              {display.label}
                             </span>
                           )
                         })()
@@ -1016,7 +1074,7 @@ export default function Dashboard() {
                       )}
                     </td>
                     {/* RS Rating (IBD-style 1–99) */}
-                    <td className="px-4 py-3 font-mono tabular-nums text-right">
+                    <td className="px-4 py-3 font-mono tabular-nums text-right" style={{ fontSize: '14pt' }}>
                       {r.relativeStrength != null ? (
                         <span className={`font-medium ${
                           r.relativeStrength >= 90 ? 'text-emerald-400' :
@@ -1029,7 +1087,7 @@ export default function Dashboard() {
                       ) : '–'}
                     </td>
                     {/* Industry Rank */}
-                    <td className="px-4 py-3 font-mono tabular-nums text-right">
+                    <td className="px-4 py-3 font-mono tabular-nums text-right" style={{ fontSize: '14pt' }}>
                       {r.industryRank != null ? (
                         <span className={`font-medium ${
                           r.industryRank <= 20 ? 'text-emerald-400' :
@@ -1041,6 +1099,30 @@ export default function Dashboard() {
                         </span>
                       ) : '–'}
                     </td>
+                    {/* Signal Agent */}
+                    <td className="px-4 py-3 text-sm">
+                      <span className={getEffectiveSignalSetups(r.signalSetupsRecent, r.signalSetups).length ? 'text-slate-200' : 'text-slate-500'}>
+                        {resolveSignalAgentLabel(
+                          getEffectiveSignalSetups(r.signalSetupsRecent, r.signalSetups),
+                          activeSignalLabelFilter,
+                        )}
+                      </span>
+                    </td>
+                    {/* Current P/L */}
+                    <td className="px-4 py-3 font-mono text-right text-sm">
+                      {(() => {
+                        const ot = opus45ByTicker[r.ticker];
+                        const pl = formatSignalPL(ot?.pctChange);
+                        const toneClass =
+                          pl.tone === 'positive'
+                            ? 'text-emerald-400'
+                            : pl.tone === 'negative'
+                              ? 'text-red-400'
+                              : 'text-slate-500';
+                        return <span className={toneClass}>{pl.text}</span>;
+                      })()}
+                    </td>
+                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">{r.lastClose != null ? `$${r.lastClose.toFixed(2)}` : '–'}</td>
                     {/* Open Trade: line1 = date + days (nowrap), line2 = P/L % + $ (nowrap) */}
                     <td className="px-4 py-3 font-mono text-right text-sm min-w-[10rem]">
                       {(() => {
@@ -1099,27 +1181,6 @@ export default function Dashboard() {
                         <span className="text-slate-500">–</span>
                       )}
                     </td>
-                    {/* Signal Agent */}
-                    <td className="px-4 py-3 text-sm">
-                      <span className={(r.signalSetupsRecent ?? r.signalSetups)?.length ? 'text-slate-200' : 'text-slate-500'}>
-                        {resolveSignalAgentLabel(r.signalSetupsRecent ?? r.signalSetups ?? [], activeSignalLabelFilter)}
-                      </span>
-                    </td>
-                    {/* Current P/L */}
-                    <td className="px-4 py-3 font-mono text-right text-sm">
-                      {(() => {
-                        const ot = opus45ByTicker[r.ticker];
-                        const pl = formatSignalPL(ot?.pctChange);
-                        const toneClass =
-                          pl.tone === 'positive'
-                            ? 'text-emerald-400'
-                            : pl.tone === 'negative'
-                              ? 'text-red-400'
-                              : 'text-slate-500';
-                        return <span className={toneClass}>{pl.text}</span>;
-                      })()}
-                    </td>
-                    <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">{r.lastClose != null ? `$${r.lastClose.toFixed(2)}` : '–'}</td>
                     <td className="px-4 py-3 text-slate-300 font-mono text-right">{r.contractions ?? '–'}</td>
                     <td className="px-4 py-3 text-right">{r.atMa10 ? '✅' : '–'}</td>
                     <td className="px-4 py-3 text-right">{r.atMa20 ? '✅' : '–'}</td>
@@ -1200,6 +1261,7 @@ export default function Dashboard() {
       </div>
       </>
       )}
+
       </div>
 
       {/* Signal Agent criteria modal (editable) */}

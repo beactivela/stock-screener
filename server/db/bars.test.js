@@ -16,7 +16,7 @@
 
 import { describe, it, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { isBarsUpToDate } from './bars.js';
+import { isBarsUpToDate, __testing } from './bars.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -242,6 +242,31 @@ describe('Cache layer: Supabase miss → Yahoo fetch → save', () => {
         assert.ok(typeof bar[field] === 'number', `Bar field '${field}' must be numeric`);
       }
     }
+  });
+
+  it('buildBarsCacheRows creates batch-upsert rows for multiple tickers', () => {
+    const rows = __testing.buildBarsCacheRows([
+      {
+        ticker: 'AAPL',
+        from: '2021-01-04',
+        to: '2026-02-21',
+        interval: '1d',
+        results: generateBars(10),
+      },
+      {
+        ticker: 'MSFT',
+        from: '2021-01-04',
+        to: '2026-02-21',
+        interval: '1wk',
+        results: generateBars(5),
+      },
+    ], '2026-03-08T00:00:00.000Z');
+
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => `${row.ticker}:${row.interval}`), ['AAPL:1d', 'MSFT:1wk']);
+    assert.equal(rows[0].fetched_at, '2026-03-08T00:00:00.000Z');
+    assert.ok(Array.isArray(rows[1].results));
+    assert.ok(rows[1].results.length > 0);
   });
 });
 

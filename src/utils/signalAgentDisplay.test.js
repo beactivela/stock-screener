@@ -1,6 +1,11 @@
 import assert from 'assert';
 import { describe, it } from 'node:test';
-import { resolveSignalAgentLabel, formatSignalDate, formatSignalPL } from './signalAgentDisplay.js';
+import {
+  resolveSignalAgentLabel,
+  formatSignalDate,
+  formatSignalPL,
+  getEffectiveSignalSetups,
+} from './signalAgentDisplay.js';
 
 describe('signalAgentDisplay helpers', () => {
   it('picks first matching agent label by priority', () => {
@@ -34,5 +39,18 @@ describe('signalAgentDisplay helpers', () => {
     assert.deepEqual(formatSignalPL(5.2), { text: '+5.2%', tone: 'positive' });
     assert.deepEqual(formatSignalPL(-3.1), { text: '-3.1%', tone: 'negative' });
     assert.deepEqual(formatSignalPL(null), { text: '—', tone: 'muted' });
+  });
+
+  it('falls back to full setups when recent is empty', () => {
+    assert.deepEqual(
+      getEffectiveSignalSetups([], ['base_hunter']),
+      ['base_hunter'],
+    );
+    assert.deepEqual(
+      getEffectiveSignalSetups(['momentum_scout'], ['base_hunter']),
+      ['momentum_scout'],
+    );
+    assert.deepEqual(getEffectiveSignalSetups(null, ['base_hunter']), ['base_hunter']);
+    assert.deepEqual(getEffectiveSignalSetups(undefined, undefined), []);
   });
 });

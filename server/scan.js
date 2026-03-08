@@ -23,8 +23,15 @@ import { saveScanSnapshot } from './backtest.js';
 import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
 import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
 import { fetchTradingViewIndustryReturns, buildIndustryReturnsFromTVMap, normalizeIndustryName } from './tradingViewIndustry.js';
-import { saveScanResults as saveScanResultsToDb } from './db/scanResults.js';
-import { getBars as getBarsFromDb, saveBars as saveBarsToDb } from './db/bars.js';
+import {
+  createScanRun,
+  saveScanResultsBatch,
+  updateScanResultsBatch,
+  loadLatestScanResultsWithRun,
+  updateIndustryRankBatch,
+} from './db/scanResults.js';
+import { getCachedBars, saveBars as saveBarsToDb, saveBarsBatch as saveBarsBatchToDb } from './db/bars.js';
+import { getScanPersistenceStrategy } from './scanPersistence.js';
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
@@ -33,6 +40,10 @@ const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
 // Default 0 = scan entire data/tickers.txt (e.g. 899 tickers). Set SCAN_LIMIT=100 for faster tests.
 const TICKER_LIMIT = Number(process.env.SCAN_LIMIT) || 0;
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
+const DEFAULT_SCAN_BATCH_SIZE = 20;
+const DEFAULT_SCAN_CONCURRENCY = 20;
+const DEFAULT_SCAN_YAHOO_CONCURRENCY = 20;
+const DEFAULT_SCAN_DELAY_MS = 40;
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -40,17 +51,203 @@ function ensureDataDir() {
 }
 
 /** Get bars: DB cache first (incremental fill), then API. Set SCAN_SKIP_CACHE=1 to force API. */
-async function getBarsForScan(ticker, from, to) {
+async function getBarsForScan(ticker, from, to, opts = {}) {
   if (!process.env.SCAN_SKIP_CACHE) {
-    const cached = await getBarsFromDb(ticker, from, to, '1d');
+    const cached = await getCachedBars(ticker, from, to, '1d');
     if (cached && cached.length > 0) return cached;
   }
-  const bars = await getDailyBars(ticker, from, to);
-  if (bars && bars.length > 0) await saveBarsToDb(ticker, from, to, bars, '1d');
-  return bars;
+  const fetchBars = () => getDailyBars(ticker, from, to);
+  const bars = typeof opts.withYahooLimit === 'function'
+    ? await opts.withYahooLimit(fetchBars)
+    : await fetchBars();
+  if (bars && bars.length > 0) {
+    if (typeof opts.onFetchedBars === 'function') {
+      opts.onFetchedBars({ ticker, from, to, interval: '1d', results: bars });
+    } else {
+      await saveBarsToDb(ticker, from, to, bars, '1d');
+    }
+    return bars;
+  }
+  return [];
 }
 
-function dateRange(daysBack = 320) {
+export function createScanRateLimiter(limit = 1, minDelayMs = 0) {
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  const safeDelayMs = Math.max(0, Number(minDelayMs) || 0);
+  let activeCount = 0;
+  let nextAllowedAt = 0;
+  const waiting = [];
+
+  const release = () => {
+    activeCount = Math.max(0, activeCount - 1);
+    const next = waiting.shift();
+    if (next) next();
+  };
+
+  return async function withLimit(task) {
+    if (activeCount >= safeLimit) {
+      await new Promise((resolve) => waiting.push(resolve));
+    }
+    activeCount += 1;
+    try {
+      if (safeDelayMs > 0) {
+        const waitMs = Math.max(0, nextAllowedAt - Date.now());
+        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+        nextAllowedAt = Date.now() + safeDelayMs;
+      }
+      return await task();
+    } finally {
+      release();
+    }
+  };
+}
+
+export async function runTasksWithConcurrency({ items, concurrency = 1, worker, onResolved }) {
+  if (!Array.isArray(items)) throw new Error('items must be an array');
+  if (typeof worker !== 'function') throw new Error('worker must be a function');
+
+  const safeConcurrency = Math.max(1, Number(concurrency) || 1);
+  const inFlight = new Set();
+  let cursor = 0;
+
+  const launchNext = () => {
+    while (cursor < items.length && inFlight.size < safeConcurrency) {
+      const item = items[cursor];
+      const itemIndex = cursor;
+      cursor += 1;
+
+      let taskPromise;
+      taskPromise = (async () => {
+        const result = await worker(item, itemIndex);
+        if (typeof onResolved === 'function') {
+          await onResolved(result, itemIndex);
+        }
+        return result;
+      })().finally(() => {
+        inFlight.delete(taskPromise);
+      });
+
+      inFlight.add(taskPromise);
+    }
+  };
+
+  launchNext();
+  while (inFlight.size > 0) {
+    await Promise.race(inFlight);
+    launchNext();
+  }
+}
+
+export function shouldBuildSignalSnapshots(result) {
+  return !!(result?.vcpBullish || result?.recommendation === 'buy' || result?.recommendation === 'hold');
+}
+
+export function resolveScanExecutionConfig(env = process.env) {
+  const parsePositive = (value, fallback) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? Math.floor(num) : fallback;
+  };
+  const parseNonNegative = (value, fallback) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num >= 0 ? Math.floor(num) : fallback;
+  };
+
+  const batchSize = parsePositive(env.SCAN_BATCH_SIZE, DEFAULT_SCAN_BATCH_SIZE);
+  const scanConcurrency = parsePositive(env.SCAN_CONCURRENCY, DEFAULT_SCAN_CONCURRENCY);
+  const yahooConcurrency = parsePositive(env.SCAN_YAHOO_CONCURRENCY, DEFAULT_SCAN_YAHOO_CONCURRENCY);
+  const delayMs = parseNonNegative(env.SCAN_DELAY_MS, DEFAULT_SCAN_DELAY_MS);
+
+  return { batchSize, scanConcurrency, yahooConcurrency, delayMs };
+}
+
+async function scanSingleTicker({ ticker, from, to, withYahooLimit, onFetchedBars }) {
+  try {
+    const bars = await getBarsForScan(ticker, from, to, { withYahooLimit, onFetchedBars });
+    if (!bars.length) {
+      return {
+        result: {
+          ticker,
+          score: 0,
+          recommendation: 'avoid',
+          vcpBullish: false,
+          reason: 'no_bars',
+          enhancedScore: 0,
+          enhancedGrade: 'F',
+          signalSetups: [],
+        },
+        bars: null,
+        snapshots: null,
+      };
+    }
+
+    const vcp = checkVCP(bars);
+    const snapshots = shouldBuildSignalSnapshots(vcp) ? buildSignalSnapshots(bars, 5) : null;
+    return {
+      result: { ticker, ...vcp },
+      bars,
+      snapshots,
+    };
+  } catch (e) {
+    console.warn(ticker, e.message);
+    return {
+      result: {
+        ticker,
+        score: 0,
+        recommendation: 'avoid',
+        vcpBullish: false,
+        error: e.message,
+        enhancedScore: 0,
+        enhancedGrade: 'F',
+        signalSetups: [],
+      },
+      bars: null,
+      snapshots: null,
+    };
+  }
+}
+
+async function* scanTickersStream({ tickers, from, to, concurrency, withYahooLimit, onFetchedBars }) {
+  const safeConcurrency = Math.max(1, Number(concurrency) || 1);
+  const pending = new Set();
+  const ready = [];
+  let nextTickerIndex = 0;
+  let completedCount = 0;
+
+  const launchNext = () => {
+    while (nextTickerIndex < tickers.length && pending.size < safeConcurrency) {
+      const ticker = tickers[nextTickerIndex];
+      nextTickerIndex += 1;
+
+      let taskPromise;
+      taskPromise = scanSingleTicker({ ticker, from, to, withYahooLimit, onFetchedBars })
+        .then((payload) => {
+          ready.push(payload);
+        })
+        .finally(() => {
+          pending.delete(taskPromise);
+        });
+
+      pending.add(taskPromise);
+    }
+  };
+
+  launchNext();
+  while (pending.size > 0 || ready.length > 0) {
+    if (ready.length === 0) {
+      await Promise.race(pending);
+      launchNext();
+      continue;
+    }
+
+    const payload = ready.shift();
+    completedCount += 1;
+    yield { ...payload, index: completedCount, total: tickers.length };
+    launchNext();
+  }
+}
+
+// 420 calendar days yields ~260 trading bars (enough for 12-month RS).
+function dateRange(daysBack = 420) {
   const to = new Date();
   const from = new Date(to);
   from.setDate(from.getDate() - daysBack);
@@ -131,10 +328,65 @@ export function applyRatingsAndEnhancements({
   });
 }
 
+/**
+ * One-time backfill to populate industryRank across existing scan results.
+ * Uses fundamentals + industry returns to compute ranks, then updates in batches.
+ */
+export async function backfillIndustryRanks({ batchSize = 20 } = {}) {
+  const {
+    scanRunId,
+    results,
+    scannedAt,
+    from,
+    to,
+    totalTickers,
+    vcpBullishCount,
+  } = await loadLatestScanResultsWithRun();
+
+  if (!results || results.length === 0) {
+    return { updated: 0, total: 0, scanRunId: scanRunId ?? null, industryCount: 0 };
+  }
+
+  const fundamentals = await loadFundamentals();
+  const industryReturns = await loadIndustryReturns(fundamentals);
+  const industryRanks = rankIndustries(industryReturns);
+
+  const updatedResults = results.map((row) => {
+    const fund = fundamentals?.[row.ticker] || null;
+    const industryName = fund?.industry ?? row.industryName ?? null;
+    const rankData = industryName ? industryRanks?.[industryName] : null;
+    const industryRank = rankData?.rank ?? null;
+    return { ...row, industryName, industryRank };
+  });
+
+  const meta = {
+    scannedAt,
+    from,
+    to,
+    totalTickers,
+    vcpBullishCount,
+  };
+
+  let updated = 0;
+  for (let i = 0; i < updatedResults.length; i += batchSize) {
+    const batch = updatedResults.slice(i, i + batchSize);
+    await updateIndustryRankBatch({ scanRunId, results: batch, meta });
+    updated += batch.length;
+  }
+
+  return {
+    updated,
+    total: updatedResults.length,
+    scanRunId: scanRunId ?? null,
+    industryCount: Object.keys(industryRanks || {}).length,
+  };
+}
+
 async function runScan() {
   ensureDataDir();
-  const { from, to } = dateRange(320); // 320d supports 200 MA based agent criteria
+  const { from, to } = dateRange(420); // 420d ensures 12m RS + 200 MA coverage
   const tickers = await getTickers();
+  const scannedAt = new Date().toISOString();
   
   // Load fundamentals and industry returns (TradingView) for enhanced scoring
   const fundamentals = await loadFundamentals();
@@ -147,30 +399,64 @@ async function runScan() {
   const results = [];
   const barsByTicker = new Map();
   const snapshotsByTicker = new Map();
-  // Sequential queue: 1 ticker at a time with delay to avoid Yahoo throttling
-  const delayMs = Number(process.env.SCAN_DELAY_MS) || 150;
-  for (let i = 0; i < tickers.length; i++) {
-    if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-    const ticker = tickers[i];
-    try {
-      const bars = await getBarsForScan(ticker, from, to);
-      if (!bars.length) {
-        results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] });
-      } else {
-        const vcp = checkVCP(bars);
-        barsByTicker.set(ticker, bars);
-        const snapshots = buildSignalSnapshots(bars, 5);
-        snapshotsByTicker.set(ticker, snapshots);
-        const merged = { ticker, ...vcp };
-        results.push(merged);
-      }
-    } catch (e) {
-      console.warn(ticker, e.message);
-      results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] });
+  const pendingBarsCacheWrites = [];
+  const { batchSize, delayMs, scanConcurrency, yahooConcurrency } = resolveScanExecutionConfig();
+  const pendingBatch = [];
+  let vcpBullishCount = 0;
+  const persistenceStrategy = getScanPersistenceStrategy();
+  const { scanRunId } = await createScanRun({
+    scannedAt,
+    from,
+    to,
+    totalTickers: tickers.length,
+    vcpBullishCount: 0,
+  });
+  const withYahooLimit = createScanRateLimiter(yahooConcurrency, delayMs);
+  const queueBarsCacheWrite = (entry) => {
+    if (!entry?.ticker || !Array.isArray(entry?.results) || entry.results.length === 0) return;
+    pendingBarsCacheWrites.push(entry);
+  };
+  async function flushBatch() {
+    const nextResults = pendingBatch.splice(0, pendingBatch.length);
+    const nextBars = pendingBarsCacheWrites.splice(0, pendingBarsCacheWrites.length);
+    if (nextResults.length > 0) {
+      await saveScanResultsBatch({
+        scanRunId,
+        results: nextResults,
+        meta: {
+          scannedAt,
+          from,
+          to,
+          totalTickers: tickers.length,
+          vcpBullishCount,
+        },
+      });
     }
-    if ((i + 1) % 25 === 0 || i + 1 === tickers.length) {
-      console.log(`  ${i + 1} / ${tickers.length}`);
+    if (nextBars.length > 0) {
+      await saveBarsBatchToDb(nextBars);
     }
+  }
+
+  for await (const { result, bars, snapshots, index, total } of scanTickersStream({
+    tickers,
+    from,
+    to,
+    concurrency: scanConcurrency,
+    withYahooLimit,
+    onFetchedBars: queueBarsCacheWrite,
+  })) {
+    results.push(result);
+    pendingBatch.push(result);
+    if (bars && result.ticker) barsByTicker.set(result.ticker, bars);
+    if (snapshots && result.ticker) snapshotsByTicker.set(result.ticker, snapshots);
+    if (result.vcpBullish) vcpBullishCount++;
+    if (persistenceStrategy === 'stream_batches' && pendingBatch.length >= batchSize) await flushBatch();
+    if (index % 25 === 0 || index === total) {
+      console.log(`  ${index} / ${total}`);
+    }
+  }
+  if (persistenceStrategy === 'stream_batches') {
+    await flushBatch();
   }
 
   // Convert raw RS weighted performance into IBD-style 1-99 rating across this scan universe.
@@ -189,10 +475,10 @@ async function runScan() {
     if (bEnhanced !== aEnhanced) return bEnhanced - aEnhanced;
     return (b.score ?? 0) - (a.score ?? 0);
   });
-  const vcpBullishCount = ratedResults.filter((r) => r.vcpBullish).length;
+  vcpBullishCount = ratedResults.filter((r) => r.vcpBullish).length;
 
   const payload = {
-    scannedAt: new Date().toISOString(),
+    scannedAt,
     from,
     to,
     totalTickers: tickers.length,
@@ -200,7 +486,33 @@ async function runScan() {
     results: ratedResults,
   };
 
-  await saveScanResultsToDb(payload);
+  if (persistenceStrategy === 'stream_batches') {
+    for (let i = 0; i < ratedResults.length; i += batchSize) {
+      await updateScanResultsBatch({
+        scanRunId,
+        results: ratedResults.slice(i, i + batchSize),
+        meta: {
+          scannedAt,
+          from,
+          to,
+          totalTickers: tickers.length,
+          vcpBullishCount,
+        },
+      });
+    }
+  } else {
+    await saveScanResultsBatch({
+      scanRunId,
+      results: ratedResults,
+      meta: {
+        scannedAt,
+        from,
+        to,
+        totalTickers: tickers.length,
+        vcpBullishCount,
+      },
+    });
+  }
 
   // Save backtest snapshot for future analysis
   try {
@@ -216,50 +528,25 @@ async function runScan() {
 /**
  * Streaming scan: yields each ticker result as it completes.
  * Used by POST /api/scan for live UI updates.
- * Throttling: 1 ticker at a time, SCAN_DELAY_MS between (default 150ms).
+ * Concurrency: cached-bar work can fan out, while Yahoo fetches stay rate-limited.
  * 
  * IMPROVEMENT: Now uses industry ranks with multiplier
  */
 async function* runScanStream() {
   ensureDataDir();
-  const { from, to } = dateRange(320); // 320d supports 200 MA based agent criteria
+  const { from, to } = dateRange(420); // 420d ensures 12m RS + 200 MA coverage
   const tickers = await getTickers();
-  const delayMs = Number(process.env.SCAN_DELAY_MS) || 150;
-  
-  // Load fundamentals and industry returns (TradingView)
-  const fundamentals = await loadFundamentals();
-  const industryReturns = await loadIndustryReturns(fundamentals);
-  const industryRanks = rankIndustries(industryReturns);
-  
-  for (let i = 0; i < tickers.length; i++) {
-    if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-    const ticker = tickers[i];
-    let result;
-    try {
-      const bars = await getBarsForScan(ticker, from, to);
-      if (!bars.length) {
-        result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] };
-      } else {
-        const vcp = checkVCP(bars);
-        const fund = fundamentals[ticker] || null;
-        const industryData = fund?.industry ? industryRanks[fund.industry] : null;
-        
-        // Pass industryRanks to apply multiplier (RS rating not available in stream)
-        const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
-        const merged = { ticker, ...vcp, ...enhanced };
-        merged.signalSetups = classifySignalSetups(merged);
-        const snapshots = buildSignalSnapshots(bars, 5);
-        merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
-        merged.signalSetupsRecent5 = classifySignalSetupsRecent(snapshots, 5);
-        result = merged;
-        yield { result, index: i + 1, total: tickers.length, bars, snapshots };
-        continue;
-      }
-    } catch (e) {
-      console.warn(ticker, e.message);
-      result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] };
-    }
-    yield { result, index: i + 1, total: tickers.length, bars: null, snapshots: null };
+  const { delayMs, scanConcurrency, yahooConcurrency } = resolveScanExecutionConfig();
+  const withYahooLimit = createScanRateLimiter(yahooConcurrency, delayMs);
+
+  for await (const payload of scanTickersStream({
+    tickers,
+    from,
+    to,
+    concurrency: scanConcurrency,
+    withYahooLimit,
+  })) {
+    yield payload;
   }
 }
 

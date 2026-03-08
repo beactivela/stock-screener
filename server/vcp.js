@@ -10,15 +10,17 @@ import { identifyPattern } from './patternDetection.js';
 import { computeUnusualVolume } from './utils/unusualVolume.js';
 
 function sma(closes, period) {
-  const out = [];
+  const out = new Array(closes.length).fill(null);
+  if (!Array.isArray(closes) || closes.length === 0 || period <= 0) return out;
+  let sum = 0;
   for (let i = 0; i < closes.length; i++) {
-    if (i < period - 1) {
-      out.push(null);
-      continue;
+    const v = closes[i];
+    sum += Number.isFinite(v) ? v : 0;
+    if (i >= period) {
+      const prev = closes[i - period];
+      sum -= Number.isFinite(prev) ? prev : 0;
     }
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) sum += closes[j];
-    out.push(sum / period);
+    if (i >= period - 1) out[i] = sum / period;
   }
   return out;
 }
@@ -27,15 +29,14 @@ function sma(closes, period) {
  * Volume SMA for comparison (e.g. 20-day avg volume).
  */
 function volumeSma(volumes, period) {
-  const out = [];
+  const out = new Array(volumes.length).fill(null);
+  if (!Array.isArray(volumes) || volumes.length === 0 || period <= 0) return out;
+  let sum = 0;
   for (let i = 0; i < volumes.length; i++) {
-    if (i < period - 1) {
-      out.push(null);
-      continue;
-    }
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) sum += (volumes[j] ?? 0);
-    out.push(sum / period);
+    const v = volumes[i] ?? 0;
+    sum += v;
+    if (i >= period) sum -= (volumes[i - period] ?? 0);
+    if (i >= period - 1) out[i] = sum / period;
   }
   return out;
 }
@@ -224,7 +225,8 @@ function assignIBDRelativeStrengthRatings(rows) {
  * bars: array of { o, h, l, c, v, t } (ascending by t).
  * Returns { vcpBullish, contractions, atMa10, atMa20, atMa50, lastClose, sma10, sma20, sma50, relativeStrength, pattern, patternConfidence }.
  */
-function checkVCP(bars) {
+function checkVCP(bars, options = {}) {
+  const { lite = false } = options || {};
   if (!bars || bars.length < 60) {
     const { scoreBreakdown } = computeBuyScore({ reason: 'not_enough_bars' });
     return { 
@@ -245,6 +247,7 @@ function checkVCP(bars) {
       rsData: null,
       pattern: 'None',
       patternConfidence: 0,
+      patternDetails: lite ? 'lite_mode' : 'Insufficient data',
       ma10Slope14d: null,
       ma10Above20: false,
       pctFromHigh: null,
@@ -300,6 +303,7 @@ function checkVCP(bars) {
       rsData,
       pattern: 'None',
       patternConfidence: 0,
+      patternDetails: lite ? 'lite_mode' : 'Below 50 MA',
       ma10Slope14d: null,
       ma10Above20: last10 != null && last20 != null ? last10 > last20 : false,
       pctFromHigh: null,
@@ -429,8 +433,10 @@ function checkVCP(bars) {
     return last200 > prev200;
   })();
 
-  // NEW: Identify which Minervini pattern has formed
-  const patternResult = identifyPattern(bars, contractions, volumeDryUp);
+  // NEW: Identify which Minervini pattern has formed (skip in lite mode)
+  const patternResult = lite
+    ? { pattern: 'None', confidence: 0, details: 'lite_mode', detected: false, allPatterns: {} }
+    : identifyPattern(bars, contractions, volumeDryUp);
 
   const raw = {
     vcpBullish,
@@ -480,7 +486,7 @@ function buildSignalSnapshots(bars, lookbackBars = 3) {
   const snapshots = [];
   for (let i = startIdx; i < bars.length; i++) {
     const slice = bars.slice(0, i + 1);
-    snapshots.push(checkVCP(slice));
+    snapshots.push(checkVCP(slice, { lite: true }));
   }
   return snapshots;
 }

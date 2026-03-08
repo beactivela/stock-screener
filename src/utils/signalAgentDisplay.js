@@ -14,6 +14,16 @@ const AGENT_PRIORITY = [
   'turtle_trader',
 ];
 
+/**
+ * Prefer recent setups when present, but gracefully fall back to full setups.
+ * This avoids empty filters when recent classification is unavailable.
+ */
+export function getEffectiveSignalSetups(signalSetupsRecent = null, signalSetups = null) {
+  if (Array.isArray(signalSetupsRecent) && signalSetupsRecent.length > 0) return signalSetupsRecent;
+  if (Array.isArray(signalSetups)) return signalSetups;
+  return [];
+}
+
 export function resolveSignalAgentLabel(signalSetups = [], preferredAgentId = null) {
   if (preferredAgentId && signalSetups.includes(preferredAgentId)) {
     return AGENT_LABELS[preferredAgentId] ?? '—';

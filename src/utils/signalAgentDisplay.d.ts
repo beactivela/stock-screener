@@ -1,5 +1,10 @@
 export function resolveSignalAgentLabel(signalSetups?: string[], preferredAgentId?: string | null): string
 
+export function getEffectiveSignalSetups(
+  signalSetupsRecent?: string[] | null,
+  signalSetups?: string[] | null,
+): string[]
+
 export function formatSignalDate(entryDate?: string | number | null): string
 
 export function formatSignalPL(

@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS scan_results (
 CREATE INDEX IF NOT EXISTS idx_scan_results_scan_run ON scan_results(scan_run_id);
 CREATE INDEX IF NOT EXISTS idx_scan_results_ticker ON scan_results(ticker);
 CREATE INDEX IF NOT EXISTS idx_scan_results_enhanced_score ON scan_results(enhanced_score DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_results_scan_run_ticker_unique ON scan_results(scan_run_id, ticker);
+CREATE INDEX IF NOT EXISTS idx_scan_results_scan_run_score ON scan_results(scan_run_id, enhanced_score DESC);
 CREATE INDEX IF NOT EXISTS idx_scan_runs_scanned_at ON scan_runs(scanned_at DESC);
 
 -- Latest scan is the most recent scan_run; app typically queries latest
