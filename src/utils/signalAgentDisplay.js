@@ -40,3 +40,62 @@ export function formatSignalPL(pctChange) {
     tone: pctChange > 0 ? 'positive' : pctChange < 0 ? 'negative' : 'muted',
   };
 }
+
+/**
+ * Human-readable signal criteria for each agent (used by Edit modal on Dashboard).
+ * Derived from server/learning/signalSetupClassifier.js and docs/SIGNAL_AGENT_*.md
+ */
+export const SIGNAL_AGENT_CRITERIA = {
+  unusual_vol: {
+    label: 'Unusual Vol.',
+    criteria: [
+      'Unusual volume in last 3 days (volume vs 20-day average)',
+      'Latest price higher than price 3 days ago',
+    ],
+  },
+  momentum_scout: {
+    label: 'Momentum Scout',
+    criteria: [
+      'Relative Strength ≥ 85',
+      '10 MA slope (14d) ≥ 5',
+      'Within 15% of 52-week high',
+      'Signal family: opus45',
+    ],
+  },
+  base_hunter: {
+    label: 'Base Hunter',
+    criteria: [
+      'VCP contractions ≥ 3',
+      'Pattern confidence ≥ 65%',
+      'Volume dry-up present',
+      'Signal family: opus45',
+    ],
+  },
+  breakout_tracker: {
+    label: 'Breakout Tracker',
+    criteria: [
+      'Relative Strength ≥ 80',
+      'Within 8% of 52-week high',
+      'Breakout volume ratio ≥ 1.2×',
+      'Signal family: opus45',
+    ],
+  },
+  turtle_trader: {
+    label: 'Turtle Trader',
+    criteria: [
+      'Donchian 20d or 55d breakout',
+      'Price above all MAs',
+      '200 MA rising',
+      'Relative Strength ≥ 80',
+      'Signal family: turtle',
+    ],
+  },
+  ma_crossover_10_20: {
+    label: '10-20 Cross Over',
+    criteria: [
+      '10 MA crosses above 20 MA (bullish crossover)',
+      'Exit: first close below 10 MA',
+      'Signal family: ma_crossover',
+    ],
+  },
+};

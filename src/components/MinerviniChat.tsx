@@ -19,6 +19,11 @@ export interface ChatMessage {
   content: string
 }
 
+interface AskEventDetail {
+  prompt: string
+  autoSend?: boolean
+}
+
 const WELCOME =
   "I'm Mark Minervini — SEPA and CANSLIM, period. Ask me about any stock or setup and I'll run through the checklist. Tell me what passes, what fails, and whether to wait for a better entry."
 
@@ -49,11 +54,11 @@ export default function MinerviniChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  const send = async () => {
-    const text = input.trim()
-    if (!text || loading) return
+  const sendPrompt = async (text: string) => {
+    const clean = text.trim()
+    if (!clean || loading) return
 
-    const userMsg: ChatMessage = { role: 'user', content: text }
+    const userMsg: ChatMessage = { role: 'user', content: clean }
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     setLoading(true)
@@ -85,6 +90,28 @@ export default function MinerviniChat() {
       setLoading(false)
     }
   }
+
+  const send = async () => {
+    const text = input.trim()
+    if (!text || loading) return
+    await sendPrompt(text)
+  }
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<AskEventDetail>).detail
+      if (!detail?.prompt) return
+      setActiveTab('coach')
+      setOpen(true)
+      if (detail.autoSend) {
+        setTimeout(() => sendPrompt(detail.prompt), 0)
+      } else {
+        setInput(detail.prompt)
+      }
+    }
+    window.addEventListener('minervini:ask', handler)
+    return () => window.removeEventListener('minervini:ask', handler)
+  }, [messages, loading])
 
   const runConversation = async () => {
     if (conversationStatus === 'running') return

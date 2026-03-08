@@ -1,0 +1,245 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { ColorType, createChart } from 'lightweight-charts'
+import { API_BASE } from '../utils/api'
+import { sma } from '../utils/chartIndicators'
+import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
+
+interface Bar {
+  t: number
+  o: number
+  h: number
+  l: number
+  c: number
+}
+
+interface IndexConfig {
+  label: string
+  ticker: string
+}
+
+const INDEXES: IndexConfig[] = [
+  { label: 'S&P 500', ticker: '^GSPC' },
+  { label: 'NASDAQ', ticker: '^IXIC' },
+  { label: 'RUSSEL 2000', ticker: '^RUT' },
+]
+
+const CHART_OPTIONS = {
+  layout: { background: { type: ColorType.Solid, color: '#0f172a' }, textColor: '#94a3b8' },
+  grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+  timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#334155' },
+  rightPriceScale: { borderColor: '#334155' },
+}
+
+function getRegimeTone(regime: MarketRegimeLabel): string {
+  if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
+  if (regime === 'Neutral') return 'text-yellow-300 bg-yellow-500/15 border-yellow-700/50'
+  return 'text-red-300 bg-red-500/15 border-red-700/50' // Mild Bearish / Bearish
+}
+
+function formatChange(value: number): string {
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(2)}`
+}
+
+function MarketIndexCard({ config }: { config: IndexConfig }) {
+  const [bars, setBars] = useState<Bar[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    fetch(`${API_BASE}/api/bars/${encodeURIComponent(config.ticker)}?days=365&interval=1d`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((res) => {
+        if (cancelled) return
+        if (res?.error) throw new Error(res.error)
+        const raw = (res?.results || []) as Bar[]
+        setBars([...raw].sort((a, b) => a.t - b.t))
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setBars([])
+        setError(e instanceof Error ? e.message : 'Failed to load')
+      })
+      .finally(() => {
+        if (cancelled) return
+        setLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [config.ticker])
+
+  const {
+    candleData,
+    ma10Data,
+    ma20Data,
+    ma50Data,
+    latestClose,
+    prevClose,
+    latestDate,
+    ma10Last,
+    ma20Last,
+    ma50Last,
+    regime,
+  } = useMemo(() => {
+    if (bars.length === 0) {
+      return {
+        candleData: [],
+        ma10Data: [],
+        ma20Data: [],
+        ma50Data: [],
+        latestClose: null as number | null,
+        prevClose: null as number | null,
+        latestDate: null as string | null,
+        ma10Last: null as number | null,
+        ma20Last: null as number | null,
+        ma50Last: null as number | null,
+        regime: 'Risk OFF' as MarketRegimeLabel,
+      }
+    }
+
+    const closes = bars.map((b) => b.c)
+    const sma10 = sma(closes, 10)
+    const sma20 = sma(closes, 20)
+    const sma50 = sma(closes, 50)
+    const toTime = (t: number) => Math.floor(t / 1000) as any
+    const ma10Last = sma10[sma10.length - 1] ?? null
+    const ma20Last = sma20[sma20.length - 1] ?? null
+    const ma50Last = sma50[sma50.length - 1] ?? null
+    const lastBar = bars[bars.length - 1]
+    const prevBar = bars[bars.length - 2]
+
+    const regime = classifyMovingAverageRegime({
+      ma10: ma10Last,
+      ma20: ma20Last,
+      ma50: ma50Last,
+      recentMa20: sma20.slice(-12),
+      recentMa50: sma50.slice(-12),
+    })
+
+    return {
+      candleData: bars.map((b) => ({ time: toTime(b.t), open: b.o, high: b.h, low: b.l, close: b.c })),
+      ma10Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma10[i] })).filter((d) => d.value != null) as { time: number; value: number }[],
+      ma20Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma20[i] })).filter((d) => d.value != null) as { time: number; value: number }[],
+      ma50Data: bars.map((b, i) => ({ time: toTime(b.t), value: sma50[i] })).filter((d) => d.value != null) as { time: number; value: number }[],
+      latestClose: lastBar?.c ?? null,
+      prevClose: prevBar?.c ?? null,
+      latestDate: new Date(lastBar?.t ?? 0).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      ma10Last,
+      ma20Last,
+      ma50Last,
+      regime,
+    }
+  }, [bars])
+
+  useEffect(() => {
+    if (!containerRef.current || candleData.length === 0 || loading) return
+    if (chartRef.current) {
+      chartRef.current.remove()
+      chartRef.current = null
+    }
+
+    const width = containerRef.current.clientWidth || 320
+    const chart = createChart(containerRef.current, {
+      ...CHART_OPTIONS,
+      width,
+      height: 170,
+      rightPriceScale: { borderColor: '#334155', scaleMargins: { top: 0.1, bottom: 0.15 } },
+    })
+
+    const candles = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      wickUpColor: '#22c55e',
+      wickDownColor: '#ef4444',
+      borderVisible: false,
+    })
+    candles.setData(candleData as any)
+
+    const ma10Series = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma20Series = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma50Series = chart.addLineSeries({ color: '#a78bfa', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    ma10Series.setData(ma10Data as any)
+    ma20Series.setData(ma20Data as any)
+    ma50Series.setData(ma50Data as any)
+
+    chart.timeScale().fitContent()
+    chartRef.current = chart
+
+    const resizeObserver = new ResizeObserver(() => {
+      const nextWidth = containerRef.current?.clientWidth || 320
+      if (chartRef.current && nextWidth > 0) {
+        chartRef.current.applyOptions({ width: nextWidth })
+      }
+    })
+    resizeObserver.observe(containerRef.current)
+
+    return () => {
+      resizeObserver.disconnect()
+      chart.remove()
+      chartRef.current = null
+    }
+  }, [candleData, ma10Data, ma20Data, ma50Data, loading])
+
+  const change = latestClose != null && prevClose != null ? latestClose - prevClose : null
+  const changePct = latestClose != null && prevClose != null && prevClose !== 0
+    ? ((latestClose - prevClose) / prevClose) * 100
+    : null
+
+  return (
+    <Link
+      to={`/market-index/${encodeURIComponent(config.ticker)}`}
+      className="block rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden hover:border-slate-600 hover:bg-slate-900/70 transition-colors cursor-pointer"
+    >
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 flex-nowrap" style={{ fontSize: '10pt' }}>
+        <div className="flex items-center gap-2 flex-nowrap min-w-0">
+          <span className="text-slate-400 uppercase tracking-wide shrink-0">{config.label}</span>
+          <span className="text-slate-500 shrink-0">{latestDate ?? ''}</span>
+          <span className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${getRegimeTone(regime)}`}>
+            {regime}
+          </span>
+        </div>
+        {change != null && changePct != null && (
+          <div className={`font-medium shrink-0 ${change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {formatChange(change)} ({formatChange(changePct)}%)
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="h-[170px] flex items-center justify-center text-slate-500 text-sm">Loading…</div>
+      ) : error ? (
+        <div className="h-[170px] flex items-center justify-center text-red-400 text-sm px-3 text-center">{error}</div>
+      ) : (
+        <div ref={containerRef} className="h-[170px]" />
+      )}
+
+      <div className="px-3 py-2 border-t border-slate-800 space-y-1.5">
+        <div className="text-[11px] text-slate-300">Default range: last 12 months</div>
+        <div className="text-[11px] text-slate-500">
+          10 MA {ma10Last != null ? ma10Last.toFixed(1) : '—'} · 20 MA {ma20Last != null ? ma20Last.toFixed(1) : '—'} · 50 MA{' '}
+          {ma50Last != null ? ma50Last.toFixed(1) : '—'}
+        </div>
+      </div>
+    </Link>
+  )
+}
+
+export default function MarketIndexRegimeCards() {
+  return (
+    <section className="space-y-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {INDEXES.map((cfg) => (
+          <MarketIndexCard key={cfg.ticker} config={cfg} />
+        ))}
+      </div>
+    </section>
+  )
+}

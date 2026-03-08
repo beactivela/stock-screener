@@ -648,6 +648,35 @@ export async function loadLearningRunHistory(limit = 20, agentType = null) {
 }
 
 /**
+ * Count learning runs, optionally filtered by agent_type.
+ * Uses exact DB count when available, with local-file fallback.
+ */
+export async function countLearningRuns(agentType = null) {
+  const countFromFile = () => {
+    const fileRuns = loadLearningRunsFromFile();
+    return agentType ? fileRuns.filter((r) => r.agent_type === agentType).length : fileRuns.length;
+  };
+
+  if (!isSupabaseConfigured()) {
+    return countFromFile();
+  }
+
+  const supabase = getSupabase();
+  try {
+    let query = supabase
+      .from('learning_runs')
+      .select('id', { count: 'exact', head: true });
+    if (agentType) query = query.eq('agent_type', agentType);
+    const { count, error } = await query;
+    if (error || typeof count !== 'number') return countFromFile();
+    return count;
+  } catch (e) {
+    console.warn('Error counting learning runs:', e.message);
+    return countFromFile();
+  }
+}
+
+/**
  * Archive legacy runs whose objective differs from keepObjective.
  *
  * Supabase path:

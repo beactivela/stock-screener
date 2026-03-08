@@ -1,0 +1,42 @@
+# Dependencies (reinstalled in container)
+node_modules
+npm-debug.log*
+
+# Build output (rebuilt in container)
+dist
+
+# Local data / caches (don’t bake into image; use volumes or Supabase on VPS)
+data
+.env
+.env.*
+!.env.example
+
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+*.md
+!README.md
+
+# Tests and tooling (not needed in production image)
+**/__tests__
+**/*.test.js
+**/*.test.ts
+**/*.test.tsx
+coverage
+.nyc_output
+.playwright
+playwright-report
+test-results
+
+# Docs and scripts you might not need on the image
+docs
+scripts
+*.md
+!README.md
+
+# Misc
+.DS_Store
+*.log
+tsconfig.tsbuildinfo

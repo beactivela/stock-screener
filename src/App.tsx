@@ -14,6 +14,7 @@ const Backtest = lazy(() => import('./pages/Backtest'))
 const Regime = lazy(() => import('./pages/Regime'))
 const Agents = lazy(() => import('./pages/Agents'))
 const Style = lazy(() => import('./pages/Style'))
+const MarketIndexDetail = lazy(() => import('./pages/MarketIndexDetail'))
 
 function PageFallback() {
   return (
@@ -38,6 +39,7 @@ export default function App() {
                 <Route path="/regime" element={<Regime />} />
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/stock/:ticker" element={<StockDetail />} />
+                <Route path="/market-index/:ticker" element={<MarketIndexDetail />} />
                 <Route path="/style" element={<Style />} />
               </Routes>
             </Suspense>

@@ -25,6 +25,7 @@ import {
   storeOptimizedWeights,
   storeLearningRun,
   loadLearningRunHistory,
+  countLearningRuns,
 } from '../learning/autoOptimize.js';
 import {
   evaluateWeightsOnSignals,
@@ -224,19 +225,40 @@ function computeBayesFactor(testSignals, controlWeights, variantWeights, objecti
  * Blend variant into control proportional to Bayesian evidence strength.
  * Returns a new weight object: (1 - blend) * control + blend * variant.
  */
-function blendWeights(controlWeights, variantWeights, blendFactor) {
+export function blendWeights(controlWeights, variantWeights, blendFactor, options = {}) {
+  const { forceMinimumStep = true } = options;
+  if (!(blendFactor > 0)) {
+    return { ...controlWeights };
+  }
   const blended = { ...controlWeights };
   for (const key of Object.keys(variantWeights)) {
     if (key.startsWith('_')) continue;
     const c = controlWeights[key];
     const v = variantWeights[key];
     if (typeof v === 'number') {
-      blended[key] = typeof c === 'number'
-        ? Math.max(1, Math.min(35, Math.round(c * (1 - blendFactor) + v * blendFactor)))
-        : v;
+      let next = typeof c === 'number'
+        ? Math.round(c * (1 - blendFactor) + v * blendFactor)
+        : Math.round(v);
+
+      // Prevent quantization lock: if a promoted blend rounds back to control,
+      // force a one-step move toward the variant.
+      if (forceMinimumStep && typeof c === 'number' && c !== v && next === c) {
+        next = c + (v > c ? 1 : -1);
+      }
+      blended[key] = Math.max(1, Math.min(35, next));
     }
   }
   return blended;
+}
+
+export function selectStrategyIndexFromRunCount(runCount, strategyCount) {
+  const totalStrategies = Number.isFinite(strategyCount) && strategyCount > 0
+    ? Math.floor(strategyCount)
+    : 1;
+  const runs = Number.isFinite(runCount) && runCount > 0
+    ? Math.floor(runCount)
+    : 0;
+  return runs % totalStrategies;
 }
 
 /**
@@ -530,12 +552,16 @@ export function createStrategyAgent(config) {
     // ── 3. Pick next exploration strategy ───────────────────────────────────
     let pastRunCount = 0;
     try {
-      const pastRuns = await loadLearningRunHistory(200, agentType);
-      pastRunCount = pastRuns.length;
+      pastRunCount = await countLearningRuns(agentType);
     } catch (e) {
-      console.warn(`   [${name}] Could not load run history, defaulting to strategy 0:`, e.message);
+      try {
+        const pastRuns = await loadLearningRunHistory(200, agentType);
+        pastRunCount = pastRuns.length;
+      } catch {
+        console.warn(`   [${name}] Could not load run count, defaulting to strategy 0:`, e.message);
+      }
     }
-    const strategyIndex = pastRunCount % EXPLORATION_STRATEGIES.length;
+    const strategyIndex = selectStrategyIndexFromRunCount(pastRunCount, EXPLORATION_STRATEGIES.length);
     const strategy = EXPLORATION_STRATEGIES[strategyIndex];
 
     console.log(`   [${name}] Strategy #${strategyIndex}: "${strategy.name}" (run ${pastRunCount + 1})`);
@@ -659,18 +685,19 @@ export function createStrategyAgent(config) {
     } else if (promoted) {
       // Delta-qualified incorporation: blend variant into control for continual learning.
       const blendedWeights = blendWeights(controlWeights, variantWeights, blendFactor);
+      const blendedMetrics = evaluateWeightsOnSignals(testSignals, blendedWeights);
       try {
         await storeOptimizedWeights(
           {
             weights: blendedWeights,
             adjustments: [],
             signalsAnalyzed: testSignals.length,
-            baselineWinRate: variantTestMetrics.winRate,
-            baselineAvgReturn: variantTestMetrics.avgReturn,
-            baselineExpectancy: variantTestMetrics.expectancy,
-            avgWin: variantTestMetrics.avgWin,
-            avgLoss: variantTestMetrics.avgLoss,
-            profitFactor: variantTestMetrics.profitFactor,
+            baselineWinRate: blendedMetrics.winRate,
+            baselineAvgReturn: blendedMetrics.avgReturn,
+            baselineExpectancy: blendedMetrics.expectancy,
+            avgWin: blendedMetrics.avgWin,
+            avgLoss: blendedMetrics.avgLoss,
+            profitFactor: blendedMetrics.profitFactor,
             topFactors: [{ factor: strategy.name, description: strategy.description }],
             generatedAt: new Date().toISOString(),
           },

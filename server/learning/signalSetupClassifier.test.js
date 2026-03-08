@@ -67,9 +67,19 @@ describe('classifySignalSetups', () => {
   it('matches Unusual Volume criteria', () => {
     const setups = classifySignalSetups({
       ...baseSignal,
-      unusualVolume5d: true,
+      unusualVolume3d: true,
+      priceHigherThan3dAgo: true,
     });
     assert.ok(byId(setups).has('unusual_vol'));
+  });
+
+  it('does not match Unusual Volume when latest price is not above 3 days ago', () => {
+    const setups = classifySignalSetups({
+      ...baseSignal,
+      unusualVolume3d: true,
+      priceHigherThan3dAgo: false,
+    });
+    assert.ok(!byId(setups).has('unusual_vol'));
   });
 
   it('returns empty array when criteria missing', () => {
@@ -111,6 +121,25 @@ describe('classifySignalSetupsRecent', () => {
     ];
     const setups = classifySignalSetupsRecent(snapshots);
     assert.ok(!byId(setups).has('unusual_vol'));
+  });
+
+  it('can include triggers within last 5 bars when lookbackBars=5', () => {
+    const snapshots = [
+      {
+        ...baseSignal,
+        signalFamily: 'turtle',
+        turtleBreakout20: true,
+        priceAboveAllMAs: true,
+        ma200Rising: true,
+        relativeStrength: 90,
+      },
+      { ...baseSignal },
+      { ...baseSignal },
+      { ...baseSignal },
+      { ...baseSignal },
+    ];
+    const setups = classifySignalSetupsRecent(snapshots, 5);
+    assert.ok(byId(setups).has('turtle_trader'));
   });
 
   it('dedupes multiple triggers across last 3 bars', () => {

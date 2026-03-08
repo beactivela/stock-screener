@@ -156,13 +156,16 @@ function checkVCP(bars, spyBars = null) {
       idealPullbackSetup: false, 
       idealPullbackBarTimes: [], 
       unusualVolumeToday: false,
+      unusualVolume3d: false,
       unusualVolume5d: false,
+      priceHigherThan3dAgo: false,
       scoreBreakdown, 
       relativeStrength: null, 
       rsData: null,
       pattern: 'None',
       patternConfidence: 0,
       ma10Slope14d: null,
+      ma10Above20: false,
       pctFromHigh: null,
       breakoutVolumeRatio: null,
       turtleBreakout20: false,
@@ -209,12 +212,15 @@ function checkVCP(bars, spyBars = null) {
       idealPullbackSetup: false, 
       idealPullbackBarTimes: [], 
       unusualVolumeToday: false,
+      unusualVolume3d: false,
       unusualVolume5d: false,
+      priceHigherThan3dAgo: false,
       relativeStrength, 
       rsData,
       pattern: 'None',
       patternConfidence: 0,
       ma10Slope14d: null,
+      ma10Above20: last10 != null && last20 != null ? last10 > last20 : false,
       pctFromHigh: null,
       breakoutVolumeRatio: null,
       turtleBreakout20: false,
@@ -255,10 +261,10 @@ function checkVCP(bars, spyBars = null) {
     ? Math.round((lastVol / avgVol20) * 100) / 100
     : null;
 
-  // Unusual volume signal: 1.5x 20d avg + close > prior day high (any of last 5 days)
-  const { unusualVolumeToday, unusualVolume5d } = computeUnusualVolume(bars, volSma20, {
+  // Unusual volume signal: volume spike in last 3 days + latest close > close 3 days ago
+  const { unusualVolumeToday, unusualVolume3d, unusualVolume5d, priceHigherThan3dAgo } = computeUnusualVolume(bars, volSma20, {
     thresholdRatio: 1.5,
-    lookbackDays: 5,
+    lookbackDays: 3,
   });
 
   // Ideal setup: 5-10 day pullback, volume high above 20 MA at last high, increased volume on push from higher low to higher high
@@ -301,6 +307,7 @@ function checkVCP(bars, spyBars = null) {
     if (last10 == null || prev10 == null || prev10 === 0) return null;
     return Math.round(((last10 - prev10) / prev10) * 1000) / 10;
   })();
+  const ma10Above20 = last10 != null && last20 != null ? last10 > last20 : false;
 
   const pctFromHigh = (() => {
     const lookback = Math.min(252, bars.length);
@@ -361,13 +368,16 @@ function checkVCP(bars, spyBars = null) {
     idealPullbackSetup,
     idealPullbackBarTimes,
     unusualVolumeToday,
+    unusualVolume3d,
     unusualVolume5d,
+    priceHigherThan3dAgo,
     relativeStrength, // NEW: RS value (or null)
     rsData, // NEW: Full RS details
     pattern: patternResult.pattern, // NEW: Pattern name
     patternConfidence: patternResult.confidence, // NEW: Pattern confidence (0-100)
     patternDetails: patternResult.details, // NEW: Pattern analysis details
     ma10Slope14d,
+    ma10Above20,
     pctFromHigh,
     breakoutVolumeRatio,
     turtleBreakout20,

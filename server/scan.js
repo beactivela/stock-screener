@@ -39,18 +39,18 @@ function ensureDataDir() {
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
 }
 
-/** Get bars: DB cache first, then API. Set SCAN_SKIP_CACHE=1 to force API. */
+/** Get bars: DB cache first (incremental fill), then API. Set SCAN_SKIP_CACHE=1 to force API. */
 async function getBarsForScan(ticker, from, to) {
   if (!process.env.SCAN_SKIP_CACHE) {
     const cached = await getBarsFromDb(ticker, from, to, '1d');
     if (cached && cached.length > 0) return cached;
   }
   const bars = await getDailyBars(ticker, from, to);
-  if (bars.length > 0) await saveBarsToDb(ticker, from, to, bars, '1d');
+  if (bars && bars.length > 0) await saveBarsToDb(ticker, from, to, bars, '1d');
   return bars;
 }
 
-function dateRange(daysBack = 180) {
+function dateRange(daysBack = 320) {
   const to = new Date();
   const from = new Date(to);
   from.setDate(from.getDate() - daysBack);
@@ -101,7 +101,7 @@ async function loadIndustryReturns(fundamentals) {
 
 async function runScan() {
   ensureDataDir();
-  const { from, to } = dateRange(180); // Changed from 90 to 180 to ensure 120+ trading days for RS calculation
+  const { from, to } = dateRange(320); // 320d supports 200 MA based agent criteria
   const tickers = await getTickers();
   
   // Load fundamentals and industry returns (TradingView) for enhanced scoring
@@ -141,8 +141,9 @@ async function runScan() {
         const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
         const merged = { ticker, ...vcp, ...enhanced };
         merged.signalSetups = classifySignalSetups(merged);
-        const snapshots = buildSignalSnapshots(bars, spyBars, 3);
+        const snapshots = buildSignalSnapshots(bars, spyBars, 5);
         merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
+        merged.signalSetupsRecent5 = classifySignalSetupsRecent(snapshots, 5);
         results.push(merged);
       }
     } catch (e) {
@@ -194,7 +195,7 @@ async function runScan() {
  */
 async function* runScanStream() {
   ensureDataDir();
-  const { from, to } = dateRange(180); // Changed from 90 to 180 to ensure 120+ trading days for RS calculation
+  const { from, to } = dateRange(320); // 320d supports 200 MA based agent criteria
   const tickers = await getTickers();
   const delayMs = Number(process.env.SCAN_DELAY_MS) || 150;
   
@@ -228,8 +229,9 @@ async function* runScanStream() {
         const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
         const merged = { ticker, ...vcp, ...enhanced };
         merged.signalSetups = classifySignalSetups(merged);
-        const snapshots = buildSignalSnapshots(bars, spyBars, 3);
+        const snapshots = buildSignalSnapshots(bars, spyBars, 5);
         merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
+        merged.signalSetupsRecent5 = classifySignalSetupsRecent(snapshots, 5);
         result = merged;
       }
     } catch (e) {
@@ -249,4 +251,27 @@ if (isMain) {
   });
 }
 
-export { runScan, runScanStream };
+export { runScan, runScanStream, dateRange };
+
+/**
+ * Measure scan duration for a list of tickers using an injected scan function.
+ * Intended for unit tests to avoid real network calls.
+ */
+export async function measureScanDuration({ tickers, scanFn, nowFn = () => Date.now(), delayMs = 0 }) {
+  if (!Array.isArray(tickers)) throw new Error('tickers must be an array');
+  if (typeof scanFn !== 'function') throw new Error('scanFn must be a function');
+
+  const start = nowFn();
+  for (let i = 0; i < tickers.length; i++) {
+    // Simulate scanner work per ticker via injected scanFn
+    await scanFn(tickers[i], i);
+    if (i > 0 && delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  const end = nowFn();
+  const durationMs = Math.max(0, end - start);
+  const tickersScanned = tickers.length;
+  const avgPerTickerMs = tickersScanned > 0 ? Math.round((durationMs / tickersScanned) * 10) / 10 : 0;
+  return { tickersScanned, durationMs, avgPerTickerMs };
+}

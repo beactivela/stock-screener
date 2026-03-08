@@ -21,8 +21,9 @@ import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { fetchIndustrialsFromYahoo, fetchAllIndustriesFromYahoo, fetchSectorsFromYahoo, fetchIndustryReturns, industryPageUrl } from './industrials.js';
 import { fetchTradingViewIndustryReturns, buildIndustryReturnsFromTVMap, normalizeIndustryName, getRequiredIndustries } from './tradingViewIndustry.js';
 import { listScanSnapshots, runBacktest, loadScanSnapshot } from './backtest.js';
-import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS } from './opus45Signal.js';
+import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS, computeRankScore, isNewBuyToday } from './opus45Signal.js';
 import { loadOptimizedWeights, runLearningPipeline, getLearningStatus, applyWeightChanges, resetWeightsToDefault } from './opus45Learning.js';
+import { dateRange } from './scan.js';
 import { runRetroBacktest, getTickersForBacktest } from './retroBacktest.js';
 import { runBacktestHierarchy } from './backtesting/index.js';
 import { buildLearningRunFromHierarchy } from './backtesting/learningBridge.js';
@@ -58,6 +59,7 @@ import { classifyMarket } from './agents/marketPulse.js';
 import { resolveSignalFromCache } from './agents/conversationSignalSource.js';
 import { scanTickerForSignals } from './learning/historicalSignalScanner.js';
 import { buildAgentSignalOverlay } from './agents/agentSignalOverlay.js';
+import { translateCriteriaToSearchCriteria } from './agents/criteriaTranslator.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -72,7 +74,17 @@ app.use(express.json());
 
 // On Vercel without Supabase, writes cannot persist (read-only filesystem). With Supabase, POSTs write to DB.
 app.use((req, res, next) => {
-  if (process.env.VERCEL && !isSupabaseConfigured() && req.method === 'POST' && req.path.startsWith('/api')) {
+  const nonWriteApiPosts = new Set([
+    '/api/agents/criteria/translate',
+  ]);
+
+  if (
+    process.env.VERCEL &&
+    !isSupabaseConfigured() &&
+    req.method === 'POST' &&
+    req.path.startsWith('/api') &&
+    !nonWriteApiPosts.has(req.path)
+  ) {
     return res.status(503).json({
       error: 'Writes are disabled on Vercel (read-only filesystem). Set SUPABASE_URL and SUPABASE_SERVICE_KEY in Vercel env vars, or run the API locally / set VITE_API_URL to an external API.',
     });
@@ -152,6 +164,29 @@ app.post('/api/chat', async (req, res) => {
     res.json({ message: reply });
   } catch (e) {
     res.status(500).json({ error: e.message || 'Chat failed.' });
+  }
+});
+
+// Translate natural-language Signal Agent criteria into executable search criteria.
+// Body: { agentId: string, criteria: string[] }
+app.post('/api/agents/criteria/translate', async (req, res) => {
+  try {
+    const agentId = String(req.body?.agentId || '').trim();
+    const criteria = Array.isArray(req.body?.criteria)
+      ? req.body.criteria.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+
+    if (!agentId) {
+      return res.status(400).json({ error: 'agentId is required.' });
+    }
+    if (criteria.length === 0) {
+      return res.status(400).json({ error: 'criteria must be a non-empty string array.' });
+    }
+
+    const translated = await translateCriteriaToSearchCriteria(agentId, criteria);
+    res.json(translated);
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Criteria translation failed.' });
   }
 });
 
@@ -280,6 +315,8 @@ app.get('/api/scan-results', async (req, res) => {
         opus45Grade: s.opus45Grade,
         entryDate: s.entryDate,
         daysSinceBuy: s.daysSinceBuy,
+        isNewBuyToday: s.isNewBuyToday,
+        rankScore: s.rankScore,
         pctChange: s.pctChange,
         entryPrice: s.entryPrice,
         stopLossPrice: s.stopLossPrice,
@@ -296,6 +333,8 @@ app.get('/api/scan-results', async (req, res) => {
         ...(opus?.entryDate != null || opus?.daysSinceBuy != null ? {
           entryDate: opus.entryDate,
           daysSinceBuy: opus.daysSinceBuy,
+          isNewBuyToday: opus.isNewBuyToday ?? isNewBuyToday(opus.daysSinceBuy),
+          rankScore: opus.rankScore ?? computeRankScore(opus.opus45Confidence ?? 0, opus.daysSinceBuy),
           pctChange: opus.pctChange,
           entryPrice: opus.entryPrice,
           stopLossPrice: opus.stopLossPrice,
@@ -389,11 +428,7 @@ app.post('/api/scan', async (req, res) => {
 
   try {
     const { runScanStream } = await import('./scan.js');
-    const to = new Date();
-    const from = new Date(to);
-    from.setDate(from.getDate() - 180); // Changed to 180 for RS calculation
-    const fromStr = from.toISOString().slice(0, 10);
-    const toStr = to.toISOString().slice(0, 10);
+    const { from: fromStr, to: toStr } = dateRange(320);
 
     const results = [];
     let vcpBullishCount = 0;
@@ -1111,11 +1146,7 @@ app.post('/api/all-industries/fetch', async (req, res) => {
     const { industries: rawIndustries, source } = await fetchAllIndustriesFromYahoo();
     send({ phase: 'fetching', message: `Computing 6M & 1Y returns for ${rawIndustries.length} industries…` });
 
-    const to = new Date();
-    const from365 = new Date(to);
-    from365.setDate(from365.getDate() - 365);
-    const fromStr365 = from365.toISOString().slice(0, 10);
-    const toStr = to.toISOString().slice(0, 10);
+    const { from: fromStr365, to: toStr } = dateRange(320);
 
     const industries = [];
     for (let i = 0; i < rawIndustries.length; i++) {
@@ -2065,12 +2096,15 @@ function mapCachedSignalsToAllScores(cachedSignals) {
     if (pctChange == null && s.entryPrice != null && s.currentPrice != null && s.entryPrice > 0) {
       pctChange = Math.round((s.currentPrice - s.entryPrice) / s.entryPrice * 1000) / 10;
     }
+    const rankScore = s.rankScore ?? computeRankScore(s.opus45Confidence ?? 0, s.daysSinceBuy);
     return {
       ticker: s.ticker,
       opus45Confidence: s.opus45Confidence ?? 0,
       opus45Grade: s.opus45Grade ?? 'F',
       entryDate: entryDateIso,
       daysSinceBuy: s.daysSinceBuy,
+      isNewBuyToday: s.isNewBuyToday ?? isNewBuyToday(s.daysSinceBuy),
+      rankScore,
       pctChange: pctChange ?? null,
       entryPrice: s.entryPrice ?? null,
       stopLossPrice: s.stopLossPrice ?? null,
@@ -3955,6 +3989,25 @@ app.get('/api/marcus/summary', async (req, res) => {
     const { getMarcusSummary } = await import('./agents/marcus.js');
     const summary = await getMarcusSummary({ includeNews, newsLimit });
     res.json(summary);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Ticker news search for a specific date (Yahoo Finance RSS)
+app.get('/api/news/search', async (req, res) => {
+  try {
+    const ticker = String(req.query.ticker ?? '').trim();
+    const date = String(req.query.date ?? '').trim();
+    if (!ticker) return res.status(400).json({ error: 'Missing ticker query param.' });
+    if (!date) return res.status(400).json({ error: 'Missing date query param (YYYY-MM-DD).' });
+
+    const limitRaw = Number(req.query.limit ?? 8);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(20, limitRaw)) : 8;
+
+    const { fetchYahooTickerNews } = await import('./news/newsSearch.js');
+    const items = await fetchYahooTickerNews({ ticker, date, limit });
+    res.json({ ticker, date, items });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

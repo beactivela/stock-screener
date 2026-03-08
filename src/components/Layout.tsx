@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import MinerviniChat from './MinerviniChat'
+import TickerSearch from './TickerSearch'
 
 interface LayoutProps {
   children: React.ReactNode
@@ -10,10 +11,12 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
-        <div className="max-w-[2400px] mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="w-[80%] max-w-full mx-auto px-4 py-4 flex items-center justify-between">
           <Link to="/" className="text-xl font-semibold text-sky-400 hover:text-sky-300">
             VCP Screener
           </Link>
+          <div className="flex items-center gap-6">
+          <TickerSearch />
           <nav className="flex items-center gap-6">
             <Link
               to="/"
@@ -46,9 +49,10 @@ export default function Layout({ children }: LayoutProps) {
               Agents
             </Link>
           </nav>
+          </div>
         </div>
       </header>
-      <main className="flex-1 max-w-[2400px] w-full mx-auto px-4 py-8">{children}</main>
+      <main className="flex-1 w-[80%] max-w-full mx-auto px-4 py-8">{children}</main>
       {/* Chat widget lives outside the main content flow so it overlays everything */}
       <MinerviniChat />
     </div>

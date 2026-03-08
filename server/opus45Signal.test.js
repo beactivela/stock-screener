@@ -12,7 +12,11 @@ import {
   checkExitSignal,
   DEFAULT_WEIGHTS,
   MANDATORY_THRESHOLDS,
-  EXIT_THRESHOLDS
+  EXIT_THRESHOLDS,
+  MAX_DAYS_FOR_RECOMMENDATION,
+  getRecencyBoost,
+  computeRankScore,
+  isNewBuyToday
 } from './opus45Signal.js';
 
 // ============================================================================
@@ -443,6 +447,40 @@ describe('calculateConfidenceScore — recent price action factor', () => {
     const s2 = calculateConfidenceScore(without, DEFAULT_WEIGHTS);
 
     assert.ok(s1.confidence >= s2.confidence);
+  });
+});
+
+// ============================================================================
+// TEST: RECENCY BOOST + NEW BUY TODAY
+// ============================================================================
+
+describe('recency boost + new buy today', () => {
+  it('uses a 5-day recommendation window', () => {
+    assert.strictEqual(MAX_DAYS_FOR_RECOMMENDATION, 5);
+  });
+
+  it('assigns higher boost to newer buys', () => {
+    const today = getRecencyBoost(0);
+    const twoDays = getRecencyBoost(2);
+    const fiveDays = getRecencyBoost(5);
+    const old = getRecencyBoost(8);
+
+    assert.ok(today > twoDays, 'today should be higher than 2 days');
+    assert.ok(twoDays > fiveDays, '2 days should be higher than 5 days');
+    assert.ok(fiveDays > old, '5 days should be higher than 8 days');
+  });
+
+  it('computes rankScore by adding recency boost to confidence', () => {
+    const base = 72;
+    const rankToday = computeRankScore(base, 0);
+    const rankOld = computeRankScore(base, 6);
+    assert.ok(rankToday > rankOld, 'newer buy should have higher rankScore');
+  });
+
+  it('flags only same-day buys as new', () => {
+    assert.strictEqual(isNewBuyToday(0), true);
+    assert.strictEqual(isNewBuyToday(1), false);
+    assert.strictEqual(isNewBuyToday(null), false);
   });
 });
 

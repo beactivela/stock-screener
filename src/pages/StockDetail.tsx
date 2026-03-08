@@ -6,6 +6,8 @@ import { Opus45Marker } from '../utils/opus45Indicators'
 import { AGENT_CHART_LIST, AGENT_CHART_ORDER, AgentSignalHistoryResponse, AgentType, toAgentChartMarkers } from '../utils/agentSignalMarkers'
 import { API_BASE } from '../utils/api'
 import TradingViewWidget from '../components/TradingViewWidget'
+import ChartContextMenu from '../components/ChartContextMenu'
+import { buildNewsPrompt } from '../utils/newsPrompt.js'
 // Trade Journal panel for logging entries and exits
 import TradePanel from '../components/TradePanel'
 
@@ -85,6 +87,8 @@ const INTERVALS = [
   { label: 'Monthly', value: '1mo' },
 ] as const
 
+type ChartTime = import('lightweight-charts').Time
+
 /** Derive score breakdown from vcp when API doesn't return it (e.g. cached response) */
 function getScoreBreakdown(vcp: VCPInfo | null): ScoreCriterion[] {
   if (!vcp) return []
@@ -163,6 +167,14 @@ export default function StockDetail() {
   const rsiChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const vcpChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const rsChartInstance = useRef<ReturnType<typeof createChart> | null>(null) // RS chart instance
+  const lastHoverTimeRef = useRef<ChartTime | null>(null)
+
+  const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; time: ChartTime | null }>({
+    open: false,
+    x: 0,
+    y: 0,
+    time: null,
+  })
   
   // Opus4.5 signals from server API (single source of truth)
   const [opus45History, setOpus45History] = useState<Opus45HistoryResponse | null>(null)
@@ -537,6 +549,41 @@ export default function StockDetail() {
     }
   }, [bars, spxBars, industryBars])
 
+  const formatChartTimeToDate = (time: ChartTime | null) => {
+    if (!time) return null
+    if (typeof time === 'number') return new Date(time * 1000).toISOString().slice(0, 10)
+    if (typeof time === 'object' && 'year' in time) {
+      const y = String(time.year).padStart(4, '0')
+      const m = String(time.month).padStart(2, '0')
+      const d = String(time.day).padStart(2, '0')
+      return `${y}-${m}-${d}`
+    }
+    return null
+  }
+
+  const getVolumeContextForTime = (time: ChartTime | null) => {
+    if (!time || typeof time !== 'number' || bars.length === 0) return null
+    const idx = bars.findIndex((b) => Math.floor(b.t / 1000) === time)
+    if (idx < 0) return null
+    const bar = bars[idx]
+    const volumes = bars.map((b) => Number(b.v) || 0)
+    const avgVol = sma(volumes, 20)[idx]
+    const close = Number(bar.c) || null
+    const changePct = bar.o ? (((bar.c - bar.o) / bar.o) * 100).toFixed(2) : null
+    const ratio = avgVol ? Number((bar.v / avgVol).toFixed(2)) : null
+    return {
+      volume: bar.v,
+      avgVolume: avgVol ? Math.round(avgVol) : null,
+      ratio,
+      close,
+      changePct,
+    }
+  }
+
+  const openContextMenuAt = (x: number, y: number, time: ChartTime | null) => {
+    setContextMenu({ open: true, x, y, time })
+  }
+
   useEffect(() => {
     if (!chartWrapperRef.current || !chartContainerRef.current || !rsiChartRef.current || !vcpChartRef.current || !rsChartRef.current || bars.length === 0) return
     if (chartInstance.current) {
@@ -771,19 +818,31 @@ export default function StockDetail() {
       rsChart.clearCrosshairPosition()
     }
     mainChart.subscribeCrosshairMove((param) => {
-      if (param.time != null) syncCrosshair(param.time as string | number)
+      if (param.time != null) {
+        lastHoverTimeRef.current = param.time as ChartTime
+        syncCrosshair(param.time as string | number)
+      }
       else clearCrosshair()
     })
     rsiChart.subscribeCrosshairMove((param) => {
-      if (param.time != null) syncCrosshair(param.time as string | number)
+      if (param.time != null) {
+        lastHoverTimeRef.current = param.time as ChartTime
+        syncCrosshair(param.time as string | number)
+      }
       else clearCrosshair()
     })
     vcpChart.subscribeCrosshairMove((param) => {
-      if (param.time != null) syncCrosshair(param.time as string | number)
+      if (param.time != null) {
+        lastHoverTimeRef.current = param.time as ChartTime
+        syncCrosshair(param.time as string | number)
+      }
       else clearCrosshair()
     })
     rsChart.subscribeCrosshairMove((param) => {
-      if (param.time != null) syncCrosshair(param.time as string | number)
+      if (param.time != null) {
+        lastHoverTimeRef.current = param.time as ChartTime
+        syncCrosshair(param.time as string | number)
+      }
       else clearCrosshair()
     })
 
@@ -873,6 +932,35 @@ export default function StockDetail() {
       if (rsChartInstance.current) rsChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
     }
   }, [timeframe, bars])
+
+  const handleAskAi = async () => {
+    if (!ticker) return
+    const chartTime = contextMenu.time ?? lastHoverTimeRef.current
+    const date = formatChartTimeToDate(chartTime)
+    const volumeContext = getVolumeContextForTime(chartTime)
+    const safeDate = date || new Date().toISOString().slice(0, 10)
+
+    let articles: Array<{ title: string; url: string; publishedAt?: string | null; source?: string }> = []
+    try {
+      const params = new URLSearchParams({ ticker, date: safeDate, limit: '8' })
+      const res = await fetch(`${API_BASE}/api/news/search?${params.toString()}`, { cache: 'no-store' })
+      const data = await res.json()
+      if (res.ok && Array.isArray(data?.items)) {
+        articles = data.items
+      }
+    } catch (e) {
+      console.error('News search failed:', e)
+    }
+
+    const prompt = buildNewsPrompt({
+      ticker,
+      date: safeDate,
+      volumeContext,
+      articles,
+    })
+
+    window.dispatchEvent(new CustomEvent('minervini:ask', { detail: { prompt, autoSend: true } }))
+  }
 
   // Prefer scan data when API returned 0/not enough bars so profile shows enhanced score (matches table). Use scanResult from navigation or scanFallback from latest scan.
   const apiFailedOrZero = vcp && (vcp.reason === 'not_enough_bars' || vcp.score === 0)
@@ -978,6 +1066,236 @@ export default function StockDetail() {
           </div>
         </div>
       )}
+
+      {/* Main content area: Chart + Trade Panel side by side — placed just below ticker row, above Opus 4.5 Signal */}
+      <div className="flex gap-4">
+        {/* Chart Section (main area) */}
+        <div className="flex-1 min-w-0">
+          {bars.length === 0 && displayVcp && (
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <p className="text-amber-400/90 text-sm">
+                Chart data couldn&apos;t be loaded (network or API limit). Score above is from the last scan.
+              </p>
+              <button
+                type="button"
+                onClick={() => setBarsRetryKey((k) => k + 1)}
+                className="rounded-lg bg-amber-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
+            <h2 className="text-lg font-medium text-slate-200">
+              {`${INTERVALS.find((i) => i.value === interval)?.label ?? 'Daily'} chart`}
+            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex gap-1">
+                {INTERVALS.map((i) => (
+                  <button
+                    key={i.value}
+                    type="button"
+                    onClick={() => setInterval(i.value)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+                      interval === i.value
+                        ? 'bg-sky-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    {i.label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-slate-500 text-sm">|</span>
+              <div className="flex gap-1">
+                {TIMEFRAMES.map((tf) => (
+                  <button
+                    key={tf.label}
+                    type="button"
+                    onClick={() => setTimeframe(tf)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+                      timeframe.label === tf.label
+                        ? 'bg-sky-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                    }`}
+                  >
+                    {tf.label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-slate-500 text-sm">|</span>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-xs uppercase tracking-wide text-slate-500">Signal agents</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  {AGENT_CHART_LIST.map((agent) => (
+                    <label key={agent.agentType} className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={agentVisibility[agent.agentType]}
+                        onChange={(e) =>
+                          setAgentVisibility((prev) => ({
+                            ...prev,
+                            [agent.agentType]: e.target.checked,
+                          }))
+                        }
+                        className={`rounded border-slate-600 bg-slate-800 focus:ring-emerald-500/50 ${agent.accentClass}`}
+                      />
+                      <span className="text-sm text-slate-400">{agent.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {(fundamentals?.industry || rsIndustryData.length > 0) && (
+                <>
+                  <span className="text-slate-500 text-sm">|</span>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={showRsIndustry}
+                      onChange={(e) => setShowRsIndustry(e.target.checked)}
+                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500/50"
+                    />
+                    <span className="text-sm text-slate-400">Relative Strength to Industry</span>
+                  </label>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                  const y = rect.bottom + 6
+                  const x = rect.left
+                  openContextMenuAt(x, y, lastHoverTimeRef.current)
+                }}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+                aria-label="Chart actions"
+              >
+                ⋯
+              </button>
+            </div>
+          </div>
+        <div
+          ref={chartWrapperRef}
+          className="rounded-xl border border-slate-800 overflow-hidden"
+          onContextMenu={(e) => {
+            e.preventDefault()
+            openContextMenuAt(e.clientX, e.clientY, lastHoverTimeRef.current)
+          }}
+        >
+          <div className="relative">
+            <div ref={chartContainerRef} style={{ height: 380 }} />
+            <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-slate-700/50 shadow-lg flex flex-wrap items-center gap-2">
+              <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">10 MA</span>
+              <span className="text-blue-400 text-base">━</span> <span className="text-slate-300">20 MA</span>
+              <span className="text-purple-400 text-base">━</span> <span className="text-slate-300">50 MA</span>
+              <span className="text-pink-400 text-base">━</span> <span className="text-slate-300">150 MA</span>
+              {showRsIndustry && rsIndustryData.length > 0 && (
+                <>
+                  <span className="text-slate-600">│</span>
+                  <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">Relative Strength to Industry</span>
+                </>
+              )}
+              {visibleAgentLegend.length > 0 && (
+                <>
+                  <span className="text-slate-600">│</span>
+                  {visibleAgentLegend.map((agent) => (
+                    <span key={agent.agentType} className="flex items-center gap-1">
+                      <span className={`text-base ${agent.legendClass}`}>●</span>
+                      <span className="text-slate-300">{agent.label}</span>
+                    </span>
+                  ))}
+                </>
+              )}
+            </div>
+            {fundamentals?.industry && rsIndustryData.length === 0 && (
+              <div className="absolute bottom-2 left-2 bg-amber-900/80 backdrop-blur-sm px-2 py-1 rounded text-[10px] text-amber-200 pointer-events-none">
+                Relative Strength to Industry: run &quot;Fetch all industries&quot; on the Industry page to load.
+              </div>
+            )}
+          </div>
+          <div className="border-t border-slate-800">
+            <div className="px-3 py-1.5 text-xs font-semibold text-cyan-400 bg-slate-900/50">RSI (14) - Relative Strength Index</div>
+            <div className="relative">
+              <div ref={rsiChartRef} style={{ height: 140 }} />
+              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-cyan-400 font-medium pointer-events-none border border-cyan-500/50 shadow-lg">
+                RSI (14) • Overbought &gt;70 • Oversold &lt;30
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-800">
+            <div className="px-3 py-1.5 text-xs font-semibold text-teal-400 bg-slate-900/50 flex items-center gap-2">
+              <span>Relative Strength to S&P 500</span>
+              <span className="text-slate-500 text-[10px] font-normal">Rising = Outperforming (Bullish) • Falling = Underperforming (Bearish)</span>
+            </div>
+            <div className="relative">
+              <div ref={rsChartRef} style={{ height: 120 }} />
+              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-teal-500/50 shadow-lg">
+                <span className="text-teal-400 text-base">━━</span> <span className="text-slate-200">Relative Strength to S&P 500</span>
+              </div>
+            </div>
+          </div>
+          <div className="border-t border-slate-800">
+            <div className="px-3 py-1.5 text-xs font-semibold text-purple-400 bg-slate-900/50">VCP Contraction - Volatility Compression Pattern</div>
+            <div className="relative">
+              <div ref={vcpChartRef} style={{ height: 100 }} />
+              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-purple-400 font-medium pointer-events-none border border-purple-500/50 shadow-lg">
+                VCP Score (consecutive smaller pullbacks)
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <ChartContextMenu
+          open={contextMenu.open}
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu((m) => ({ ...m, open: false }))}
+          items={[
+            {
+              id: 'ask-ai',
+              label: 'Ask AI',
+              onClick: handleAskAi,
+              disabled: !ticker,
+            },
+            {
+              id: 'copy-date',
+              label: 'Copy date',
+              onClick: () => {
+                const date = formatChartTimeToDate(contextMenu.time ?? lastHoverTimeRef.current)
+                if (date) navigator.clipboard?.writeText(date)
+              },
+              disabled: !formatChartTimeToDate(contextMenu.time ?? lastHoverTimeRef.current),
+            },
+          ]}
+        />
+
+        {/* Trade Journal Side Panel - visible on large screens */}
+        <div className="w-80 shrink-0 hidden lg:block">
+          <TradePanel
+            ticker={ticker || ''}
+            companyName={companyName}
+            currentPrice={displayVcp?.lastClose || null}
+            metrics={{
+              sma10: displayVcp?.sma10 || null,
+              sma20: displayVcp?.sma20 || null,
+              sma50: displayVcp?.sma50 || null,
+              contractions: displayVcp?.contractions || 0,
+              volumeDryUp: displayVcp?.volumeDryUp || false,
+              pattern: 'VCP',
+              patternConfidence: null,
+              relativeStrength: opus45History?.lastBuySignal?.confidence || null,
+              industryName: fundamentals?.industry || null,
+              industryRank: null,
+              opus45Confidence: opus45History?.lastBuySignal?.confidence || null,
+              opus45Grade: null,
+              vcpScore: displayVcp?.score || null,
+              enhancedScore: displayVcp ? (displayVcp.enhancedScore ?? displayVcp.score ?? null) : null
+            }}
+          />
+        </div>
+      </div>
 
       {/* Opus4.5 Signal Status Panel (from server API) */}
       {opus45History && (
@@ -1305,191 +1623,6 @@ export default function StockDetail() {
         </div>
         </>
       )}
-
-      {/* Main content area: Chart + Trade Panel side by side */}
-      <div className="flex gap-4">
-        {/* Chart Section (main area) */}
-        <div className="flex-1 min-w-0">
-          {bars.length === 0 && displayVcp && (
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <p className="text-amber-400/90 text-sm">
-                Chart data couldn&apos;t be loaded (network or API limit). Score above is from the last scan.
-              </p>
-              <button
-                type="button"
-                onClick={() => setBarsRetryKey((k) => k + 1)}
-                className="rounded-lg bg-amber-600/80 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-          <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
-            <h2 className="text-lg font-medium text-slate-200">
-              {`${INTERVALS.find((i) => i.value === interval)?.label ?? 'Daily'} chart`}
-            </h2>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex gap-1">
-                {INTERVALS.map((i) => (
-                  <button
-                    key={i.value}
-                    type="button"
-                    onClick={() => setInterval(i.value)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                      interval === i.value
-                        ? 'bg-sky-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                    }`}
-                  >
-                    {i.label}
-                  </button>
-                ))}
-              </div>
-              <span className="text-slate-500 text-sm">|</span>
-              <div className="flex gap-1">
-                {TIMEFRAMES.map((tf) => (
-                  <button
-                    key={tf.label}
-                    type="button"
-                    onClick={() => setTimeframe(tf)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-                      timeframe.label === tf.label
-                        ? 'bg-sky-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                    }`}
-                  >
-                    {tf.label}
-                  </button>
-                ))}
-              </div>
-              <span className="text-slate-500 text-sm">|</span>
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-xs uppercase tracking-wide text-slate-500">Signal agents</span>
-                <div className="flex flex-wrap items-center gap-3">
-                  {AGENT_CHART_LIST.map((agent) => (
-                    <label key={agent.agentType} className="flex items-center gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={agentVisibility[agent.agentType]}
-                        onChange={(e) =>
-                          setAgentVisibility((prev) => ({
-                            ...prev,
-                            [agent.agentType]: e.target.checked,
-                          }))
-                        }
-                        className={`rounded border-slate-600 bg-slate-800 focus:ring-emerald-500/50 ${agent.accentClass}`}
-                      />
-                      <span className="text-sm text-slate-400">{agent.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              {(fundamentals?.industry || rsIndustryData.length > 0) && (
-                <>
-                  <span className="text-slate-500 text-sm">|</span>
-                  <label className="flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={showRsIndustry}
-                      onChange={(e) => setShowRsIndustry(e.target.checked)}
-                      className="rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500/50"
-                    />
-                    <span className="text-sm text-slate-400">Relative Strength to Industry</span>
-                  </label>
-                </>
-              )}
-            </div>
-          </div>
-        <div ref={chartWrapperRef} className="rounded-xl border border-slate-800 overflow-hidden">
-          <div className="relative">
-            <div ref={chartContainerRef} style={{ height: 380 }} />
-            <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-slate-700/50 shadow-lg flex flex-wrap items-center gap-2">
-              <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">10 MA</span>
-              <span className="text-blue-400 text-base">━</span> <span className="text-slate-300">20 MA</span>
-              <span className="text-purple-400 text-base">━</span> <span className="text-slate-300">50 MA</span>
-              <span className="text-pink-400 text-base">━</span> <span className="text-slate-300">150 MA</span>
-              {showRsIndustry && rsIndustryData.length > 0 && (
-                <>
-                  <span className="text-slate-600">│</span>
-                  <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">Relative Strength to Industry</span>
-                </>
-              )}
-              {visibleAgentLegend.length > 0 && (
-                <>
-                  <span className="text-slate-600">│</span>
-                  {visibleAgentLegend.map((agent) => (
-                    <span key={agent.agentType} className="flex items-center gap-1">
-                      <span className={`text-base ${agent.legendClass}`}>●</span>
-                      <span className="text-slate-300">{agent.label}</span>
-                    </span>
-                  ))}
-                </>
-              )}
-            </div>
-            {fundamentals?.industry && rsIndustryData.length === 0 && (
-              <div className="absolute bottom-2 left-2 bg-amber-900/80 backdrop-blur-sm px-2 py-1 rounded text-[10px] text-amber-200 pointer-events-none">
-                Relative Strength to Industry: run &quot;Fetch all industries&quot; on the Industry page to load.
-              </div>
-            )}
-          </div>
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-cyan-400 bg-slate-900/50">RSI (14) - Relative Strength Index</div>
-            <div className="relative">
-              <div ref={rsiChartRef} style={{ height: 140 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-cyan-400 font-medium pointer-events-none border border-cyan-500/50 shadow-lg">
-                RSI (14) • Overbought &gt;70 • Oversold &lt;30
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-teal-400 bg-slate-900/50 flex items-center gap-2">
-              <span>Relative Strength to S&P 500</span>
-              <span className="text-slate-500 text-[10px] font-normal">Rising = Outperforming (Bullish) • Falling = Underperforming (Bearish)</span>
-            </div>
-            <div className="relative">
-              <div ref={rsChartRef} style={{ height: 120 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-teal-500/50 shadow-lg">
-                <span className="text-teal-400 text-base">━━</span> <span className="text-slate-200">Relative Strength to S&P 500</span>
-              </div>
-            </div>
-          </div>
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-purple-400 bg-slate-900/50">VCP Contraction - Volatility Compression Pattern</div>
-            <div className="relative">
-              <div ref={vcpChartRef} style={{ height: 100 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-purple-400 font-medium pointer-events-none border border-purple-500/50 shadow-lg">
-                VCP Score (consecutive smaller pullbacks)
-              </div>
-            </div>
-          </div>
-          </div>
-        </div>
-
-        {/* Trade Journal Side Panel - visible on large screens */}
-        <div className="w-80 shrink-0 hidden lg:block">
-          <TradePanel
-            ticker={ticker || ''}
-            companyName={companyName}
-            currentPrice={displayVcp?.lastClose || null}
-            metrics={{
-              sma10: displayVcp?.sma10 || null,
-              sma20: displayVcp?.sma20 || null,
-              sma50: displayVcp?.sma50 || null,
-              contractions: displayVcp?.contractions || 0,
-              volumeDryUp: displayVcp?.volumeDryUp || false,
-              pattern: 'VCP',
-              patternConfidence: null,
-              relativeStrength: opus45History?.lastBuySignal?.confidence || null,
-              industryName: fundamentals?.industry || null,
-              industryRank: null,
-              opus45Confidence: opus45History?.lastBuySignal?.confidence || null,
-              opus45Grade: null,
-              vcpScore: displayVcp?.score || null,
-              enhancedScore: displayVcp ? (displayVcp.enhancedScore ?? displayVcp.score ?? null) : null
-            }}
-          />
-        </div>
-      </div>
 
       <p className="text-slate-500 text-sm">
         <strong>Chart includes:</strong> Moving Averages 10 (orange), 20 (blue), 50 (purple), 150 (pink) + RSI 14 + Relative Strength (RS) Line vs S&P 500 + Volume with 20d MA + VCP pullback analysis. <strong>Opus4.5 Signals:</strong> <span className="text-green-400">↑</span> Green arrow = BUY signal, <span className="text-red-400">↓</span> Red arrow = SELL signal. RS Line: Rising = outperforming market (bullish), Falling = underperforming market (bearish). Data: Yahoo (OHLC); chart also available via TradingView widget below.

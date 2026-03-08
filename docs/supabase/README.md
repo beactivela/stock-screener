@@ -20,7 +20,7 @@ All application data and cache are stored in Supabase. The app reads from and wr
 
 3. **Add env vars** to `.env`:
    ```
-   SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+   SUPABASE_URL=https://ksnneoomyrvmzukwxmqg.supabase.co
    SUPABASE_SERVICE_KEY=your_service_role_key
    ```
    Get these from Project Settings → API. Use **service_role** for full server-side access (bypasses RLS).

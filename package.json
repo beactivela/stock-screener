@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "test": "node --test server/fundamentals.test.js server/backtest.test.js server/backtesting/index.test.js server/opus45Signal.test.js server/industrials.test.js server/learning/iterativeOptimizer.test.js server/db/bars.test.js server/yahoo.test.js server/agents/marcus.test.js server/agents/harryHistorian.test.js",
+    "test": "node --test server/fundamentals.test.js server/backtest.test.js server/backtesting/index.test.js server/opus45Signal.test.js server/industrials.test.js server/learning/iterativeOptimizer.test.js server/db/bars.test.js server/yahoo.test.js server/agents/marcus.test.js server/agents/harryHistorian.test.js server/agents/strategyAgentBase.test.js server/scan.performance.test.js",
     "verify-fundamentals": "node scripts/verify-fundamentals.js",
     "verify-industry-fetch": "node scripts/verify-industry-fetch.js",
     "dev": "NODE_ENV=development PORT=5173 node server/index.js",

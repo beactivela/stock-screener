@@ -22,6 +22,26 @@ let cachedOptimizedWeights = null;
 let cacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Recommendation window for scanner surfaced buys (trading days)
+export const MAX_DAYS_FOR_RECOMMENDATION = 5;
+
+export function getRecencyBoost(daysSinceBuy) {
+  if (daysSinceBuy == null || Number.isNaN(daysSinceBuy)) return 0;
+  if (daysSinceBuy === 0) return 8;
+  if (daysSinceBuy <= 2) return 5;
+  if (daysSinceBuy <= 5) return 2;
+  return 0;
+}
+
+export function computeRankScore(confidence, daysSinceBuy) {
+  const base = Number(confidence) || 0;
+  return Math.round((base + getRecencyBoost(daysSinceBuy)) * 10) / 10;
+}
+
+export function isNewBuyToday(daysSinceBuy) {
+  return daysSinceBuy === 0;
+}
+
 /**
  * Load optimized weights from database (with caching)
  * Falls back to DEFAULT_WEIGHTS if not available
@@ -1185,7 +1205,7 @@ export function checkExitSignal(position, bars) {
  * @param {Array} spyBars - Not used in simplified version (kept for API compatibility)
  * @returns {Object|null} The active buy signal or null
  */
-function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weights, maxDaysAgo = 2, spyBars = null) {
+function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weights, maxDaysAgo = MAX_DAYS_FOR_RECOMMENDATION, spyBars = null) {
   if (!bars || bars.length < 200) return null;
   
   const lastIdx = bars.length - 1;
@@ -1221,9 +1241,12 @@ function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weight
   
   // Only recommend if within maxDaysAgo
   if (daysSinceBuy <= maxDaysAgo) {
+    const rankScore = computeRankScore(currentSignal.opus45Confidence ?? 0, daysSinceBuy);
     return {
       ...currentSignal,
       daysSinceBuy,
+      isNewBuyToday: isNewBuyToday(daysSinceBuy),
+      rankScore,
       buyBarIndex: firstNearMAIdx,
       stillActive: true,
       entryDate,
@@ -1253,7 +1276,6 @@ function findActiveBuySignal(bars, vcpResult, fundamentals, industryData, weight
 export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicker = {}, industryRanks = {}, weights = DEFAULT_WEIGHTS, spyBars = null) {
   const signals = [];
   const allScores = [];
-  const MAX_DAYS_FOR_RECOMMENDATION = 2; // Only recommend if buy signal is within 2 days
 
   for (const result of scanResults) {
     const ticker = result.ticker;
@@ -1295,6 +1317,8 @@ export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicke
         opus45Confidence: activeBuySignal.opus45Confidence ?? 0,
         opus45Grade: activeBuySignal.opus45Grade ?? 'F',
         daysSinceBuy: activeBuySignal.daysSinceBuy,
+        isNewBuyToday: activeBuySignal.isNewBuyToday ?? isNewBuyToday(activeBuySignal.daysSinceBuy),
+        rankScore: activeBuySignal.rankScore ?? computeRankScore(activeBuySignal.opus45Confidence ?? 0, activeBuySignal.daysSinceBuy),
         stillInPosition: true,
         entryDate: entryDateIso,
         entryPrice,
@@ -1325,8 +1349,13 @@ export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicke
     }
   }
 
-  // Sort by confidence (highest first)
-  signals.sort((a, b) => b.opus45Confidence - a.opus45Confidence);
+  // Sort by rankScore (confidence + recency), tie-break on base confidence
+  signals.sort((a, b) => {
+    const rankA = a.rankScore ?? computeRankScore(a.opus45Confidence ?? 0, a.daysSinceBuy);
+    const rankB = b.rankScore ?? computeRankScore(b.opus45Confidence ?? 0, b.daysSinceBuy);
+    if (rankB !== rankA) return rankB - rankA;
+    return (b.opus45Confidence ?? 0) - (a.opus45Confidence ?? 0);
+  });
 
   return { signals, allScores };
 }

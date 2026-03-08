@@ -52,7 +52,8 @@ function matchesMaCrossover(signal) {
 }
 
 function matchesUnusualVol(signal) {
-  return !!signal.unusualVolume5d;
+  const unusualVolumeRecent = !!signal.unusualVolume3d || !!signal.unusualVolume5d;
+  return unusualVolumeRecent && !!signal.priceHigherThan3dAgo;
 }
 
 /**
