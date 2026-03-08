@@ -1,4 +1,4 @@
-export function resolveSignalAgentLabel(signalSetups?: string[]): string
+export function resolveSignalAgentLabel(signalSetups?: string[], preferredAgentId?: string | null): string
 
 export function formatSignalDate(entryDate?: string | number | null): string
 

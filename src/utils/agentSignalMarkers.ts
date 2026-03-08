@@ -23,12 +23,6 @@ export const AGENT_CHART_CONFIG = {
     accentClass: 'accent-purple-500',
     legendClass: 'text-purple-400',
   },
-  ma_crossover_10_20: {
-    name: '10-20 Cross Over',
-    color: '#14b8a6',
-    accentClass: 'accent-teal-500',
-    legendClass: 'text-teal-400',
-  },
 } as const
 
 export type AgentType = keyof typeof AGENT_CHART_CONFIG
@@ -38,7 +32,6 @@ export const AGENT_CHART_ORDER: AgentType[] = [
   'base_hunter',
   'breakout_tracker',
   'turtle_trader',
-  'ma_crossover_10_20',
 ]
 
 export const AGENT_CHART_LIST = AGENT_CHART_ORDER.map((agentType) => ({

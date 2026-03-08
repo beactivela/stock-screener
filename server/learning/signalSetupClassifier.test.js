@@ -55,15 +55,6 @@ describe('classifySignalSetups', () => {
     assert.ok(byId(setups).has('turtle_trader'));
   });
 
-  it('matches 10/20 cross over criteria', () => {
-    const setups = classifySignalSetups({
-      ...baseSignal,
-      ma10Above20: true,
-      signalFamily: 'ma_crossover',
-    });
-    assert.ok(byId(setups).has('ma_crossover_10_20'));
-  });
-
   it('matches Unusual Volume criteria', () => {
     const setups = classifySignalSetups({
       ...baseSignal,
@@ -98,15 +89,15 @@ describe('classifySignalSetupsRecent', () => {
   it('matches when any of last 3 bars trigger', () => {
     const snapshots = [
       { ...baseSignal, relativeStrength: 70 },
-      { ...baseSignal, ma10Above20: false },
+      { ...baseSignal, unusualVolume3d: false },
       {
         ...baseSignal,
-        ma10Above20: true,
-        signalFamily: 'ma_crossover',
+        unusualVolume3d: true,
+        priceHigherThan3dAgo: true,
       },
     ];
     const setups = classifySignalSetupsRecent(snapshots);
-    assert.ok(byId(setups).has('ma_crossover_10_20'));
+    assert.ok(byId(setups).has('unusual_vol'));
   });
 
   it('ignores triggers older than last 3 bars', () => {

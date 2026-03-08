@@ -16,12 +16,12 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import { getBars, getFundamentals, getQuoteInfo } from './yahoo.js';
-import { checkVCP } from './vcp.js';
+import { checkVCP, assignIBDRelativeStrengthRatings, calculateRelativeStrength } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { fetchIndustrialsFromYahoo, fetchAllIndustriesFromYahoo, fetchSectorsFromYahoo, fetchIndustryReturns, industryPageUrl } from './industrials.js';
 import { fetchTradingViewIndustryReturns, buildIndustryReturnsFromTVMap, normalizeIndustryName, getRequiredIndustries } from './tradingViewIndustry.js';
 import { listScanSnapshots, runBacktest, loadScanSnapshot } from './backtest.js';
-import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS, computeRankScore, isNewBuyToday } from './opus45Signal.js';
+import { generateOpus45Signal, findOpus45Signals, checkExitSignal, getSignalStats, DEFAULT_WEIGHTS, computeRankScore, isNewBuyToday, normalizeRs, normalizeIndustryRank } from './opus45Signal.js';
 import { loadOptimizedWeights, runLearningPipeline, getLearningStatus, applyWeightChanges, resetWeightsToDefault } from './opus45Learning.js';
 import { dateRange } from './scan.js';
 import { runRetroBacktest, getTickersForBacktest } from './retroBacktest.js';
@@ -35,6 +35,7 @@ import { getBars as getBarsFromDb, saveBars as saveBarsToDb } from './db/bars.js
 import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
 import { loadOpus45Signals as loadOpus45SignalsFromDb, saveOpus45Signals as saveOpus45SignalsToDb } from './db/opus45.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
+import { assignRatingsFromRaw, buildCalibrationCurve, calibrateRating } from './rsCompare.js';
 // Trade Journal system for logging and learning from real trades
 import { 
   loadTrades, 
@@ -60,6 +61,7 @@ import { resolveSignalFromCache } from './agents/conversationSignalSource.js';
 import { scanTickerForSignals } from './learning/historicalSignalScanner.js';
 import { buildAgentSignalOverlay } from './agents/agentSignalOverlay.js';
 import { translateCriteriaToSearchCriteria } from './agents/criteriaTranslator.js';
+import { summarizePercentiles } from './utils/percentiles.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -112,6 +114,14 @@ ensureDirs();
 /** Wrappers that delegate to db layer (Supabase when configured, else files) */
 async function loadFundamentals() {
   return loadFundamentalsFromDb();
+}
+
+/** Load industry returns from TradingView for given fundamentals. */
+async function loadIndustryReturnsForScan(fundamentals) {
+  const industryNames = [...new Set(Object.values(fundamentals || {}).map((e) => e?.industry).filter(Boolean))];
+  const requiredIndustries = new Set(industryNames.map((name) => normalizeIndustryName(name)));
+  const { returnsMap: tvMap } = await fetchTradingViewIndustryReturns({ requiredIndustries });
+  return buildIndustryReturnsFromTVMap(tvMap, industryNames);
 }
 function loadFundamentalsFilteredSync(raw) {
   const filtered = {};
@@ -354,6 +364,122 @@ app.get('/api/scan-results', async (req, res) => {
   }
 });
 
+const IBD_RS_SAMPLE = [
+  { ticker: 'HOOD', ibdRating: 28, ibdGroupRank: 16 },
+  { ticker: 'OPY', ibdRating: 88, ibdGroupRank: 1 },
+  { ticker: 'ISSC', ibdRating: 99, ibdGroupRank: 1 },
+  { ticker: 'FIX', ibdRating: 98, ibdGroupRank: 1 },
+  { ticker: 'PLTR', ibdRating: 82, ibdGroupRank: 1 },
+  { ticker: 'GOOG', ibdRating: 89, ibdGroupRank: 1 },
+  { ticker: 'CAT', ibdRating: 94, ibdGroupRank: 1 },
+  { ticker: 'ALNT', ibdRating: 96, ibdGroupRank: 3 },
+  { ticker: 'NVT', ibdRating: 89, ibdGroupRank: 1 },
+  { ticker: 'AMZN', ibdRating: 32, ibdGroupRank: 3 },
+  { ticker: 'EBAY', ibdRating: 80, ibdGroupRank: 1 },
+  { ticker: 'BE', ibdRating: 99, ibdGroupRank: 4 },
+  { ticker: 'WMT', ibdRating: 84, ibdGroupRank: 3 },
+  { ticker: 'COST', ibdRating: 64, ibdGroupRank: 1 },
+];
+
+// Compare IBD RS sample vs our RS calculation (IBD weighted returns).
+app.get('/api/rs/ibd-compare', async (req, res) => {
+  try {
+    const interval = '1d';
+    // 420 calendar days yields >252 trading bars, which the RS raw calc needs.
+    const days = 420;
+    const to = new Date();
+    const from = new Date(to);
+    from.setDate(from.getDate() - days);
+    const fromStr = from.toISOString().slice(0, 10);
+    const toStr = to.toISOString().slice(0, 10);
+
+    const loadBarsCached = async (ticker) => {
+      let bars = null;
+      try {
+        bars = await getBarsFromDb(ticker, fromStr, toStr, interval);
+      } catch (_) {
+        // DB not configured; fall through to Yahoo fetch.
+      }
+      if (!bars) {
+        bars = await getBars(ticker, fromStr, toStr, interval);
+        try {
+          await saveBarsToDb(ticker, fromStr, toStr, bars, interval);
+        } catch (_) {
+          // Save failed; response still usable.
+        }
+      }
+      return [...(bars || [])].sort((a, b) => a.t - b.t);
+    };
+
+    const sampleRows = [];
+    for (const row of IBD_RS_SAMPLE) {
+      const bars = await loadBarsCached(row.ticker);
+      if (!bars.length) {
+        sampleRows.push({ ...row, rsRaw: null, ourRating: null, error: 'no_bars' });
+        continue;
+      }
+      const rsData = calculateRelativeStrength(bars);
+      const rsRaw = Number.isFinite(rsData?.rsRaw) ? rsData.rsRaw : null;
+      sampleRows.push({ ...row, rsRaw, rsData });
+    }
+
+    const scanData = await loadScanData();
+    const universeRows = (scanData?.results || [])
+      .map((r) => ({
+        ticker: String(r.ticker || '').toUpperCase(),
+        relativeStrength: Number.isFinite(r?.rsData?.rsRaw) ? r.rsData.rsRaw : null,
+      }))
+      .filter((r) => r.ticker && r.relativeStrength != null);
+
+    const combinedByTicker = new Map();
+    for (const row of universeRows) combinedByTicker.set(row.ticker, row.relativeStrength);
+    for (const row of sampleRows) {
+      const ticker = String(row.ticker || '').toUpperCase();
+      if (ticker) combinedByTicker.set(ticker, row.rsRaw);
+    }
+
+    const combinedRows = Array.from(combinedByTicker.entries())
+      .filter(([, raw]) => Number.isFinite(raw))
+      .map(([ticker, raw]) => ({ ticker, relativeStrength: raw, rsData: { rsRaw: raw } }));
+
+    const usedUniverse = combinedRows.length > sampleRows.length;
+    const rated = assignRatingsFromRaw(combinedRows);
+    const ratingByTicker = new Map(rated.map((r) => [String(r.ticker || '').toUpperCase(), r.relativeStrength]));
+
+    const withRatings = sampleRows.map((row) => {
+      const ticker = String(row.ticker || '').toUpperCase();
+      const ourRating = ratingByTicker.get(ticker) ?? null;
+      const delta = ourRating != null ? row.ibdRating - ourRating : null;
+      return { ...row, ticker, ourRating, delta };
+    });
+
+    const curve = buildCalibrationCurve(withRatings.map((r) => ({
+      ourRating: r.ourRating,
+      ibdRating: r.ibdRating,
+    })));
+
+    const finalRows = withRatings.map((row) => {
+      const ourRatingAdjusted = calibrateRating(row.ourRating, curve);
+      const adjustedDelta = ourRatingAdjusted != null ? row.ibdRating - ourRatingAdjusted : null;
+      return { ...row, ourRatingAdjusted, adjustedDelta };
+    });
+
+    res.json({
+      benchmark: 'IBD_weighted_returns',
+      from: fromStr,
+      to: toStr,
+      interval,
+      usedUniverse,
+      rows: finalRows,
+      sampleSize: finalRows.length,
+      universeSize: combinedRows.length,
+      warning: usedUniverse ? null : 'Universe unavailable; ratings are sample-only.',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Background scan progress tracking
 const activeScan = {
   id: null,
@@ -427,16 +553,23 @@ app.post('/api/scan', async (req, res) => {
   send({ scanId: activeScan.id, started: true, startedAt: activeScan.progress.startedAt });
 
   try {
-    const { runScanStream } = await import('./scan.js');
+    const { runScanStream, applyRatingsAndEnhancements } = await import('./scan.js');
     const { from: fromStr, to: toStr } = dateRange(320);
+    const fundamentals = await loadFundamentals();
+    const industryReturns = await loadIndustryReturnsForScan(fundamentals);
+    const industryRanks = rankIndustries(industryReturns);
+    const barsByTicker = new Map();
+    const snapshotsByTicker = new Map();
 
     const results = [];
     let vcpBullishCount = 0;
 
-    for await (const { result, index, total } of runScanStream()) {
+    for await (const { result, index, total, bars, snapshots } of runScanStream()) {
       results.push(result);
       activeScan.results.push(result);
       if (result.vcpBullish) vcpBullishCount++;
+      if (bars && result.ticker) barsByTicker.set(result.ticker, bars);
+      if (snapshots && result.ticker) snapshotsByTicker.set(result.ticker, snapshots);
       
       // Update global progress
       activeScan.progress.index = index;
@@ -447,7 +580,14 @@ app.post('/api/scan', async (req, res) => {
       
       // Write partial results every 25 tickers (survives refresh)
       if (results.length % 25 === 0 || results.length === total) {
-        const sorted = [...results].sort((a, b) => {
+        const rated = applyRatingsAndEnhancements({
+          results,
+          fundamentals,
+          industryRanks,
+          barsByTicker,
+          snapshotsByTicker,
+        });
+        const sorted = [...rated].sort((a, b) => {
           const aE = a.enhancedScore ?? a.score ?? 0;
           const bE = b.enhancedScore ?? b.score ?? 0;
           return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
@@ -456,7 +596,14 @@ app.post('/api/scan', async (req, res) => {
       }
     }
 
-    const sorted = results.sort((a, b) => {
+    const rated = applyRatingsAndEnhancements({
+      results,
+      fundamentals,
+      industryRanks,
+      barsByTicker,
+      snapshotsByTicker,
+    });
+    const sorted = rated.sort((a, b) => {
       const aE = a.enhancedScore ?? a.score ?? 0;
       const bE = b.enhancedScore ?? b.score ?? 0;
       return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
@@ -522,7 +669,7 @@ app.post('/api/cron/scan', async (req, res) => {
   // Run full scan in background (same as /api/scan but no SSE)
   (async () => {
     try {
-      const { runScanStream } = await import('./scan.js');
+      const { runScanStream, applyRatingsAndEnhancements } = await import('./scan.js');
       const to = new Date();
       const from = new Date(to);
       from.setDate(from.getDate() - 180);
@@ -530,15 +677,29 @@ app.post('/api/cron/scan', async (req, res) => {
       const toStr = to.toISOString().slice(0, 10);
       const results = [];
       let vcpBullishCount = 0;
-      for await (const { result, index, total } of runScanStream()) {
+      const fundamentals = await loadFundamentals();
+      const industryReturns = await loadIndustryReturnsForScan(fundamentals);
+      const industryRanks = rankIndustries(industryReturns);
+      const barsByTicker = new Map();
+      const snapshotsByTicker = new Map();
+      for await (const { result, index, total, bars, snapshots } of runScanStream()) {
         results.push(result);
         activeScan.results.push(result);
         if (result.vcpBullish) vcpBullishCount++;
+        if (bars && result.ticker) barsByTicker.set(result.ticker, bars);
+        if (snapshots && result.ticker) snapshotsByTicker.set(result.ticker, snapshots);
         activeScan.progress.index = index;
         activeScan.progress.total = total;
         activeScan.progress.vcpBullishCount = vcpBullishCount;
         if (results.length % 25 === 0 || results.length === total) {
-          const sorted = [...results].sort((a, b) => {
+          const rated = applyRatingsAndEnhancements({
+            results,
+            fundamentals,
+            industryRanks,
+            barsByTicker,
+            snapshotsByTicker,
+          });
+          const sorted = [...rated].sort((a, b) => {
             const aE = a.enhancedScore ?? a.score ?? 0;
             const bE = b.enhancedScore ?? b.score ?? 0;
             return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
@@ -546,7 +707,14 @@ app.post('/api/cron/scan', async (req, res) => {
           await saveScanResultsToDb({ scannedAt: new Date().toISOString(), from: fromStr, to: toStr, totalTickers: total, vcpBullishCount, results: sorted });
         }
       }
-      const sorted = results.sort((a, b) => {
+      const rated = applyRatingsAndEnhancements({
+        results,
+        fundamentals,
+        industryRanks,
+        barsByTicker,
+        snapshotsByTicker,
+      });
+      const sorted = rated.sort((a, b) => {
         const aE = a.enhancedScore ?? a.score ?? 0;
         const bE = b.enhancedScore ?? b.score ?? 0;
         return bE !== aE ? bE - aE : (b.score ?? 0) - (a.score ?? 0);
@@ -617,38 +785,6 @@ app.get('/api/bars/:ticker', async (req, res) => {
   // lightweight-charts requires asc by time; Yahoo can return unsorted
   const sorted = [...bars].sort((a, b) => a.t - b.t);
   res.json({ ticker, from: fromStr, to: toStr, interval, results: sorted });
-});
-
-// S&P 500 (^GSPC) bars for Relative Strength calculation. Cached like other tickers.
-app.get('/api/spx/bars', async (req, res) => {
-  // Handle interval: may be string, array (duplicate params), or missing; ensure valid value
-  let interval = req.query.interval;
-  if (Array.isArray(interval)) interval = interval[0];
-  const intervalStr = String(interval || '').toLowerCase();
-  interval = ['1d', '1wk', '1mo'].includes(intervalStr) ? intervalStr : '1d';
-  let days = Number(req.query.days) || 180;
-  // Weekly/monthly need longer range for enough bars
-  if (interval === '1wk') days = Math.max(days, 730); // min 2y for weekly
-  if (interval === '1mo') days = Math.max(days, 1825); // min 5y for monthly
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(from.getDate() - days);
-  const fromStr = from.toISOString().slice(0, 10);
-  const toStr = to.toISOString().slice(0, 10);
-
-  const spxTicker = '^GSPC';
-  let bars = await getBarsFromDb(spxTicker, fromStr, toStr, interval);
-  if (!bars) {
-    try {
-      bars = await getBars(spxTicker, fromStr, toStr, interval);
-      await saveBarsToDb(spxTicker, fromStr, toStr, bars, interval);
-    } catch (e) {
-      return res.status(502).json({ error: e.message });
-    }
-  }
-  // lightweight-charts requires asc by time; Yahoo can return unsorted
-  const sorted = [...bars].sort((a, b) => a.t - b.t);
-  res.json({ ticker: spxTicker, from: fromStr, to: toStr, interval, results: sorted });
 });
 
 /**
@@ -2004,15 +2140,6 @@ async function computeAndSaveOpus45Scores() {
 
     const resultsToAnalyze = results;
 
-    // Load SPY bars for RS calculation (needed for accurate historical signal detection)
-    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
-    if (!spyBars || spyBars.length < 200) {
-      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-      if (spyBars && spyBars.length >= 200) {
-        await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
-      }
-    }
-
     // Collect tickers that need a bar fetch. Try Opus cache (_1d.json) first, then scan cache (.json).
     const needFetch = [];
     for (const r of resultsToAnalyze) {
@@ -2051,7 +2178,7 @@ async function computeAndSaveOpus45Scores() {
     }
 
     // Generate Opus4.5 signals and scores for every ticker
-    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, industryReturns, weights, spyBars);
+    const { signals, allScores } = findOpus45Signals(resultsToAnalyze, barsByTicker, fundamentals, industryReturns, weights);
     const stats = getSignalStats(signals);
 
     // Enrich each signal with currentPrice so when we serve from cache we can compute P/L for Open Trade column
@@ -2273,6 +2400,66 @@ app.get('/api/opus45/debug', async (req, res) => {
   }
 });
 
+// Debug endpoint: RS + industry normalization summaries for top Opus scores
+app.get('/api/opus45/debug/rs-industry', async (req, res) => {
+  try {
+    const limitParam = Number(req.query.limit) || 50;
+    const limit = Math.max(1, Math.min(200, limitParam));
+    const scanData = await loadScanData();
+    if (!scanData.results?.length) {
+      return res.json({ error: 'No scan results' });
+    }
+
+    const opusData = await computeAndSaveOpus45Scores();
+    if (!opusData?.allScores?.length) {
+      return res.json({ error: 'No Opus4.5 scores available' });
+    }
+
+    const scanByTicker = new Map(scanData.results.map((r) => [r.ticker, r]));
+    const maxIndustryRank = scanData.results.reduce((m, r) => {
+      const val = Number(r?.industryRank);
+      return Number.isFinite(val) && val > m ? val : m;
+    }, 0);
+    const fallbackIndustryTotal = Math.max(2, maxIndustryRank || 200);
+
+    const sorted = [...opusData.allScores].sort((a, b) => (b.opus45Confidence ?? 0) - (a.opus45Confidence ?? 0));
+    const top = sorted.slice(0, limit);
+
+    const enriched = top.map((row) => {
+      const scan = scanByTicker.get(row.ticker) || {};
+      const industryTotal = scan?.industryTotalCount ?? fallbackIndustryTotal;
+      const rsNormalized = normalizeRs(scan?.relativeStrength);
+      const industryNormalized = normalizeIndustryRank(scan?.industryRank, industryTotal);
+      return {
+        ticker: row.ticker,
+        opus45Confidence: row.opus45Confidence ?? 0,
+        opus45Grade: row.opus45Grade ?? 'F',
+        relativeStrength: scan?.relativeStrength ?? null,
+        industryRank: scan?.industryRank ?? null,
+        industryTotalCount: industryTotal,
+        rsNormalized: rsNormalized == null ? null : Math.round(rsNormalized * 1000) / 1000,
+        industryNormalized: industryNormalized == null ? null : Math.round(industryNormalized * 1000) / 1000
+      };
+    });
+
+    const rsValues = enriched.map((r) => r.rsNormalized).filter((v) => Number.isFinite(v));
+    const industryValues = enriched.map((r) => r.industryNormalized).filter((v) => Number.isFinite(v));
+
+    res.json({
+      limit,
+      scannedAt: scanData.scannedAt,
+      computedAt: opusData.computedAt,
+      summary: {
+        rs: summarizePercentiles(rsValues, [50, 90]),
+        industry: summarizePercentiles(industryValues, [50, 90])
+      },
+      top: enriched
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Get Opus4.5 signal for a specific ticker
 app.get('/api/opus45/signal/:ticker', async (req, res) => {
   const { ticker } = req.params;
@@ -2300,15 +2487,8 @@ app.get('/api/opus45/signal/:ticker', async (req, res) => {
       });
     }
     
-    // Get SPY bars for RS calculation
-    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
-    if (!spyBars) {
-      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-      await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
-    }
-    
     // Get VCP analysis
-    const vcpResult = checkVCP(bars, spyBars);
+    const vcpResult = checkVCP(bars);
     
     // Get fundamentals
     const fundamentals = await loadFundamentals();
@@ -2368,13 +2548,6 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
       });
     }
     
-    // Get SPY bars for RS calculation
-    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
-    if (!spyBars) {
-      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-      await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
-    }
-    
     // Load optimized weights
     const weights = loadOptimizedWeights();
     
@@ -2397,7 +2570,7 @@ app.get('/api/opus45/signals/:ticker/history', async (req, res) => {
       
       if (!inPosition) {
         // Check for buy signal
-        const vcpResult = checkVCP(barsToDate, spyBars);
+        const vcpResult = checkVCP(barsToDate);
         const signal = generateOpus45Signal(vcpResult, barsToDate, null, null, weights);
         
         if (signal.signal) {
@@ -2528,14 +2701,7 @@ app.get('/api/agents/signals/:ticker/history', async (req, res) => {
       });
     }
 
-    // Get SPY bars for RS calculation (shared with VCP checks)
-    let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
-    if (!spyBars) {
-      spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-      await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
-    }
-
-    const signals = scanTickerForSignals(ticker, bars, spyBars, {
+    const signals = scanTickerForSignals(ticker, bars, {
       lookbackMonths: 12,
       signalFamilies: ['opus45', 'turtle'],
     });
@@ -4224,13 +4390,7 @@ app.post('/api/agents/conversation/run', async (req, res) => {
         });
       }
 
-      let spyBars = await getBarsFromDb('^GSPC', fromStr365, toStr, '1d');
-      if (!spyBars) {
-        spyBars = await getBars('^GSPC', fromStr365, toStr, '1d');
-        await saveBarsToDb('^GSPC', fromStr365, toStr, spyBars, '1d');
-      }
-
-      const vcpResult = checkVCP(bars, spyBars);
+      const vcpResult = checkVCP(bars);
       const fundamentals = await loadFundamentals();
       const tickerFundamentals = fundamentals[ticker] || null;
       const industryData = null;

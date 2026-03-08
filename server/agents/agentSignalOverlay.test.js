@@ -48,22 +48,6 @@ function turtleSignal(overrides = {}) {
   }
 }
 
-function crossSignal(overrides = {}) {
-  return {
-    ticker: 'TEST',
-    entryDate: '2026-02-20',
-    entryPrice: 95,
-    entryBarIdx: 1,
-    context: {
-      signalFamily: 'ma_crossover',
-      ma10Above20: true,
-      maCrossUp: true,
-      ...overrides.context,
-    },
-    ...overrides,
-  }
-}
-
 describe('buildAgentBuyMarkers', () => {
   it('filters signals by agent rules and maps to chart markers', () => {
     const bars = [{ t: 1000 }, { t: 2000 }, { t: 3000 }]
@@ -107,24 +91,5 @@ describe('buildAgentBuyMarkers', () => {
     const entryDateTime = Math.floor(Date.parse('2026-02-22T00:00:00Z') / 1000)
     assert.ok(times.includes(2)) // 2000ms -> 2s
     assert.ok(times.includes(entryDateTime))
-  })
-
-  it('supports 10/20 cross over signals', () => {
-    const bars = [{ t: 1000 }, { t: 2000 }]
-    const signals = [
-      crossSignal(),
-      crossSignal({ context: { ma10Above20: false } }),
-      crossSignal({ context: { signalFamily: 'opus45' } }),
-    ]
-
-    const markers = buildAgentBuyMarkers({
-      agentType: 'ma_crossover_10_20',
-      signals,
-      bars,
-    })
-
-    assert.equal(markers.length, 1)
-    assert.equal(markers[0].label, AGENT_CHART_CONFIG.ma_crossover_10_20.name)
-    assert.equal(markers[0].color, AGENT_CHART_CONFIG.ma_crossover_10_20.color)
   })
 })

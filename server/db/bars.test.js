@@ -16,6 +16,7 @@
 
 import { describe, it, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { isBarsUpToDate } from './bars.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -306,6 +307,25 @@ describe('Cache layer: stale / partial range detection', () => {
     const bars = generateBars(252);
     const gaps = detectBarGaps(bars, 5);
     assert.equal(gaps.length, 0, 'Contiguous bars should have no gaps');
+  });
+});
+
+describe('Bars freshness checks', () => {
+  it('treats bars as up to date when last bar is within maxLagDays', () => {
+    const bars = generateBars(10, new Date('2026-03-01'));
+    const lastBarDate = new Date(bars[bars.length - 1].t).toISOString().slice(0, 10);
+    const toDate = new Date(lastBarDate + 'T12:00:00Z');
+    toDate.setUTCDate(toDate.getUTCDate() + 1);
+    const to = toDate.toISOString().slice(0, 10);
+    const ok = isBarsUpToDate(bars, to, { maxLagDays: 5 });
+    assert.equal(ok, true);
+  });
+
+  it('treats bars as stale when last bar is too old', () => {
+    const bars = generateBars(10, new Date('2026-02-01'));
+    const to = '2026-03-08';
+    const ok = isBarsUpToDate(bars, to, { maxLagDays: 2 });
+    assert.equal(ok, false);
   });
 });
 

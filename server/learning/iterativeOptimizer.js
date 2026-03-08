@@ -17,7 +17,7 @@
  * - Reduce weights for factors that don't correlate with profitability
  */
 
-import { DEFAULT_WEIGHTS } from '../opus45Signal.js';
+import { DEFAULT_WEIGHTS, normalizeRs, normalizeIndustryRank } from '../opus45Signal.js';
 import { scanMultipleTickers, getTickerList } from './historicalSignalScanner.js';
 import { runCrossStockAnalysis, computeSignalMetrics } from './crossStockAnalyzer.js';
 import { getStoredSignals, storeSignalsInDatabase } from './autoPopulate.js';
@@ -416,15 +416,29 @@ function rescoreSignalsWithWeights(signals, weights) {
       components.push({ name: 'entryVolumeConfirm', value: weights.entryVolumeConfirm || 0 });
     }
     
-    // RS scoring
+    // RS scoring (continuous, aligned with production scoring)
     const rs = ctx.relativeStrength || 0;
-    if (rs >= 90) {
-      score += weights.entryRSAbove90 || 0;
-      components.push({ name: 'entryRSAbove90', value: weights.entryRSAbove90 || 0 });
+    const rsNormalized = normalizeRs(rs);
+    const rsPrimary = rsNormalized * (weights.entryRSAbove90 || 0);
+    const rsSecondary = rsNormalized * (weights.relativeStrengthBonus || 0);
+    if (rsPrimary > 0) {
+      score += rsPrimary;
+      components.push({ name: 'entryRSAbove90', value: rsPrimary });
     }
-    if (rs >= 95) {
-      score += weights.relativeStrengthBonus || 0;
-      components.push({ name: 'relativeStrengthBonus', value: weights.relativeStrengthBonus || 0 });
+    if (rsSecondary > 0) {
+      score += rsSecondary;
+      components.push({ name: 'relativeStrengthBonus', value: rsSecondary });
+    }
+
+    // Industry rank scoring (continuous, aligned with production scoring)
+    const industryRank = ctx.industryRank;
+    const industryTotalCount = ctx.industryTotalCount;
+    const industryNormalized = normalizeIndustryRank(industryRank, industryTotalCount);
+    const industryMax = (weights.industryTop20 || 0) + (weights.industryTop40 || 0);
+    const industryPoints = industryNormalized * industryMax;
+    if (industryPoints > 0) {
+      score += industryPoints;
+      components.push({ name: 'industryRankScore', value: industryPoints });
     }
     
     // VCP scoring

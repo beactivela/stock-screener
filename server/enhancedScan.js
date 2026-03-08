@@ -131,6 +131,8 @@ function buildEnhancedData(vcpResult, bars, fundamentals = null, industryData = 
     upDayVol = volSma20 * 1.1;
   }
 
+  const rsRating = vcpResult?.rsData?.rsRating ?? vcpResult?.relativeStrength ?? null;
+
   return {
     contractions,
     volumeData: volSma20 != null
@@ -148,7 +150,7 @@ function buildEnhancedData(vcpResult, bars, fundamentals = null, industryData = 
       sma200: sma200 ?? sma50 ?? lastClose,
     },
     priceAction: { currentPrice: lastClose, pivotHigh: lastClose },
-    relativeStrength: vcpResult.relativeStrength ?? null, // NEW: Use RS from VCP result
+    relativeStrength: rsRating, // IBD RS Rating (1–99) when available
 
     earnings: fundamentals
       ? {

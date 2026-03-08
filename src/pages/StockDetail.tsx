@@ -8,6 +8,8 @@ import { API_BASE } from '../utils/api'
 import TradingViewWidget from '../components/TradingViewWidget'
 import ChartContextMenu from '../components/ChartContextMenu'
 import { buildNewsPrompt } from '../utils/newsPrompt.js'
+import { getIndustryRankBadge, getRsRatingBadge } from '../utils/rsRatingDisplay.js'
+import { getWatchlistItem, removeWatchlistItem, upsertWatchlistItem, type WatchlistItem } from '../utils/watchlistStorage.js'
 // Trade Journal panel for logging entries and exits
 import TradePanel from '../components/TradePanel'
 
@@ -129,7 +131,6 @@ export default function StockDetail() {
   const navigate = useNavigate()
   const scanResult = (location.state as { scanResult?: VCPInfo } | null)?.scanResult
   const [bars, setBars] = useState<Bar[]>([])
-  const [spxBars, setSpxBars] = useState<Bar[]>([]) // S&P 500 bars for RS calculation
   const [industryBars, setIndustryBars] = useState<Bar[]>([]) // Industry index bars for RS vs industry (12 months)
   const [vcp, setVcp] = useState<VCPInfo | null>(null)
   /** When VCP API returns 0/not enough bars, we fetch latest scan and use this ticker's result so profile shows enhanced score (e.g. FCX, LHX). */
@@ -141,6 +142,9 @@ export default function StockDetail() {
   const [industry1Y, setIndustry1Y] = useState<number | null>(null)
   const [industryYtd, setIndustryYtd] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+  const [watchlistItem, setWatchlistItem] = useState<WatchlistItem | null>(null)
+  const [watchlistNoteDraft, setWatchlistNoteDraft] = useState('')
+  const [watchlistFeedback, setWatchlistFeedback] = useState<string | null>(null)
   const [timeframe, setTimeframe] = useState<(typeof TIMEFRAMES)[number]>(TIMEFRAMES[1])
   const [interval, setInterval] = useState<(typeof INTERVALS)[number]['value']>('1d')
   // Toggle Signal Agent buy markers on chart - persists to localStorage
@@ -162,11 +166,9 @@ export default function StockDetail() {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const rsiChartRef = useRef<HTMLDivElement>(null)
   const vcpChartRef = useRef<HTMLDivElement>(null)
-  const rsChartRef = useRef<HTMLDivElement>(null) // RS chart reference
   const chartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const rsiChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
   const vcpChartInstance = useRef<ReturnType<typeof createChart> | null>(null)
-  const rsChartInstance = useRef<ReturnType<typeof createChart> | null>(null) // RS chart instance
   const lastHoverTimeRef = useRef<ChartTime | null>(null)
 
   const [contextMenu, setContextMenu] = useState<{ open: boolean; x: number; y: number; time: ChartTime | null }>({
@@ -184,6 +186,8 @@ export default function StockDetail() {
   
   // Scan results for horizontal ticker navigation bar
   const [scanTickers, setScanTickers] = useState<Array<{ ticker: string; score?: number; hasActionableBuy?: boolean }>>([])
+  const [scanRsByTicker, setScanRsByTicker] = useState<Record<string, number | null>>({})
+  const [scanIndustryRankByTicker, setScanIndustryRankByTicker] = useState<Record<string, number | null>>({})
   const tickerBarRef = useRef<HTMLDivElement>(null)
   // Increment to re-run bars fetch (e.g. after "Retry" when chart data failed to load)
   const [barsRetryKey, setBarsRetryKey] = useState(0)
@@ -209,9 +213,29 @@ export default function StockDetail() {
             hasActionableBuy: actionableBuys.has(r.ticker)
           }))
           .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
+        // Build a quick lookup for IBD-style RS ratings (1–99) by ticker.
+        const rsMap = results.reduce((acc: Record<string, number | null>, r: { ticker: string; relativeStrength?: number | null }) => {
+          const key = String(r.ticker || '').toUpperCase()
+          if (!key) return acc
+          acc[key] = typeof r.relativeStrength === 'number' ? r.relativeStrength : null
+          return acc
+        }, {})
+        // Build a quick lookup for industry rank by ticker.
+        const industryRankMap = results.reduce((acc: Record<string, number | null>, r: { ticker: string; industryRank?: number | null }) => {
+          const key = String(r.ticker || '').toUpperCase()
+          if (!key) return acc
+          acc[key] = typeof r.industryRank === 'number' ? r.industryRank : null
+          return acc
+        }, {})
         setScanTickers(tickers)
+        setScanRsByTicker(rsMap)
+        setScanIndustryRankByTicker(industryRankMap)
       })
-      .catch(() => setScanTickers([]))
+      .catch(() => {
+        setScanTickers([])
+        setScanRsByTicker({})
+        setScanIndustryRankByTicker({})
+      })
   }, [])
 
   // Scroll current ticker into view in the ticker bar
@@ -276,28 +300,17 @@ export default function StockDetail() {
     setLoading(true)
     // Always fetch 365 days regardless of timeframe selection (timeframe only controls chart zoom)
     const barsUrl = `${API_BASE}/api/bars/${ticker}?days=365&interval=${interval}`
-    const spxUrl = `${API_BASE}/api/spx/bars?days=365&interval=${interval}` // Fetch SPX bars too
     // cache: 'no-store' prevents browser from returning cached daily when switching to weekly
-    Promise.all([
-      fetch(barsUrl, { cache: 'no-store' }).then((r) => r.json()),
-      fetch(spxUrl, { cache: 'no-store' }).then((r) => r.json()),
-    ])
-      .then(([barsRes, spxRes]) => {
+    fetch(barsUrl, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((barsRes) => {
         if (barsRes.error) throw new Error(barsRes.error)
         const raw = barsRes.results || []
         setBars([...raw].sort((a: Bar, b: Bar) => a.t - b.t))
-        
-        // Set SPX bars (ignore errors - RS chart is optional)
-        if (!spxRes.error && spxRes.results) {
-          setSpxBars([...spxRes.results].sort((a: Bar, b: Bar) => a.t - b.t))
-        } else {
-          setSpxBars([])
-        }
       })
       .catch((e) => {
         console.error('Bars fetch failed:', e)
         setBars([])
-        setSpxBars([])
       })
       .finally(() => setLoading(false))
     // VCP in parallel; failures are non-fatal (we keep scanResult or previous vcp)
@@ -457,8 +470,39 @@ export default function StockDetail() {
       .catch(() => setIndustryBars([]))
   }, [fundamentals?.industry, interval])
 
-  const { candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes } = useMemo(() => {
-    const empty = { candleData: [], ma10Data: [], ma20Data: [], ma50Data: [], ma150Data: [], volumeData: [], ma20VolumeData: [], rsiData: [], vcpContractionData: [], rsData: [], rsIndustryData: [], pullbacks: [], idealPullbackBarTimes: [], volumePriceBreakoutTimes: [] }
+  useEffect(() => {
+    if (!ticker) return
+    const existing = getWatchlistItem(ticker)
+    setWatchlistItem(existing)
+    setWatchlistNoteDraft(existing?.note ?? '')
+    setWatchlistFeedback(null)
+  }, [ticker])
+
+  const handleToggleWatchlist = () => {
+    if (!ticker) return
+    if (watchlistItem) {
+      removeWatchlistItem(ticker)
+      setWatchlistItem(null)
+      setWatchlistNoteDraft('')
+      setWatchlistFeedback('Removed from watchlist')
+    } else {
+      const saved = upsertWatchlistItem(ticker, { note: watchlistNoteDraft })
+      setWatchlistItem(saved)
+      setWatchlistFeedback('Added to watchlist')
+    }
+    window.dispatchEvent(new CustomEvent('watchlist:changed'))
+  }
+
+  const handleSaveWatchlistNote = () => {
+    if (!ticker || !watchlistItem) return
+    const saved = upsertWatchlistItem(ticker, { note: watchlistNoteDraft, setNoteTimestamp: true })
+    setWatchlistItem(saved)
+    setWatchlistFeedback('Note saved')
+    window.dispatchEvent(new CustomEvent('watchlist:changed'))
+  }
+
+  const { candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes } = useMemo(() => {
+    const empty = { candleData: [], ma10Data: [], ma20Data: [], ma50Data: [], ma150Data: [], volumeData: [], ma20VolumeData: [], rsiData: [], vcpContractionData: [], rsIndustryData: [], pullbacks: [], idealPullbackBarTimes: [], volumePriceBreakoutTimes: [] }
     if (bars.length === 0) return empty
     try {
       // lightweight-charts requires data asc by time; Yahoo can return unsorted bars
@@ -473,8 +517,6 @@ export default function StockDetail() {
       const rsi14 = rsi(closes, 14)
       const vcpContr = vcpContraction(sorted, 6)
       
-      // Calculate RS line (stock vs S&P 500)
-      const rsValues = spxBars.length > 0 ? calculateRelativeStrength(sorted, spxBars) : []
       // RS vs industry: same formula (stock/benchmark normalized to 1000); only when we have industry bars
       const rsIndustryValues = industryBars.length > 0 ? calculateRelativeStrength(sorted, industryBars) : []
       
@@ -510,14 +552,6 @@ export default function StockDetail() {
           const pad = sorted.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
           return [...pad, ...filtered]
         })(),
-        rsData: (() => {
-          const filtered = sorted.map((b, i) => ({ time: toTime(b.t), value: rsValues[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
-          if (filtered.length === 0) return []
-          const firstVal = filtered[0].value
-          const padCount = sorted.length - filtered.length
-          const pad = sorted.slice(0, padCount).map((b) => ({ time: toTime(b.t), value: firstVal }))
-          return [...pad, ...filtered]
-        })(),
         rsIndustryData: (() => {
           const filtered = sorted.map((b, i) => ({ time: toTime(b.t), value: rsIndustryValues[i] })).filter((d) => d.value != null) as { time: string; value: number }[]
           if (filtered.length === 0) return []
@@ -547,7 +581,7 @@ export default function StockDetail() {
       console.error('Chart indicators error:', e)
       return empty
     }
-  }, [bars, spxBars, industryBars])
+  }, [bars, industryBars])
 
   const formatChartTimeToDate = (time: ChartTime | null) => {
     if (!time) return null
@@ -585,7 +619,7 @@ export default function StockDetail() {
   }
 
   useEffect(() => {
-    if (!chartWrapperRef.current || !chartContainerRef.current || !rsiChartRef.current || !vcpChartRef.current || !rsChartRef.current || bars.length === 0) return
+    if (!chartWrapperRef.current || !chartContainerRef.current || !rsiChartRef.current || !vcpChartRef.current || bars.length === 0) return
     if (chartInstance.current) {
       chartInstance.current.remove()
       chartInstance.current = null
@@ -598,11 +632,6 @@ export default function StockDetail() {
       vcpChartInstance.current.remove()
       vcpChartInstance.current = null
     }
-    if (rsChartInstance.current) {
-      rsChartInstance.current.remove()
-      rsChartInstance.current = null
-    }
-
     const w = chartWrapperRef.current?.clientWidth ?? 0
     if (w <= 0) return
 
@@ -631,18 +660,6 @@ export default function StockDetail() {
         autoScale: true,
       },
     })
-    const rsChart = createChart(rsChartRef.current, {
-      ...CHART_OPTIONS,
-      width: w,
-      height: 120,
-      rightPriceScale: {
-        borderColor: '#334155',
-        minimumWidth: 60,
-        scaleMargins: { top: 0.1, bottom: 0.1 },
-        autoScale: true,
-      },
-    })
-
     const sortByTime = <T extends { time: string | number }>(arr: T[]) =>
       [...arr].sort((a, b) => (a.time as number) - (b.time as number))
     // lightweight-charts requires asc + unique times; dedupe by keeping last per time
@@ -778,12 +795,6 @@ export default function StockDetail() {
     const vcpSeries = vcpChart.addLineSeries({ color: '#a855f7', lineWidth: 2 })
     vcpSeries.setData(dedupeByTime(vcpContractionData))
 
-    // RS pane: only Relative Strength to S&P 500 (Relative Strength to Industry is on main price chart)
-    const rsSeries = rsChart.addLineSeries({ color: '#14b8a6', lineWidth: 2 })
-    if (rsData.length > 0) {
-      rsSeries.setData(dedupeByTime(rsData))
-    }
-
     // Sync crosshair across all panes: when hovering any chart, show vertical line on all
     const findValAtTime = (data: { time: string | number; value?: number; close?: number }[], time: string | number | undefined) => {
       if (time == null) return 0
@@ -803,9 +814,6 @@ export default function StockDetail() {
         mainChart.setCrosshairPosition(mainPriceAtTime(time), timeVal, candle)
         rsiChart.setCrosshairPosition(findValAtTime(rsiData, time), timeVal, rsiSeries)
         vcpChart.setCrosshairPosition(findValAtTime(vcpContractionData, time), timeVal, vcpSeries)
-        if (rsData.length > 0) {
-          rsChart.setCrosshairPosition(findValAtTime(rsData, time), timeVal, rsSeries)
-        }
       } finally {
         crosshairSyncing = false
       }
@@ -815,7 +823,6 @@ export default function StockDetail() {
       mainChart.clearCrosshairPosition()
       rsiChart.clearCrosshairPosition()
       vcpChart.clearCrosshairPosition()
-      rsChart.clearCrosshairPosition()
     }
     mainChart.subscribeCrosshairMove((param) => {
       if (param.time != null) {
@@ -838,13 +845,6 @@ export default function StockDetail() {
       }
       else clearCrosshair()
     })
-    rsChart.subscribeCrosshairMove((param) => {
-      if (param.time != null) {
-        lastHoverTimeRef.current = param.time as ChartTime
-        syncCrosshair(param.time as string | number)
-      }
-      else clearCrosshair()
-    })
 
     // Sync by logical range so right margin is preserved (time range strips it)
     let syncing = false
@@ -853,14 +853,12 @@ export default function StockDetail() {
       syncing = true
       rsiChart.timeScale().setVisibleLogicalRange(range)
       vcpChart.timeScale().setVisibleLogicalRange(range)
-      rsChart.timeScale().setVisibleLogicalRange(range)
       mainChart.timeScale().setVisibleLogicalRange(range)
       syncing = false
     }
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
     rsiChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
     vcpChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
-    rsChart.timeScale().subscribeVisibleLogicalRangeChange(syncToOthers)
 
     // Fit content first, then add right margin (50px gap)
     mainChart.timeScale().fitContent()
@@ -870,18 +868,15 @@ export default function StockDetail() {
     mainChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
     rsiChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
     vcpChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
-    rsChart.timeScale().applyOptions({ rightOffset: rightOffsetBars })
     const logicalRange = mainChart.timeScale().getVisibleLogicalRange()
     if (logicalRange) {
       rsiChart.timeScale().setVisibleLogicalRange(logicalRange)
       vcpChart.timeScale().setVisibleLogicalRange(logicalRange)
-      rsChart.timeScale().setVisibleLogicalRange(logicalRange)
     }
 
     chartInstance.current = mainChart
     rsiChartInstance.current = rsiChart
     vcpChartInstance.current = vcpChart
-    rsChartInstance.current = rsChart
 
     const resize = () => {
       const w = chartWrapperRef.current?.clientWidth ?? 0
@@ -889,7 +884,6 @@ export default function StockDetail() {
         mainChart.applyOptions({ width: w })
         rsiChart.applyOptions({ width: w })
         vcpChart.applyOptions({ width: w })
-        rsChart.applyOptions({ width: w })
       }
     }
     const ro = new ResizeObserver(resize)
@@ -901,13 +895,11 @@ export default function StockDetail() {
       mainChart.remove()
       rsiChart.remove()
       vcpChart.remove()
-      rsChart.remove()
       chartInstance.current = null
       rsiChartInstance.current = null
       vcpChartInstance.current = null
-      rsChartInstance.current = null
     }
-  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry])
+  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry])
 
   // Adjust visible range when timeframe changes (zoom in/out while keeping all 12 months of data loaded)
   useEffect(() => {
@@ -929,7 +921,6 @@ export default function StockDetail() {
       chartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
       if (rsiChartInstance.current) rsiChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
       if (vcpChartInstance.current) vcpChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
-      if (rsChartInstance.current) rsChartInstance.current.timeScale().setVisibleLogicalRange(logicalRange)
     }
   }, [timeframe, bars])
 
@@ -969,103 +960,176 @@ export default function StockDetail() {
     ? (scanResult && !scanResult.error ? scanResult : scanFallback)
     : (vcp ?? (scanResult && !scanResult.error ? scanResult : scanFallback ?? null))
   const visibleAgentLegend = AGENT_CHART_LIST.filter((agent) => agentVisibility[agent.agentType])
+  // Resolve RS badge for the header using scan results when available.
+  const rsBadge = useMemo(() => {
+    if (!ticker) return getRsRatingBadge(null)
+    const rsValue = scanRsByTicker[ticker.toUpperCase()] ?? null
+    return getRsRatingBadge(rsValue)
+  }, [ticker, scanRsByTicker])
+  const industryRank = useMemo(() => {
+    if (!ticker) return null
+    return scanIndustryRankByTicker[ticker.toUpperCase()] ?? null
+  }, [ticker, scanIndustryRankByTicker])
+  const industryBadge = useMemo(() => {
+    return getIndustryRankBadge(industryRank)
+  }, [industryRank])
+  const watchlistNoteSavedAt = watchlistItem?.noteUpdatedAt
+    ? new Date(watchlistItem.noteUpdatedAt).toLocaleString()
+    : null
 
   if (loading || !ticker) {
     return (
-      <div className="w-[80%] max-w-full mx-auto py-12 text-slate-400">
+      <div className="w-[90%] max-w-full mx-auto py-12 text-slate-400">
         {loading ? 'Loading…' : 'Missing ticker.'}
       </div>
     )
   }
 
   return (
-    <div className="w-[80%] max-w-full mx-auto space-y-6">
-      <div className="flex flex-wrap items-start gap-4">
-        <Link to="/" className="text-slate-400 hover:text-slate-200 text-sm">
-          ← Dashboard
-        </Link>
-        <div>
-          <h1 className="text-2xl font-bold text-slate-100">{ticker}</h1>
-          {companyName && <p className="text-slate-400 text-sm mt-0.5">{companyName}</p>}
-        </div>
-        {/* Scan score = VCP + industry rank. Signal strength = Opus4.5 entry quality (shown in Opus4.5 panel when in position). */}
-        {(displayVcp && typeof (displayVcp.enhancedScore ?? displayVcp.score) === 'number') && (
-          <span className="flex items-center gap-2 flex-wrap">
-            <span className="px-2 py-1 rounded bg-slate-700 text-slate-200 text-sm font-medium" title="Scan score: VCP + industry rank (0–100)">
-              Scan: {displayVcp.enhancedScore ?? displayVcp.score}/100
+    <div className="w-[90%] max-w-full mx-auto space-y-6">
+      <div className="flex flex-wrap items-start content-start gap-4">
+        <div className="flex-1 min-w-0">
+          {/* Horizontal Ticker Navigation Bar */}
+          {scanTickers.length > 0 && (
+            <div className="relative w-full">
+              {/* Gradient fade on left edge */}
+              <div className="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-slate-950 to-transparent z-10 pointer-events-none" />
+              {/* Gradient fade on right edge */}
+              <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-slate-950 to-transparent z-10 pointer-events-none" />
+
+              <div
+                ref={tickerBarRef}
+                className="flex w-full gap-2 overflow-x-auto py-2 px-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
+                style={{ scrollbarWidth: 'thin' }}
+              >
+                {scanTickers.map((item) => {
+                  const isActive = item.ticker === ticker
+                  return (
+                    <Link
+                      key={item.ticker}
+                      to={`/stock/${item.ticker}`}
+                      data-ticker={item.ticker}
+                      className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                        isActive
+                          ? 'bg-sky-500 text-white ring-2 ring-sky-400'
+                          : item.hasActionableBuy
+                            ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30'
+                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                      }`}
+                    >
+                      <span>{item.ticker}</span>
+                      {item.score !== undefined && (
+                        <span
+                          className={`ml-1.5 text-xs ${isActive ? 'text-sky-100' : item.hasActionableBuy ? 'text-emerald-300' : 'text-slate-500'}`}
+                        >
+                          {item.score}
+                        </span>
+                      )}
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          <div className="mt-6 flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-bold text-slate-100">{ticker}</h1>
+            <span
+              className={`rounded bg-slate-800/80 px-2 py-0.5 text-[18px] font-medium ${rsBadge.className}`}
+              title={rsBadge.title}
+            >
+              {rsBadge.label}
             </span>
-            {opus45History?.lastBuySignal && (opus45History.lastBuySignal.confidence != null || opus45History.lastBuySignal.grade) && (
-              <span className="px-2 py-1 rounded bg-slate-700 text-emerald-300 text-sm font-medium" title="Opus4.5 signal strength (entry quality, pattern, volume)">
-                Signal: {opus45History.lastBuySignal.confidence ?? '–'}%{opus45History.lastBuySignal.grade ? ` ${opus45History.lastBuySignal.grade}` : ''}
+            <span
+              className={`rounded bg-slate-800/80 px-2 py-0.5 text-[18px] font-medium ${industryBadge.className}`}
+              title={industryBadge.title}
+            >
+              {industryBadge.label}
+            </span>
+            {/* Scan score = VCP + industry rank. Signal strength = Opus4.5 entry quality (shown in Opus4.5 panel when in position). */}
+            {(displayVcp && typeof (displayVcp.enhancedScore ?? displayVcp.score) === 'number') && (
+              <span className="flex items-center gap-2 flex-wrap">
+                <span className="px-2 py-1 rounded bg-slate-700 text-slate-200 text-sm font-medium" title="Scan score: VCP + industry rank (0–100)">
+                  Scan: {displayVcp.enhancedScore ?? displayVcp.score}/100
+                </span>
+                {opus45History?.lastBuySignal && (opus45History.lastBuySignal.confidence != null || opus45History.lastBuySignal.grade) && (
+                  <span className="px-2 py-1 rounded bg-slate-700 text-emerald-300 text-sm font-medium" title="Opus4.5 signal strength (entry quality, pattern, volume)">
+                    Signal: {opus45History.lastBuySignal.confidence ?? '–'}%{opus45History.lastBuySignal.grade ? ` ${opus45History.lastBuySignal.grade}` : ''}
+                  </span>
+                )}
+                {displayVcp === scanFallback && (
+                  <span className="text-slate-500 text-xs">(scan from last run)</span>
+                )}
               </span>
             )}
-            {displayVcp === scanFallback && (
-              <span className="text-slate-500 text-xs">(scan from last run)</span>
+            {displayVcp?.recommendation === 'buy' && (
+              <span className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 text-sm font-medium">
+                Buy
+              </span>
             )}
-          </span>
-        )}
-        {displayVcp?.recommendation === 'buy' && (
-          <span className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 text-sm font-medium">
-            Buy
-          </span>
-        )}
-        {displayVcp?.recommendation === 'hold' && (
-          <span className="px-2 py-1 rounded bg-amber-500/20 text-amber-400 text-sm font-medium">
-            Hold
-          </span>
-        )}
-        {displayVcp?.recommendation === 'avoid' && (
-          <span className="px-2 py-1 rounded bg-slate-600 text-slate-400 text-sm font-medium">
-            Avoid
-          </span>
-        )}
-        {displayVcp?.vcpBullish && !displayVcp?.recommendation && (
-          <span className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 text-sm font-medium">
-            VCP Bullish
-          </span>
-        )}
-      </div>
-
-      {/* Horizontal Ticker Navigation Bar */}
-      {scanTickers.length > 0 && (
-        <div className="relative">
-          {/* Gradient fade on left edge */}
-          <div className="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-slate-950 to-transparent z-10 pointer-events-none" />
-          {/* Gradient fade on right edge */}
-          <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-slate-950 to-transparent z-10 pointer-events-none" />
-          
-          <div 
-            ref={tickerBarRef}
-            className="flex gap-2 overflow-x-auto py-2 px-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
-            style={{ scrollbarWidth: 'thin' }}
-          >
-            {scanTickers.map((item) => {
-              const isActive = item.ticker === ticker
-              return (
-                <Link
-                  key={item.ticker}
-                  to={`/stock/${item.ticker}`}
-                  data-ticker={item.ticker}
-                  className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                    isActive
-                      ? 'bg-sky-500 text-white ring-2 ring-sky-400'
-                      : item.hasActionableBuy
-                        ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30'
-                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
-                  }`}
-                >
-                  <span>{item.ticker}</span>
-                  {item.score !== undefined && (
-                    <span className={`ml-1.5 text-xs ${isActive ? 'text-sky-100' : item.hasActionableBuy ? 'text-emerald-300' : 'text-slate-500'}`}>
-                      {item.score}
-                    </span>
-                  )}
-                </Link>
-              )
-            })}
+            {displayVcp?.recommendation === 'hold' && (
+              <span className="px-2 py-1 rounded bg-amber-500/20 text-amber-400 text-sm font-medium">
+                Hold
+              </span>
+            )}
+            {displayVcp?.recommendation === 'avoid' && (
+              <span className="px-2 py-1 rounded bg-slate-600 text-slate-400 text-sm font-medium">
+                Avoid
+              </span>
+            )}
+            {displayVcp?.vcpBullish && !displayVcp?.recommendation && (
+              <span className="px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 text-sm font-medium">
+                VCP Bullish
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleToggleWatchlist}
+              className={`ml-auto rounded-md px-2 py-1 text-sm font-medium transition-colors ${
+                watchlistItem
+                  ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              aria-label={watchlistItem ? 'Remove from watchlist' : 'Add to watchlist'}
+              title={watchlistItem ? 'Remove from watchlist' : 'Add to watchlist'}
+            >
+              {watchlistItem ? '★ Starred' : '☆ Star'}
+            </button>
           </div>
+          {companyName && <p className="text-slate-400 text-sm mt-0.5">{companyName}</p>}
+          {watchlistItem && (
+            <>
+              {/* Reveal note entry only after starring for a simpler default view. */}
+              <label className="mt-2 block text-xs text-slate-400" htmlFor="watchlist-note">
+                Optional note
+              </label>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  id="watchlist-note"
+                  type="text"
+                  value={watchlistNoteDraft}
+                  onChange={(e) => setWatchlistNoteDraft(e.target.value)}
+                  placeholder="Why are you watching this?"
+                  aria-describedby={watchlistNoteSavedAt ? 'watchlist-note-date' : undefined}
+                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveWatchlistNote}
+                  className="rounded-md bg-slate-800 px-2 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+                >
+                  Submit
+                </button>
+              </div>
+              {watchlistNoteSavedAt && (
+                <p id="watchlist-note-date" className="mt-1 text-xs text-slate-500">
+                  Note saved {watchlistNoteSavedAt}
+                </p>
+              )}
+            </>
+          )}
+          {watchlistFeedback && <p className="mt-1 text-xs text-emerald-400">{watchlistFeedback}</p>}
         </div>
-      )}
+      </div>
 
       {/* Main content area: Chart + Trade Panel side by side — placed just below ticker row, above Opus 4.5 Signal */}
       <div className="flex gap-4">
@@ -1223,18 +1287,6 @@ export default function StockDetail() {
             </div>
           </div>
 
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-teal-400 bg-slate-900/50 flex items-center gap-2">
-              <span>Relative Strength to S&P 500</span>
-              <span className="text-slate-500 text-[10px] font-normal">Rising = Outperforming (Bullish) • Falling = Underperforming (Bearish)</span>
-            </div>
-            <div className="relative">
-              <div ref={rsChartRef} style={{ height: 120 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-teal-500/50 shadow-lg">
-                <span className="text-teal-400 text-base">━━</span> <span className="text-slate-200">Relative Strength to S&P 500</span>
-              </div>
-            </div>
-          </div>
           <div className="border-t border-slate-800">
             <div className="px-3 py-1.5 text-xs font-semibold text-purple-400 bg-slate-900/50">VCP Contraction - Volatility Compression Pattern</div>
             <div className="relative">
@@ -1625,7 +1677,7 @@ export default function StockDetail() {
       )}
 
       <p className="text-slate-500 text-sm">
-        <strong>Chart includes:</strong> Moving Averages 10 (orange), 20 (blue), 50 (purple), 150 (pink) + RSI 14 + Relative Strength (RS) Line vs S&P 500 + Volume with 20d MA + VCP pullback analysis. <strong>Opus4.5 Signals:</strong> <span className="text-green-400">↑</span> Green arrow = BUY signal, <span className="text-red-400">↓</span> Red arrow = SELL signal. RS Line: Rising = outperforming market (bullish), Falling = underperforming market (bearish). Data: Yahoo (OHLC); chart also available via TradingView widget below.
+        <strong>Chart includes:</strong> Moving Averages 10 (orange), 20 (blue), 50 (purple), 150 (pink) + RSI 14 + Volume with 20d MA + VCP pullback analysis. <strong>Opus4.5 Signals:</strong> <span className="text-green-400">↑</span> Green arrow = BUY signal, <span className="text-red-400">↓</span> Red arrow = SELL signal. Data: Yahoo (OHLC); chart also available via TradingView widget below.
       </p>
 
       {/* TradingView Interactive Chart */}

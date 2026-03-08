@@ -92,8 +92,7 @@ const FALLBACK_AGENT_BUDGETS: Record<string, number> = {
   momentum_scout: 0.20,
   base_hunter: 0.30,
   breakout_tracker: 0.15,
-  turtle_trader: 0.20,
-  ma_crossover_10_20: 0.15,
+  turtle_trader: 0.35,
 }
 
 interface AgentManifestEntry {
@@ -179,7 +178,6 @@ const AGENT_COLORS: Record<string, { text: string; bg: string; border: string; i
   base_hunter:    { text: 'text-amber-400', bg: 'bg-amber-900/20', border: 'border-amber-800/50', icon: '🔍', progress: 'bg-amber-500' },
   breakout_tracker: { text: 'text-pink-400', bg: 'bg-pink-900/20', border: 'border-pink-800/50', icon: '🚀', progress: 'bg-pink-500' },
   turtle_trader:  { text: 'text-emerald-400', bg: 'bg-emerald-900/20', border: 'border-emerald-800/50', icon: '🐢', progress: 'bg-emerald-500' },
-  ma_crossover_10_20: { text: 'text-teal-400', bg: 'bg-teal-900/20', border: 'border-teal-800/50', icon: '🔀', progress: 'bg-teal-500' },
   default:        { text: 'text-slate-400', bg: 'bg-slate-800/50', border: 'border-slate-700', icon: '🤖', progress: 'bg-slate-500' },
 }
 
@@ -188,7 +186,6 @@ const AGENT_LABELS: Record<string, string> = {
   base_hunter: 'Base Hunter',
   breakout_tracker: 'Breakout Tracker',
   turtle_trader: 'Turtle Trader',
-  ma_crossover_10_20: '10-20 Cross Over',
   default: 'Default',
 }
 
@@ -197,7 +194,6 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   base_hunter: 'Deep VCP bases, 4+ contractions, volume dry-up',
   breakout_tracker: 'Tight consolidation, within 5% of highs',
   turtle_trader: 'Donchian 20/55d breakouts, 2N stop, 10/20d exit',
-  ma_crossover_10_20: 'Buy on 10/20 MA cross, exit below 10 MA',
 }
 
 function getAgentColor(agentType: string) {
@@ -1403,7 +1399,6 @@ export default function Backtest() {
                 { name: 'Base Hunter', agentType: 'base_hunter' },
                 { name: 'Breakout Tracker', agentType: 'breakout_tracker' },
                 { name: 'Turtle Trader', agentType: 'turtle_trader' },
-                { name: '10-20 Cross Over', agentType: 'ma_crossover_10_20' },
               ]).map((agent) => (
                 <option key={agent.agentType} value={agent.agentType}>
                   {agent.name}
@@ -1884,7 +1879,6 @@ export default function Backtest() {
             { name: 'Base Hunter', agentType: 'base_hunter' },
             { name: 'Breakout Tracker', agentType: 'breakout_tracker' },
             { name: 'Turtle Trader', agentType: 'turtle_trader' },
-            { name: '10-20 Cross Over', agentType: 'ma_crossover_10_20' },
           ]).map(agent => {
             const color = getAgentColor(agent.agentType)
             const status = agentStatuses[agent.agentType]
@@ -2251,7 +2245,7 @@ export default function Backtest() {
               >
                 All ({abHistory.length})
               </button>
-              {['momentum_scout', 'base_hunter', 'breakout_tracker', 'turtle_trader', 'ma_crossover_10_20', 'default'].map(type => {
+              {['momentum_scout', 'base_hunter', 'breakout_tracker', 'turtle_trader', 'default'].map(type => {
                 const count = abHistory.filter(r => (r.agentType || 'default') === type).length
                 if (count === 0) return null
                 const color = getAgentColor(type)

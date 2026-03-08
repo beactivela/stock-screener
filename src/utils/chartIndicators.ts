@@ -348,70 +348,70 @@ export function rsi(closes: number[], period = 14): (number | null)[] {
 }
 
 /**
- * Calculate Relative Strength (RS) line for CANSLIM methodology.
- * RS = (Stock Price / S&P 500 Price) × Base Value
+ * Calculate Relative Strength (RS) line vs a benchmark.
+ * RS = (Stock Price / Benchmark Price) × Base Value
  * 
- * Returns normalized RS line values. Rising RS = stock outperforming SPX (bullish).
- * Falling RS = stock underperforming SPX (bearish).
+ * Returns normalized RS line values. Rising RS = stock outperforming benchmark (bullish).
+ * Falling RS = stock underperforming benchmark (bearish).
  * 
  * @param stockBars - Stock's OHLC bars (must be sorted by time ascending)
- * @param spxBars - S&P 500's OHLC bars (must be sorted by time ascending)
+ * @param benchmarkBars - Benchmark OHLC bars (must be sorted by time ascending)
  * @param baseValue - Starting value for normalization (default 1000)
  * @returns Array of RS values aligned by date, or null when dates don't match
  */
 export function calculateRelativeStrength(
   stockBars: Bar[],
-  spxBars: Bar[],
+  benchmarkBars: Bar[],
   baseValue = 1000
 ): (number | null)[] {
-  if (stockBars.length === 0 || spxBars.length === 0) return []
+  if (stockBars.length === 0 || benchmarkBars.length === 0) return []
 
-  // Create a map of SPX prices by date for fast lookup
+  // Create a map of benchmark prices by date for fast lookup
   // Format: 'YYYY-MM-DD' -> close price
-  const spxPriceMap = new Map<string, number>()
-  for (const bar of spxBars) {
+  const benchmarkPriceMap = new Map<string, number>()
+  for (const bar of benchmarkBars) {
     const dateKey = new Date(bar.t).toISOString().slice(0, 10)
-    spxPriceMap.set(dateKey, bar.c)
+    benchmarkPriceMap.set(dateKey, bar.c)
   }
 
-  // Find the first date where we have both stock and SPX data
+  // Find the first date where we have both stock and benchmark data
   let firstStockDate = new Date(stockBars[0].t).toISOString().slice(0, 10)
-  let firstSpxPrice = spxPriceMap.get(firstStockDate)
+  let firstBenchmarkPrice = benchmarkPriceMap.get(firstStockDate)
   let firstStockPrice = stockBars[0].c
 
   // If first dates don't align, find the earliest common date
   let startIndex = 0
-  while (!firstSpxPrice && startIndex < stockBars.length) {
+  while (!firstBenchmarkPrice && startIndex < stockBars.length) {
     startIndex++
     firstStockDate = new Date(stockBars[startIndex]?.t ?? 0).toISOString().slice(0, 10)
-    firstSpxPrice = spxPriceMap.get(firstStockDate)
+    firstBenchmarkPrice = benchmarkPriceMap.get(firstStockDate)
     firstStockPrice = stockBars[startIndex]?.c ?? 0
   }
 
-  if (!firstSpxPrice || firstSpxPrice <= 0 || firstStockPrice <= 0) {
+  if (!firstBenchmarkPrice || firstBenchmarkPrice <= 0 || firstStockPrice <= 0) {
     // No common dates or invalid prices
     return stockBars.map(() => null)
   }
 
   // Calculate initial RS ratio
-  const initialRatio = firstStockPrice / firstSpxPrice
+  const initialRatio = firstStockPrice / firstBenchmarkPrice
 
   // Calculate RS for each bar
   const rsValues: (number | null)[] = []
   
   for (let i = 0; i < stockBars.length; i++) {
     const dateKey = new Date(stockBars[i].t).toISOString().slice(0, 10)
-    const spxPrice = spxPriceMap.get(dateKey)
+    const benchmarkPrice = benchmarkPriceMap.get(dateKey)
     const stockPrice = stockBars[i].c
 
-    if (!spxPrice || spxPrice <= 0 || stockPrice <= 0) {
-      // No SPX data for this date or invalid price
+    if (!benchmarkPrice || benchmarkPrice <= 0 || stockPrice <= 0) {
+      // No benchmark data for this date or invalid price
       rsValues.push(null)
       continue
     }
 
     // Calculate current ratio
-    const currentRatio = stockPrice / spxPrice
+    const currentRatio = stockPrice / benchmarkPrice
     
     // Normalize to base value using the initial ratio
     // This ensures the RS line starts at baseValue and moves from there

@@ -301,7 +301,6 @@ export async function getMarcusSummary(options = {}) {
     { agentType: 'base_hunter', agentName: 'Base Hunter' },
     { agentType: 'breakout_tracker', agentName: 'Breakout Tracker' },
     { agentType: 'turtle_trader', agentName: 'Turtle Trader' },
-    { agentType: 'ma_crossover_10_20', agentName: '10-20 Cross Over' },
   ];
 
   const latestRuns = await Promise.all(
@@ -560,7 +559,6 @@ export const MARCUS_AGENT_META = {
     'base_hunter',
     'breakout_tracker',
     'turtle_trader',
-    'ma_crossover_10_20',
   ],
 };
 

@@ -3,12 +3,10 @@ const AGENT_LABELS = {
   base_hunter: 'Base',
   breakout_tracker: 'Breakout',
   turtle_trader: 'Turtle',
-  ma_crossover_10_20: '10-20 Cross Over',
   unusual_vol: 'Unusual Vol.',
 };
 
 const AGENT_PRIORITY = [
-  'ma_crossover_10_20',
   'unusual_vol',
   'momentum_scout',
   'base_hunter',
@@ -16,7 +14,10 @@ const AGENT_PRIORITY = [
   'turtle_trader',
 ];
 
-export function resolveSignalAgentLabel(signalSetups = []) {
+export function resolveSignalAgentLabel(signalSetups = [], preferredAgentId = null) {
+  if (preferredAgentId && signalSetups.includes(preferredAgentId)) {
+    return AGENT_LABELS[preferredAgentId] ?? '—';
+  }
   for (const id of AGENT_PRIORITY) {
     if (signalSetups.includes(id)) return AGENT_LABELS[id];
   }
@@ -88,14 +89,6 @@ export const SIGNAL_AGENT_CRITERIA = {
       '200 MA rising',
       'Relative Strength ≥ 80',
       'Signal family: turtle',
-    ],
-  },
-  ma_crossover_10_20: {
-    label: '10-20 Cross Over',
-    criteria: [
-      '10 MA crosses above 20 MA (bullish crossover)',
-      'Exit: first close below 10 MA',
-      'Signal family: ma_crossover',
     ],
   },
 };

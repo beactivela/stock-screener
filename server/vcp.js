@@ -98,39 +98,59 @@ function nearMA(price, ma, tolerancePct = 2) {
 }
 
 /**
- * Calculate relative strength vs SPY (6-month performance)
- * RS = (Stock % Change / SPY % Change) * 100
- * RS > 100 = outperforming SPY, RS < 100 = underperforming
- * 
- * @param {Array} stockBars - Stock's OHLC bars (at least 120 days)
- * @param {Array} spyBars - SPY's OHLC bars (at least 120 days)
- * @returns {Object|null} { rs, stockChange, spyChange, outperforming } or null
+ * Calculate IBD RS raw performance (pre-percentile).
+ *
+ * IBD RS Rating is based on 12-month performance with heavier weighting
+ * on the most recent 3 months. We compute the weighted average of the
+ * 3/6/9/12-month percent changes (3m double weight).
+ *
+ * This returns a raw weighted % change which will later be converted
+ * into a 1–99 percentile rating across the scan universe.
+ *
+ * @param {Array} stockBars - Stock OHLC bars
+ * @returns {Object|null} { rsRaw, change3m, change6m, change9m, change12m } or null
  */
-function calculateRelativeStrength(stockBars, spyBars) {
-  if (!stockBars || stockBars.length < 120 || !spyBars || spyBars.length < 120) {
+function calculateRelativeStrength(stockBars) {
+  if (!stockBars || stockBars.length <= 252) {
     return null;
   }
-  
+
   try {
-    // Get prices from 6 months ago (120 trading days)
-    const stockClose_6mo = stockBars[stockBars.length - 120].c;
-    const stockClose_now = stockBars[stockBars.length - 1].c;
-    const stockChange = ((stockClose_now - stockClose_6mo) / stockClose_6mo) * 100;
-    
-    const spyClose_6mo = spyBars[spyBars.length - 120].c;
-    const spyClose_now = spyBars[spyBars.length - 1].c;
-    const spyChange = ((spyClose_now - spyClose_6mo) / spyClose_6mo) * 100;
-    
-    // Avoid division by zero or very small numbers
-    if (Math.abs(spyChange) < 0.01) return null;
-    
-    const rs = (stockChange / spyChange) * 100;
-    
+    const stockNow = stockBars[stockBars.length - 1]?.c;
+    if (!Number.isFinite(stockNow) || stockNow <= 0) return null;
+
+    const lookbacks = [
+      { days: 63, weight: 2 },  // ~3m (double weight)
+      { days: 126, weight: 1 }, // ~6m
+      { days: 189, weight: 1 }, // ~9m
+      { days: 252, weight: 1 }, // ~12m
+    ];
+
+    const changes = {};
+    let weightedSum = 0;
+    let weightSum = 0;
+
+    for (const { days, weight } of lookbacks) {
+      const past = stockBars[stockBars.length - 1 - days]?.c;
+      if (!Number.isFinite(past) || past <= 0) return null;
+      const change = ((stockNow - past) / past) * 100;
+      if (!Number.isFinite(change)) return null;
+      changes[days] = change;
+      weightedSum += change * weight;
+      weightSum += weight;
+    }
+
+    if (weightSum <= 0) return null;
+
+    const rsRaw = weightedSum / weightSum;
+    const round2 = (value) => Math.round(value * 100) / 100;
+
     return {
-      rs: Math.round(rs * 10) / 10, // Round to 1 decimal
-      stockChange: Math.round(stockChange * 100) / 100,
-      spyChange: Math.round(spyChange * 100) / 100,
-      outperforming: rs > 100
+      rsRaw: round2(rsRaw),
+      change3m: round2(changes[63]),
+      change6m: round2(changes[126]),
+      change9m: round2(changes[189]),
+      change12m: round2(changes[252]),
     };
   } catch (e) {
     return null;
@@ -138,12 +158,73 @@ function calculateRelativeStrength(stockBars, spyBars) {
 }
 
 /**
+ * Convert raw RS index values to IBD-style 1-99 ratings across a universe.
+ *
+ * Input rows can carry raw RS in either:
+ * - row.rsData.rsRaw
+ * - row.relativeStrength
+ *
+ * Output keeps all existing fields, but overwrites row.relativeStrength
+ * with an integer 1-99 rating (99 = strongest in the set).
+ *
+ * @param {Array<Object>} rows
+ * @returns {Array<Object>}
+ */
+function assignIBDRelativeStrengthRatings(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return Array.isArray(rows) ? rows : [];
+
+  const entries = rows.map((row, idx) => {
+    const raw =
+      row?.rsData?.rsRaw ??
+      row?.relativeStrengthRaw ??
+      row?.relativeStrength;
+    const rawNum = Number.isFinite(raw) ? raw : null;
+    return { idx, row, raw: rawNum };
+  });
+
+  const valid = entries.filter((e) => e.raw != null);
+  if (valid.length === 0) {
+    return rows.map((row) => ({ ...row, relativeStrength: null }));
+  }
+
+  valid.sort((a, b) => b.raw - a.raw);
+  const n = valid.length;
+  const ratingByIdx = new Map();
+  let i = 0;
+  while (i < n) {
+    let j = i + 1;
+    while (j < n && valid[j].raw === valid[i].raw) j++;
+    const rank = i + 1; // 1-based (best = 1)
+    const rating = n === 1
+      ? 99
+      : 1 + Math.round(((n - rank) / (n - 1)) * 98);
+    for (let k = i; k < j; k++) ratingByIdx.set(valid[k].idx, rating);
+    i = j;
+  }
+
+  return entries.map(({ idx, row, raw }) => {
+    if (raw == null) return { ...row, relativeStrength: null };
+    const rating = ratingByIdx.get(idx) ?? null;
+    return {
+      ...row,
+      relativeStrength: rating,
+      rsData: row?.rsData
+        ? {
+            ...row.rsData,
+            rsRaw: Number.isFinite(row.rsData.rsRaw) ? row.rsData.rsRaw : raw,
+            rsRating: rating,
+          }
+        : { rsRaw: raw, rsRating: rating },
+    };
+  });
+}
+
+/**
  * Run VCP check on one ticker's bar series.
  * bars: array of { o, h, l, c, v, t } (ascending by t).
- * spyBars: optional SPY bars for RS calculation (NEW)
  * Returns { vcpBullish, contractions, atMa10, atMa20, atMa50, lastClose, sma10, sma20, sma50, relativeStrength, pattern, patternConfidence }.
  */
-function checkVCP(bars, spyBars = null) {
+function checkVCP(bars) {
   if (!bars || bars.length < 60) {
     const { scoreBreakdown } = computeBuyScore({ reason: 'not_enough_bars' });
     return { 
@@ -190,9 +271,9 @@ function checkVCP(bars, spyBars = null) {
   const last150 = sma150[lastIdx];
   const last200 = sma200[lastIdx];
   
-  // Calculate Relative Strength vs SPY (NEW)
-  const rsData = spyBars ? calculateRelativeStrength(bars, spyBars) : null;
-  const relativeStrength = rsData?.rs ?? null;
+  // Calculate IBD RS raw (pre-percentile)
+  const rsData = calculateRelativeStrength(bars);
+  const relativeStrength = null;
 
   // Stage 2: price above 50 SMA
   if (last50 != null && lastClose < last50) {
@@ -393,19 +474,18 @@ function checkVCP(bars, spyBars = null) {
  * Build recent signal snapshots for last N bars.
  * Uses checkVCP on slices so agent criteria reflect each bar's context.
  */
-function buildSignalSnapshots(bars, spyBars = null, lookbackBars = 3) {
+function buildSignalSnapshots(bars, lookbackBars = 3) {
   if (!Array.isArray(bars) || bars.length === 0) return [];
   const startIdx = Math.max(0, bars.length - lookbackBars);
   const snapshots = [];
   for (let i = startIdx; i < bars.length; i++) {
     const slice = bars.slice(0, i + 1);
-    const spySlice = Array.isArray(spyBars) ? spyBars.slice(0, i + 1) : null;
-    snapshots.push(checkVCP(slice, spySlice));
+    snapshots.push(checkVCP(slice));
   }
   return snapshots;
 }
 
-export { sma, volumeSma, findPullbacks, checkVCP, buildSignalSnapshots, nearMA, computeBuyScore, calculateRelativeStrength };
+export { sma, volumeSma, findPullbacks, checkVCP, buildSignalSnapshots, nearMA, computeBuyScore, calculateRelativeStrength, assignIBDRelativeStrengthRatings };
 
 /**
  * Compute a 0–100 buy score and recommendation from VCP result.

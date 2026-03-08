@@ -6,5 +6,5 @@
 
 body {
   @apply font-sans bg-slate-950 text-slate-100 antialiased;
-  font-size: 12pt;
+  font-size: 12px;
 }

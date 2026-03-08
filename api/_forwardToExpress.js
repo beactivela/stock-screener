@@ -21,6 +21,22 @@ export function buildExpressProxyUrl(forcedPath, originalUrl) {
 }
 
 /**
+ * Build catch-all /api path from optional path segments.
+ *
+ * @param {unknown} pathSegments
+ * @returns {string}
+ */
+export function buildCatchAllApiPath(pathSegments) {
+  if (typeof pathSegments === 'string' && pathSegments.trim()) {
+    return `/api/${pathSegments}`;
+  }
+  if (Array.isArray(pathSegments) && pathSegments.length > 0) {
+    return `/api/${pathSegments.join('/')}`;
+  }
+  return '/api';
+}
+
+/**
  * Forward a Vercel serverless request to the shared Express app.
  *
  * @param {import('http').IncomingMessage & { url?: string }} req

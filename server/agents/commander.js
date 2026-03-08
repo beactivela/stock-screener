@@ -16,12 +16,11 @@ import momentumScout from './momentumScout.js';
 import baseHunter from './baseHunter.js';
 import breakoutTracker from './breakoutTracker.js';
 import turtleTrader from './turtleTrader.js';
-import maCrossover_10_20 from './maCrossover_10_20.js';
 import { getTickerList, scanMultipleTickers } from '../learning/historicalSignalScanner.js';
 import { getStoredSignals, storeSignalsInDatabase } from '../learning/autoPopulate.js';
 import { isSupabaseConfigured } from '../supabase.js';
 
-const STRATEGY_AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader, maCrossover_10_20];
+const STRATEGY_AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader];
 
 // Same exit strategy versioning as the single-agent optimizer
 const EXIT_STRATEGY_VERSION = 2;
@@ -72,8 +71,7 @@ export async function runMultiAgentOptimization(options = {}) {
         momentum_scout: 0.20,
         breakout_tracker: 0.15,
         base_hunter: 0.30,
-        turtle_trader: 0.20,
-        ma_crossover_10_20: 0.15,
+        turtle_trader: 0.35,
       },
     };
   }
@@ -111,7 +109,7 @@ export async function runMultiAgentOptimization(options = {}) {
     lookbackMonths,
     tickerLimit,
     forceRefresh,
-    signalFamilies: ['opus45', 'turtle', 'ma_crossover'],
+    signalFamilies: ['opus45', 'turtle'],
     onProgress,
   });
 

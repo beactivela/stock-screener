@@ -3,7 +3,6 @@ const DEFAULT_SIGNAL_FAMILY = {
   base_hunter: 'opus45',
   breakout_tracker: 'opus45',
   turtle_trader: 'turtle',
-  ma_crossover_10_20: 'ma_crossover',
 };
 
 // Lightweight, heuristic classification (AgentQuant removed).
@@ -45,12 +44,6 @@ function matchesTurtleTrader(signal) {
   return breakout && !!signal.priceAboveAllMAs && !!signal.ma200Rising && rs >= 80;
 }
 
-function matchesMaCrossover(signal) {
-  const signalFamily = signal.signalFamily ?? DEFAULT_SIGNAL_FAMILY.ma_crossover_10_20;
-  if (signalFamily !== 'ma_crossover') return false;
-  return !!signal.ma10Above20;
-}
-
 function matchesUnusualVol(signal) {
   const unusualVolumeRecent = !!signal.unusualVolume3d || !!signal.unusualVolume5d;
   return unusualVolumeRecent && !!signal.priceHigherThan3dAgo;
@@ -67,7 +60,6 @@ export function classifySignalSetups(signal = {}) {
   if (matchesBaseHunter(signal)) setups.push('base_hunter');
   if (matchesBreakoutTracker(signal)) setups.push('breakout_tracker');
   if (matchesTurtleTrader(signal)) setups.push('turtle_trader');
-  if (matchesMaCrossover(signal)) setups.push('ma_crossover_10_20');
   if (matchesUnusualVol(signal)) setups.push('unusual_vol');
 
   return setups;

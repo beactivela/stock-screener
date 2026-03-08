@@ -7,7 +7,6 @@ const AGENT_FAMILY_MAP = {
   base_hunter: ['opus45'],
   breakout_tracker: ['opus45'],
   turtle_trader: ['turtle'],
-  ma_crossover_10_20: ['ma_crossover'],
 };
 
 function normalizeFamily(signal) {

@@ -87,6 +87,27 @@ function filterBarsToRange(bars, from, to) {
 }
 
 /**
+ * Decide whether cached bars are fresh enough for a target end date.
+ * Allows a small lag window to account for weekends/holidays.
+ *
+ * @param {Array} bars
+ * @param {string} to - YYYY-MM-DD target end date
+ * @param {Object} [opts]
+ * @param {number} [opts.maxLagDays=3]
+ * @returns {boolean}
+ */
+export function isBarsUpToDate(bars, to, opts = {}) {
+  if (!Array.isArray(bars) || bars.length === 0 || !to) return false;
+  const maxLagDays = Number.isFinite(opts.maxLagDays) ? opts.maxLagDays : 3;
+  const lastBar = bars[bars.length - 1];
+  const lastDateStr = new Date(lastBar.t).toISOString().slice(0, 10);
+  const lastDate = new Date(lastDateStr + 'T12:00:00Z');
+  const toDate = new Date(to + 'T12:00:00Z');
+  const lagDays = Math.floor((toDate - lastDate) / (1000 * 60 * 60 * 24));
+  return lagDays <= maxLagDays;
+}
+
+/**
  * Get bars with Supabase cache → Yahoo Finance fallback.
  * Automatically saves fetched bars to Supabase for future runs.
  *
@@ -127,8 +148,11 @@ export async function getBars(ticker, from, to, interval = '1d') {
 
           // Exact match
           if (rawFrom === from && rawTo === to && results.length > 0) {
-            barsMemoryCache.set(key, { data: results, at: Date.now() - age });
-            return results;
+            const fresh = isBarsUpToDate(results, to);
+            if (fresh) {
+              barsMemoryCache.set(key, { data: results, at: Date.now() - age });
+              return results;
+            }
           }
 
           // Stored range covers the requested range — slice it
@@ -138,8 +162,11 @@ export async function getBars(ticker, from, to, interval = '1d') {
               return d >= from && d <= to;
             });
             if (filtered.length > 0) {
-              barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
-              return filtered;
+              const fresh = isBarsUpToDate(filtered, to);
+              if (fresh) {
+                barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
+                return filtered;
+              }
             }
           }
         }

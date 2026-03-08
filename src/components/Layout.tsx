@@ -11,7 +11,7 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
-        <div className="w-[80%] max-w-full mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="w-[90%] max-w-full mx-auto px-4 py-4 flex items-center justify-between">
           <Link to="/" className="text-xl font-semibold text-sky-400 hover:text-sky-300">
             VCP Screener
           </Link>
@@ -52,7 +52,7 @@ export default function Layout({ children }: LayoutProps) {
           </div>
         </div>
       </header>
-      <main className="flex-1 w-[80%] max-w-full mx-auto px-4 py-8">{children}</main>
+      <main className="flex-1 w-[90%] max-w-full mx-auto px-4 py-8">{children}</main>
       {/* Chat widget lives outside the main content flow so it overlays everything */}
       <MinerviniChat />
     </div>

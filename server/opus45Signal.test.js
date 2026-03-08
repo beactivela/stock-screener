@@ -16,7 +16,8 @@ import {
   MAX_DAYS_FOR_RECOMMENDATION,
   getRecencyBoost,
   computeRankScore,
-  isNewBuyToday
+  isNewBuyToday,
+  normalizeRs
 } from './opus45Signal.js';
 
 // ============================================================================
@@ -356,6 +357,77 @@ describe('calculateConfidenceScore', () => {
     assert.ok(['A', 'A+', 'B+'].includes(highScore.grade));
     // Low score should get C, D, or F
     assert.ok(['C', 'D', 'F'].includes(lowScore.grade));
+  });
+});
+
+describe('normalizeRs', () => {
+  it('is 0 at the default floor', () => {
+    assert.strictEqual(normalizeRs(65), 0);
+  });
+
+  it('is monotonic above the floor and capped at 1', () => {
+    const a = normalizeRs(70);
+    const b = normalizeRs(80);
+    const c = normalizeRs(99);
+    assert.ok(b > a, 'RS 80 should score higher than RS 70');
+    assert.strictEqual(c, 1);
+  });
+});
+
+describe('calculateConfidenceScore — RS + industry monotonicity', () => {
+  it('scores higher for higher RS (monotonic)', () => {
+    const base = {
+      contractions: 2,
+      volumeDryUp: false,
+      patternConfidence: 45,
+      entryPoint: { at10MA: false, at20MA: true },
+      volumeConfirmation: { confirmed: false },
+      industryRank: 80,
+      institutionalOwnership: 40,
+      epsGrowth: 0,
+      maSlope: { slopePct14d: 4, slopePct5d: 0.5, isRising: true },
+      pullbackPct: 7,
+      pctFromHigh: 12,
+      industryReturn3Mo: 2,
+      recentReturn5d: 0.5
+    };
+
+    const rs75 = calculateConfidenceScore({ ...base, relativeStrength: 75 }, DEFAULT_WEIGHTS);
+    const rs85 = calculateConfidenceScore({ ...base, relativeStrength: 85 }, DEFAULT_WEIGHTS);
+    const rs92 = calculateConfidenceScore({ ...base, relativeStrength: 92 }, DEFAULT_WEIGHTS);
+    const rs97 = calculateConfidenceScore({ ...base, relativeStrength: 97 }, DEFAULT_WEIGHTS);
+
+    assert.ok(rs85.confidence > rs75.confidence, 'RS 85 should score higher than RS 75');
+    assert.ok(rs92.confidence > rs85.confidence, 'RS 92 should score higher than RS 85');
+    assert.ok(rs97.confidence > rs92.confidence, 'RS 97 should score higher than RS 92');
+  });
+
+  it('scores higher for better industry rank (lower number)', () => {
+    const base = {
+      contractions: 3,
+      volumeDryUp: true,
+      patternConfidence: 60,
+      entryPoint: { at10MA: true },
+      volumeConfirmation: { confirmed: true },
+      relativeStrength: 88,
+      institutionalOwnership: 60,
+      epsGrowth: 15,
+      maSlope: { slopePct14d: 6, slopePct5d: 1.2, isRising: true },
+      pullbackPct: 3,
+      pctFromHigh: 6,
+      industryReturn3Mo: 8,
+      recentReturn5d: 2,
+      industryTotalCount: 200
+    };
+
+    const rank5 = calculateConfidenceScore({ ...base, industryRank: 5 }, DEFAULT_WEIGHTS);
+    const rank20 = calculateConfidenceScore({ ...base, industryRank: 20 }, DEFAULT_WEIGHTS);
+    const rank80 = calculateConfidenceScore({ ...base, industryRank: 80 }, DEFAULT_WEIGHTS);
+    const rank150 = calculateConfidenceScore({ ...base, industryRank: 150 }, DEFAULT_WEIGHTS);
+
+    assert.ok(rank5.confidence > rank20.confidence, 'Rank 5 should score higher than rank 20');
+    assert.ok(rank20.confidence > rank80.confidence, 'Rank 20 should score higher than rank 80');
+    assert.ok(rank80.confidence > rank150.confidence, 'Rank 80 should score higher than rank 150');
   });
 });
 

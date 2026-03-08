@@ -4,7 +4,6 @@ const AGENT_META = {
   base_hunter: { name: 'Base Hunter', avatar: '🔍' },
   breakout_tracker: { name: 'Breakout Tracker', avatar: '🚀' },
   turtle_trader: { name: 'Turtle Trader', avatar: '🐢' },
-  ma_crossover_10_20: { name: '10-20 Cross Over', avatar: '🔀' },
 }
 
 function getAgentMeta(agentType) {

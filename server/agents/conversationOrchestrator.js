@@ -21,7 +21,6 @@ const DEFAULT_SPECIALISTS = [
   { agentType: 'base_hunter', name: 'Base Hunter' },
   { agentType: 'breakout_tracker', name: 'Breakout Tracker' },
   { agentType: 'turtle_trader', name: 'Turtle Trader' },
-  { agentType: 'ma_crossover_10_20', name: '10-20 Cross Over' },
 ];
 
 const DEFAULT_CHALLENGERS = [

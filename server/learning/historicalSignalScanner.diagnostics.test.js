@@ -32,9 +32,8 @@ function buildBars(count = 260, start = 100, step = 0.5) {
 describe('turtle diagnostics', () => {
   it('counts turtle breakouts and signals', () => {
     const bars = buildBars(260);
-    const spyBars = buildBars(260, 300, 0.2);
     const diagnostics = createScanDiagnostics();
-    const signals = scanTickerForSignals('TURT', bars, spyBars, {
+    const signals = scanTickerForSignals('TURT', bars, {
       signalFamilies: ['turtle'],
       diagnostics,
     });

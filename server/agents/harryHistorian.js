@@ -20,13 +20,12 @@ import momentumScout from './momentumScout.js';
 import baseHunter from './baseHunter.js';
 import breakoutTracker from './breakoutTracker.js';
 import turtleTrader from './turtleTrader.js';
-import maCrossover_10_20 from './maCrossover_10_20.js';
 import { getTickerList, scanMultipleTickers } from '../learning/historicalSignalScanner.js';
 import { getStoredSignals, storeSignalsInDatabase } from '../learning/autoPopulate.js';
 import { isSupabaseConfigured } from '../supabase.js';
 import { fetchTradingViewIndustryReturns, normalizeIndustryName } from '../tradingViewIndustry.js';
 
-const STRATEGY_AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader, maCrossover_10_20];
+const STRATEGY_AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader];
 
 // Same exit strategy versioning as the single-agent optimizer
 const EXIT_STRATEGY_VERSION = 2;
@@ -440,8 +439,7 @@ export async function runMultiAgentOptimization(options = {}) {
         momentum_scout: 0.20,
         breakout_tracker: 0.15,
         base_hunter: 0.30,
-        turtle_trader: 0.20,
-        ma_crossover_10_20: 0.15,
+        turtle_trader: 0.35,
       },
     };
   }
@@ -489,7 +487,7 @@ export async function runMultiAgentOptimization(options = {}) {
       lookbackMonths,
       tickerLimit,
       forceRefresh,
-      signalFamilies: ['opus45', 'turtle', 'ma_crossover'],
+      signalFamilies: ['opus45', 'turtle'],
       onProgress,
     });
   }
@@ -702,7 +700,7 @@ export async function runBatchLearningLoop(options = {}) {
         lookbackMonths: rest.lookbackMonths ?? 60,
         tickerLimit: rest.tickerLimit ?? 200,
         forceRefresh: Boolean(rest.forceRefresh ?? false),
-        signalFamilies: ['opus45', 'turtle', 'ma_crossover'],
+        signalFamilies: ['opus45', 'turtle'],
         onProgress,
       });
 
@@ -934,7 +932,7 @@ export async function runBatchLearningLoop(options = {}) {
  * Fetch the shared signal pool (cached or fresh).
  * Reuses the same caching logic as the single-agent optimizer.
  */
-async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, signalFamilies = ['opus45', 'turtle', 'ma_crossover'], onProgress, seedMode = false }) {
+async function fetchSignalPool({ lookbackMonths, tickerLimit, forceRefresh, signalFamilies = ['opus45', 'turtle'], onProgress, seedMode = false }) {
   const fetchStartedAt = Date.now();
   const cacheCheckStartedAt = Date.now();
   let cacheCheckMs = 0;
@@ -1082,7 +1080,7 @@ export async function runHarryFetchOnly(options = {}) {
     lookbackMonths = 60,
     tickerLimit = 0,
     forceRefresh = true,
-    signalFamilies = ['opus45', 'turtle', 'ma_crossover'],
+    signalFamilies = ['opus45', 'turtle'],
     onProgress = null,
   } = options;
 

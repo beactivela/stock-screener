@@ -6,8 +6,11 @@ import MarketIndexRegimeCards from '../components/MarketIndexRegimeCards'
 import { useScan } from '../contexts/ScanContext'
 import { buildIndustryMaps } from '../utils/industryMaps'
 import { API_BASE } from '../utils/api'
-import { resolveSignalAgentLabel, formatSignalDate, formatSignalPL, SIGNAL_AGENT_CRITERIA } from '../utils/signalAgentDisplay'
+import { resolveSignalAgentLabel, formatSignalPL, SIGNAL_AGENT_CRITERIA } from '../utils/signalAgentDisplay'
 import { evaluateCompiledCriteria, type CompiledCriterion } from '../utils/agentCriteriaRuntime'
+import { readWatchlist, getWatchlistTickersSet } from '../utils/watchlistStorage.js'
+import { buildTopRs50 } from '../utils/topRsScreen.js'
+import { getNextSortState } from '../utils/dashboardSort.js'
 
 interface ScanResult {
   ticker: string
@@ -36,10 +39,12 @@ interface ScanResult {
   industryMultiplier?: number
   relativeStrength?: number | null
   rsData?: {
-    rs: number
-    stockChange: number
-    spyChange: number
-    outperforming: boolean
+    rsRaw?: number
+    rsRating?: number
+    change3m?: number
+    change6m?: number
+    change9m?: number
+    change12m?: number
   } | null
   // NEW: Pattern detection fields
   pattern?: string
@@ -178,8 +183,6 @@ export default function Dashboard() {
     | 'base_hunter'
     | 'breakout_tracker'
     | 'turtle_trader'
-    | 'turtle_trader_recent5'
-    | 'ma_crossover_10_20'
   >('all')
   const [fundamentals, setFundamentals] = useState<
     Record<string, { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null; sector?: string | null; companyName?: string | null }>
@@ -203,6 +206,20 @@ export default function Dashboard() {
   const [opus45AllScores, setOpus45AllScores] = useState<Array<{ ticker: string; opus45Confidence: number; opus45Grade: string }>>([])
   const [, setOpus45Loading] = useState(false)
   const [opus45Stats, setOpus45Stats] = useState<{ total: number; strong: number; moderate: number; weak: number; avgConfidence: number; avgRiskReward: number } | null>(null)
+  const [watchlistOnly, setWatchlistOnly] = useState(false)
+  const [watchlistMap, setWatchlistMap] = useState<Record<string, { note: string }>>({})
+  const [watchlistTickers, setWatchlistTickers] = useState<Set<string>>(() => getWatchlistTickersSet())
+  const [topRsOnly, setTopRsOnly] = useState(false)
+
+  const syncWatchlist = useCallback(() => {
+    const items = readWatchlist()
+    const map = items.reduce<Record<string, { note: string }>>((acc, item) => {
+      acc[item.ticker] = { note: item.note }
+      return acc
+    }, {})
+    setWatchlistMap(map)
+    setWatchlistTickers(new Set(Object.keys(map)))
+  }, [])
 
   // Load scan-results (includes Opus4.5 when ?includeOpus=true) — single fetch for unified payload
   useEffect(() => {
@@ -340,6 +357,17 @@ export default function Dashboard() {
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    syncWatchlist()
+    const onWatchlistChanged = () => syncWatchlist()
+    window.addEventListener('watchlist:changed', onWatchlistChanged)
+    window.addEventListener('storage', onWatchlistChanged)
+    return () => {
+      window.removeEventListener('watchlist:changed', onWatchlistChanged)
+      window.removeEventListener('storage', onWatchlistChanged)
+    }
+  }, [syncWatchlist])
+
   const runScan = async () => {
     try {
       // Start the scan
@@ -459,6 +487,8 @@ export default function Dashboard() {
   }
 
   const results = data?.results ?? []
+  const topRs50 = useMemo(() => buildTopRs50(results, fundamentals), [results, fundamentals])
+  const topRsTickerSet = useMemo(() => new Set(topRs50.map((row) => row.ticker)), [topRs50])
   // Map ticker -> Opus score for table column (all 800+ when API returns allScores, else only active signals)
   const opus45ByTicker = useMemo(() => {
     type Score = { opus45Confidence: number; opus45Grade: string; entryDate?: string | number; daysSinceBuy?: number; isNewBuyToday?: boolean; rankScore?: number; pctChange?: number; entryPrice?: number; stopLossPrice?: number; riskRewardRatio?: number }
@@ -488,10 +518,6 @@ export default function Dashboard() {
 
   const { filtered, filterMeta } = useMemo(() => {
     const matchesAgentFilter = (row: ScanResult, filterId: typeof filter): boolean => {
-      if (filterId === 'turtle_trader_recent5') {
-        const recent5 = row.signalSetupsRecent5 ?? row.signalSetupsRecent ?? row.signalSetups ?? []
-        return recent5.includes('turtle_trader')
-      }
       const recentSetups = row.signalSetupsRecent ?? row.signalSetups ?? []
       return recentSetups.includes(filterId)
     }
@@ -544,7 +570,10 @@ export default function Dashboard() {
     }
   }, [filter, results])
 
+  const activeSignalLabelFilter = useMemo(() => (filter === 'all' ? null : filter), [filter])
+
   const getSortValue = (r: ScanResult, col: string): number | string => {
+    const ot = opus45ByTicker[r.ticker]
     switch (col) {
       case 'ticker':
         return r.ticker
@@ -554,6 +583,12 @@ export default function Dashboard() {
         return opus45ByTicker[r.ticker]?.opus45Confidence ?? -1
       case 'pattern':
         return r.pattern ?? 'None'
+      case 'openTrade':
+        return ot?.daysSinceBuy ?? -Infinity
+      case 'signalAgent':
+        return resolveSignalAgentLabel(r.signalSetupsRecent ?? r.signalSetups ?? [], activeSignalLabelFilter)
+      case 'pl':
+        return ot?.pctChange ?? -Infinity
       case 'patternConfidence':
         return r.patternConfidence ?? -1
       case 'relativeStrength':
@@ -593,7 +628,15 @@ export default function Dashboard() {
     }
   }
 
-  const sorted = [...filtered].sort((a, b) => {
+  const watchlistFiltered = watchlistOnly
+    ? filtered.filter((row) => watchlistTickers.has(row.ticker))
+    : filtered
+
+  const topRsFiltered = topRsOnly
+    ? watchlistFiltered.filter((row) => topRsTickerSet.has(row.ticker))
+    : watchlistFiltered
+
+  const sorted = [...topRsFiltered].sort((a, b) => {
     const va = getSortValue(a, sortColumn)
     const vb = getSortValue(b, sortColumn)
     const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb))
@@ -609,15 +652,10 @@ export default function Dashboard() {
   })
 
   const handleSort = useCallback((col: string) => {
-    setSortColumn((prev) => {
-      if (prev === col) {
-        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
-        return prev
-      }
-      setSortDir(col === 'ticker' ? 'asc' : 'desc')
-      return col
-    })
-  }, [])
+    const next = getNextSortState({ sortColumn, sortDir }, col)
+    setSortColumn(next.sortColumn)
+    setSortDir(next.sortDir)
+  }, [sortColumn, sortDir])
 
   const sortHeaderProps = { sortColumn, sortDir, onSort: handleSort }
 
@@ -713,9 +751,7 @@ export default function Dashboard() {
             { id: 'momentum_scout', label: 'Momentum' },
             { id: 'base_hunter', label: 'Base' },
             { id: 'breakout_tracker', label: 'Breakout' },
-            { id: 'turtle_trader', label: 'Turtle (Current)' },
-            { id: 'turtle_trader_recent5', label: 'Turtle (5d)' },
-            { id: 'ma_crossover_10_20', label: '10-20 Cross Over' },
+            { id: 'turtle_trader', label: 'Turtle' },
           ] as const).map((f) => {
             const meta = f.id !== 'all' ? SIGNAL_AGENT_CRITERIA[f.id] : null
             return (
@@ -755,6 +791,36 @@ export default function Dashboard() {
               </div>
             )
           })}
+        </div>
+        <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
+          <span className="text-slate-400 text-sm">Watchlist:</span>
+          <button
+            type="button"
+            onClick={() => setWatchlistOnly((prev) => !prev)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+              watchlistOnly
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+            title="Show only watchlist names within the current Signal Agent filter"
+          >
+            {watchlistOnly ? '★ Watchlist' : '☆ Watchlist'}
+          </button>
+        </div>
+        <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
+          <span className="text-slate-400 text-sm">IBD-style:</span>
+          <button
+            type="button"
+            onClick={() => setTopRsOnly((prev) => !prev)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+              topRsOnly
+                ? 'bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+            title="Show only the Top 50 RS shortlist"
+          >
+            {topRsOnly ? 'Top 50 RS On' : 'Top 50 RS'}
+          </button>
         </div>
         <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
           <span className="text-slate-400 text-sm">View:</span>
@@ -835,13 +901,12 @@ export default function Dashboard() {
               <tr className="border-b border-slate-800 bg-slate-900">
                 <SortHeader col="ticker" label="Ticker" {...sortHeaderProps} sticky stickyLeft="0" />
                 <SortHeader col="opus45" label="Opus" {...sortHeaderProps} alignRight sticky stickyLeft="10rem" />
-                <th className="sticky top-0 z-[25] bg-slate-900 px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">Open Trade</th>
-                <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
-                <th className="sticky top-0 z-[25] bg-slate-900 px-4 py-3 text-left text-xs font-medium text-slate-400 whitespace-nowrap">Signal Agent</th>
-                <th className="sticky top-0 z-[25] bg-slate-900 px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">Triggered</th>
-                <th className="sticky top-0 z-[25] bg-slate-900 px-4 py-3 text-right text-xs font-medium text-slate-400 whitespace-nowrap">P/L</th>
                 <SortHeader col="relativeStrength" label="RS" {...sortHeaderProps} alignRight />
                 <SortHeader col="industryRank" label="Ind.Rank" {...sortHeaderProps} alignRight />
+                <SortHeader col="openTrade" label="Open Trade" {...sortHeaderProps} alignRight />
+                <SortHeader col="pattern" label="Setup" {...sortHeaderProps} />
+                <SortHeader col="signalAgent" label="Signal Agent" {...sortHeaderProps} />
+                <SortHeader col="pl" label="P/L" {...sortHeaderProps} alignRight />
                 <SortHeader col="close" label="Price" {...sortHeaderProps} alignRight />
                 <SortHeader col="contractions" label="Contractions" {...sortHeaderProps} alignRight />
                 <SortHeader col="ma10" label="10 MA" {...sortHeaderProps} alignRight />
@@ -858,22 +923,44 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
+              {sorted.length === 0 ? (
                 <tr>
-                    <td colSpan={22} className="px-4 py-8 text-center text-slate-500">
-                    No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.
+                    <td colSpan={21} className="px-4 py-8 text-center text-slate-500">
+                    {watchlistOnly
+                      ? topRsOnly
+                        ? 'No watchlist stocks currently qualify for Top 50 RS in this Signal Agent filter.'
+                        : 'No watchlist matches for this Signal Agent filter.'
+                      : topRsOnly
+                        ? 'No stocks qualify for Top 50 RS in the current filter. Try All + Run Scan.'
+                      : <>No results. Run <code className="bg-slate-800 px-1 rounded">npm run populate-tickers 500</code> then click Run scan.</>}
                   </td>
                 </tr>
               ) : (
                 sorted.map((r) => (
                   <tr key={r.ticker} className="group border-b border-slate-800/80 hover:bg-slate-800/40">
                     <td className="sticky left-0 z-10 min-w-[10rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3">
-                      <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium" target="_blank" rel="noopener noreferrer">
-                        {r.ticker}
-                      </Link>
+                      <div className="flex items-center gap-1">
+                        <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium" target="_blank" rel="noopener noreferrer">
+                          {r.ticker}
+                        </Link>
+                        {watchlistTickers.has(r.ticker) && (
+                          <span
+                            className="text-amber-300 text-xs"
+                            title={watchlistMap[r.ticker]?.note || 'In watchlist'}
+                            aria-label="In watchlist"
+                          >
+                            ★
+                          </span>
+                        )}
+                      </div>
                       {(fundamentals[r.ticker]?.companyName ?? fundamentals[r.ticker]?.industry) && (
                         <div className="text-slate-400 mt-1 truncate" style={{ fontSize: '10pt' }}>
                           {fundamentals[r.ticker].companyName ?? fundamentals[r.ticker].industry}
+                        </div>
+                      )}
+                      {watchlistMap[r.ticker]?.note && (
+                        <div className="text-amber-300/90 mt-0.5 truncate text-[10pt]" title={watchlistMap[r.ticker].note}>
+                          Note: {watchlistMap[r.ticker].note}
                         </div>
                       )}
                       {(() => {
@@ -927,6 +1014,32 @@ export default function Dashboard() {
                       ) : (
                         <span className="text-slate-500">–</span>
                       )}
+                    </td>
+                    {/* RS Rating (IBD-style 1–99) */}
+                    <td className="px-4 py-3 font-mono tabular-nums text-right">
+                      {r.relativeStrength != null ? (
+                        <span className={`font-medium ${
+                          r.relativeStrength >= 90 ? 'text-emerald-400' :
+                          r.relativeStrength >= 80 ? 'text-green-400' :
+                          r.relativeStrength >= 70 ? 'text-slate-300' :
+                          'text-red-400'
+                        }`}>
+                          {Math.round(r.relativeStrength)}
+                        </span>
+                      ) : '–'}
+                    </td>
+                    {/* Industry Rank */}
+                    <td className="px-4 py-3 font-mono tabular-nums text-right">
+                      {r.industryRank != null ? (
+                        <span className={`font-medium ${
+                          r.industryRank <= 20 ? 'text-emerald-400' :
+                          r.industryRank <= 40 ? 'text-green-400' :
+                          r.industryRank <= 80 ? 'text-slate-300' :
+                          'text-red-400'
+                        }`}>
+                          #{r.industryRank}
+                        </span>
+                      ) : '–'}
                     </td>
                     {/* Open Trade: line1 = date + days (nowrap), line2 = P/L % + $ (nowrap) */}
                     <td className="px-4 py-3 font-mono text-right text-sm min-w-[10rem]">
@@ -989,15 +1102,8 @@ export default function Dashboard() {
                     {/* Signal Agent */}
                     <td className="px-4 py-3 text-sm">
                       <span className={(r.signalSetupsRecent ?? r.signalSetups)?.length ? 'text-slate-200' : 'text-slate-500'}>
-                        {resolveSignalAgentLabel(r.signalSetupsRecent ?? r.signalSetups ?? [])}
+                        {resolveSignalAgentLabel(r.signalSetupsRecent ?? r.signalSetups ?? [], activeSignalLabelFilter)}
                       </span>
-                    </td>
-                    {/* Triggered date */}
-                    <td className="px-4 py-3 font-mono text-right text-sm">
-                      {(() => {
-                        const ot = opus45ByTicker[r.ticker];
-                        return formatSignalDate(ot?.entryDate);
-                      })()}
                     </td>
                     {/* Current P/L */}
                     <td className="px-4 py-3 font-mono text-right text-sm">
@@ -1012,32 +1118,6 @@ export default function Dashboard() {
                               : 'text-slate-500';
                         return <span className={toneClass}>{pl.text}</span>;
                       })()}
-                    </td>
-                    {/* RS vs SPY */}
-                    <td className="px-4 py-3 font-mono tabular-nums text-right">
-                      {r.relativeStrength != null ? (
-                        <span className={`font-medium ${
-                          r.relativeStrength > 110 ? 'text-emerald-400' :
-                          r.relativeStrength > 100 ? 'text-green-400' :
-                          r.relativeStrength > 90 ? 'text-slate-300' :
-                          'text-red-400'
-                        }`}>
-                          {r.relativeStrength.toFixed(1)}
-                        </span>
-                      ) : '–'}
-                    </td>
-                    {/* Industry Rank */}
-                    <td className="px-4 py-3 font-mono tabular-nums text-right">
-                      {r.industryRank != null ? (
-                        <span className={`font-medium ${
-                          r.industryRank <= 20 ? 'text-emerald-400' :
-                          r.industryRank <= 40 ? 'text-green-400' :
-                          r.industryRank <= 80 ? 'text-slate-300' :
-                          'text-red-400'
-                        }`}>
-                          #{r.industryRank}
-                        </span>
-                      ) : '–'}
                     </td>
                     <td className="px-4 py-3 text-slate-300 font-mono tabular-nums text-right">{r.lastClose != null ? `$${r.lastClose.toFixed(2)}` : '–'}</td>
                     <td className="px-4 py-3 text-slate-300 font-mono text-right">{r.contractions ?? '–'}</td>

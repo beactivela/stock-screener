@@ -25,29 +25,25 @@ const DEFAULT_REGIME_BUDGETS = {
     momentum_scout: 0.40,
     breakout_tracker: 0.20,
     base_hunter: 0.10,
-    turtle_trader: 0.15,
-    ma_crossover_10_20: 0.15,
+    turtle_trader: 0.30,
   },
   UNCERTAIN: {
     momentum_scout: 0.20,
     breakout_tracker: 0.15,
     base_hunter: 0.30,
-    turtle_trader: 0.20,
-    ma_crossover_10_20: 0.15,
+    turtle_trader: 0.35,
   },
   CORRECTION: {
     momentum_scout: 0.08,
     breakout_tracker: 0.12,
     base_hunter: 0.50,
-    turtle_trader: 0.20,
-    ma_crossover_10_20: 0.10,
+    turtle_trader: 0.30,
   },
   BEAR: {
     momentum_scout: 0,
     breakout_tracker: 0,
     base_hunter: 0,
     turtle_trader: 0,
-    ma_crossover_10_20: 0,
   },
 };
 

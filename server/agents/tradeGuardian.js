@@ -42,13 +42,6 @@ const AGENT_EXIT_PROFILES = {
     below10MADays: 3,           // Standard
     maxHoldDays: 90,            // Standard
   },
-  ma_crossover_10_20: {
-    hardStopATRMultiple: 2.0,
-    breakevenActivationPct: 5,
-    profitGivebackPct: 50,
-    below10MADays: 1,           // Exit on first close below 10 MA
-    maxHoldDays: 90,
-  },
   default: {
     hardStopATRMultiple: 2.0,
     breakevenActivationPct: EXIT_THRESHOLDS.breakevenActivationPct,

@@ -21,6 +21,30 @@ interface Bar {
   v: number
 }
 
+interface RsCompareRow {
+  ticker: string
+  ibdRating: number
+  ibdGroupRank: number
+  rsRaw: number | null
+  ourRating: number | null
+  ourRatingAdjusted: number | null
+  delta: number | null
+  adjustedDelta: number | null
+  error?: string
+}
+
+interface RsCompareResponse {
+  benchmark: string
+  from: string
+  to: string
+  interval: string
+  usedUniverse: boolean
+  rows: RsCompareRow[]
+  sampleSize: number
+  universeSize: number
+  warning: string | null
+}
+
 const TICKER_TO_LABEL: Record<string, string> = {
   '^GSPC': 'S&P 500',
   '^IXIC': 'NASDAQ',
@@ -55,12 +79,64 @@ function formatChange(value: number): string {
   return `${sign}${value.toFixed(2)}`
 }
 
+function formatDelta(value: number | null): string {
+  if (value == null) return '—'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value}`
+}
+
 export default function MarketIndexDetail() {
   const { ticker } = useParams<{ ticker: string }>()
   const navigate = useNavigate()
   const [timeframe, setTimeframe] = useState<(typeof TIMEFRAMES)[number]>(TIMEFRAMES[0])
+  const [rsCompare, setRsCompare] = useState<{
+    loading: boolean
+    error: string | null
+    data: RsCompareResponse | null
+  }>({ loading: false, error: null, data: null })
 
   const label = ticker ? TICKER_TO_LABEL[ticker] ?? ticker : null
+
+  useEffect(() => {
+    if (ticker !== '^GSPC') {
+      setRsCompare({ loading: false, error: null, data: null })
+      return
+    }
+    let cancelled = false
+    // Fetch once on entry so the comparison table is fast and consistent.
+    setRsCompare((prev) => ({ ...prev, loading: true, error: null }))
+    ;(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/rs/ibd-compare`, { cache: 'no-store' })
+        const text = await r.text()
+        let payload: RsCompareResponse | { error?: string } | null = null
+        if (text.trim()) {
+          try {
+            payload = JSON.parse(text)
+          } catch {
+            if (!r.ok) throw new Error(text.trim() || `HTTP ${r.status}`)
+            throw new Error('Unexpected response format from API')
+          }
+        }
+        if (!r.ok) {
+          const message = (payload as { error?: string })?.error || text.trim() || `HTTP ${r.status}`
+          throw new Error(message)
+        }
+        if ((payload as { error?: string })?.error) {
+          throw new Error((payload as { error?: string }).error || 'Failed to load RS comparison')
+        }
+        if (!cancelled) {
+          setRsCompare({ loading: false, error: null, data: payload as RsCompareResponse })
+        }
+      } catch (e) {
+        if (cancelled) return
+        setRsCompare({ loading: false, error: e instanceof Error ? e.message : 'Failed to load RS comparison', data: null })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [ticker])
 
   if (!ticker) {
     return (
@@ -121,6 +197,69 @@ export default function MarketIndexDetail() {
           />
         ))}
       </div>
+
+      {ticker === '^GSPC' && (
+        <section className="mt-8 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-100">RS vs IBD (S&P 500)</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                IBD RS is a percentile vs the full market. Our RS uses IBD-style weighted returns (3/6/9/12 months, 3m double weight)
+                and is ranked vs the latest scan universe.
+              </p>
+            </div>
+            {rsCompare.data && (
+              <div className="text-xs text-slate-500">
+                Universe: {rsCompare.data.usedUniverse ? `${rsCompare.data.universeSize} tickers` : 'sample-only'} •
+                Range: {rsCompare.data.from} → {rsCompare.data.to}
+              </div>
+            )}
+          </div>
+
+          {rsCompare.loading ? (
+            <div className="mt-4 text-sm text-slate-400">Loading RS comparison…</div>
+          ) : rsCompare.error ? (
+            <div className="mt-4 text-sm text-red-400">{rsCompare.error}</div>
+          ) : rsCompare.data ? (
+            <div className="mt-4 overflow-x-auto">
+              {rsCompare.data.warning && (
+                <div className="mb-3 rounded-md border border-amber-700/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  {rsCompare.data.warning}
+                </div>
+              )}
+              <table className="w-full text-sm">
+                <caption className="sr-only">RS comparison table for IBD sample tickers</caption>
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
+                    <th className="pb-2 pr-3" scope="col">Ticker</th>
+                    <th className="pb-2 pr-3" scope="col">IBD RS</th>
+                    <th className="pb-2 pr-3" scope="col">Group Rank</th>
+                    <th className="pb-2 pr-3" scope="col">Our RS</th>
+                    <th className="pb-2 pr-3" scope="col">Adjusted RS</th>
+                    <th className="pb-2 pr-3" scope="col">Δ (IBD - Our)</th>
+                    <th className="pb-2" scope="col">Δ Adjusted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rsCompare.data.rows.map((row) => (
+                    <tr key={row.ticker} className="border-b border-slate-800/60 text-slate-200">
+                      <td className="py-2 pr-3 font-medium">{row.ticker}</td>
+                      <td className="py-2 pr-3">{row.ibdRating}</td>
+                      <td className="py-2 pr-3">{row.ibdGroupRank}</td>
+                      <td className="py-2 pr-3">{row.ourRating ?? '—'}</td>
+                      <td className="py-2 pr-3">{row.ourRatingAdjusted ?? '—'}</td>
+                      <td className="py-2 pr-3 text-slate-300">{formatDelta(row.delta)}</td>
+                      <td className="py-2 text-slate-300">{formatDelta(row.adjustedDelta)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="mt-4 text-sm text-slate-500">No RS comparison data.</div>
+          )}
+        </section>
+      )}
     </div>
   )
 }
@@ -164,23 +303,35 @@ function MarketIndexChart({
     setError(null)
     const { days } = timeframe
     const fetchDays = Math.max(days, MIN_DAYS_FOR_RSI)
-    fetch(`${API_BASE}/api/bars/${encodeURIComponent(ticker)}?days=${fetchDays}&interval=1d`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((res) => {
-        if (cancelled) return
-        if (res?.error) throw new Error(res.error)
-        const raw = (res?.results || []) as Bar[]
-        setBars([...raw].sort((a, b) => a.t - b.t))
-      })
-      .catch((e: unknown) => {
+    ;(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/bars/${encodeURIComponent(ticker)}?days=${fetchDays}&interval=1d`, { cache: 'no-store' })
+        const text = await r.text()
+        let payload: { error?: string; results?: Bar[] } | null = null
+        if (text.trim()) {
+          try {
+            payload = JSON.parse(text)
+          } catch {
+            // Keep readable diagnostics when a non-JSON response (e.g. Vercel 404 page) is returned.
+            if (!r.ok) throw new Error(text.trim() || `HTTP ${r.status}`)
+            throw new Error('Unexpected response format from API')
+          }
+        }
+        if (!r.ok) {
+          const message = payload?.error || text.trim() || `HTTP ${r.status}`
+          throw new Error(message)
+        }
+        if (payload?.error) throw new Error(payload.error)
+        const raw = (payload?.results || []) as Bar[]
+        if (!cancelled) setBars([...raw].sort((a, b) => a.t - b.t))
+      } catch (e: unknown) {
         if (cancelled) return
         setBars([])
         setError(e instanceof Error ? e.message : 'Failed to load')
-      })
-      .finally(() => {
-        if (cancelled) return
-        setLoading(false)
-      })
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
     return () => {
       cancelled = true
     }

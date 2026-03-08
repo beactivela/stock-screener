@@ -53,23 +53,35 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetch(`${API_BASE}/api/bars/${encodeURIComponent(config.ticker)}?days=365&interval=1d`, { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((res) => {
-        if (cancelled) return
-        if (res?.error) throw new Error(res.error)
-        const raw = (res?.results || []) as Bar[]
-        setBars([...raw].sort((a, b) => a.t - b.t))
-      })
-      .catch((e: unknown) => {
+    ;(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/api/bars/${encodeURIComponent(config.ticker)}?days=365&interval=1d`, { cache: 'no-store' })
+        const text = await r.text()
+        let payload: { error?: string; results?: Bar[] } | null = null
+        if (text.trim()) {
+          try {
+            payload = JSON.parse(text)
+          } catch {
+            // Keep readable diagnostics when a non-JSON response (e.g. Vercel 404 page) is returned.
+            if (!r.ok) throw new Error(text.trim() || `HTTP ${r.status}`)
+            throw new Error('Unexpected response format from API')
+          }
+        }
+        if (!r.ok) {
+          const message = payload?.error || text.trim() || `HTTP ${r.status}`
+          throw new Error(message)
+        }
+        if (payload?.error) throw new Error(payload.error)
+        const raw = (payload?.results || []) as Bar[]
+        if (!cancelled) setBars([...raw].sort((a, b) => a.t - b.t))
+      } catch (e: unknown) {
         if (cancelled) return
         setBars([])
         setError(e instanceof Error ? e.message : 'Failed to load')
-      })
-      .finally(() => {
-        if (cancelled) return
-        setLoading(false)
-      })
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
 
     return () => {
       cancelled = true

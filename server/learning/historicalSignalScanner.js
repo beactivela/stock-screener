@@ -46,11 +46,10 @@ export function createScanDiagnostics() {
  * 
  * @param {string} ticker - Stock symbol
  * @param {Array} bars - Full historical bars (12+ months)
- * @param {Array} spyBars - SPY bars for RS calculation
  * @param {Object} options - Scan options
  * @returns {Array} Array of historical signals with outcomes
  */
-export function scanTickerForSignals(ticker, bars, spyBars, options = {}) {
+export function scanTickerForSignals(ticker, bars, options = {}) {
   const {
     minDaysBetweenSignals = 10,
     requireVolumeConfirm = true,
@@ -87,10 +86,8 @@ export function scanTickerForSignals(ticker, bars, spyBars, options = {}) {
   for (let i = 200; i < bars.length - 5; i++) {
     // Get bars up to this point (simulating "today" is bar i)
     const barsToDate = bars.slice(0, i + 1);
-    const spyBarsToDate = spyBars ? spyBars.slice(0, i + 1) : null;
-    
-    // Run VCP check with SPY for RS
-    const vcpResult = checkVCP(barsToDate, spyBarsToDate);
+    // Run VCP check (IBD RS rating is not available in historical mode)
+    const vcpResult = checkVCP(barsToDate);
     
     // Add ticker for signal generation
     vcpResult.ticker = ticker;
@@ -108,7 +105,7 @@ export function scanTickerForSignals(ticker, bars, spyBars, options = {}) {
         const tradeResult = simulateTrade(signal, futureBars);
         
         // Capture full context at entry
-        const context = captureContext(ticker, barsToDate, spyBarsToDate, vcpResult, signal);
+        const context = captureContext(ticker, barsToDate, vcpResult, signal);
         
         signals.push({
           ticker,
@@ -172,7 +169,7 @@ export function scanTickerForSignals(ticker, bars, spyBars, options = {}) {
         const entryPrice = entryBar.c;
         const futureBars = bars.slice(i);
         const tradeResult = simulateCrossTrade({ entryPrice }, futureBars);
-        const context = captureContext(ticker, barsToDate, spyBarsToDate, vcpResult, null);
+        const context = captureContext(ticker, barsToDate, vcpResult, null);
 
         signals.push({
           ticker,
@@ -240,7 +237,7 @@ export function scanTickerForSignals(ticker, bars, spyBars, options = {}) {
           exitLookback,
         });
         
-        const context = captureContext(ticker, barsToDate, spyBarsToDate, vcpResult, null);
+        const context = captureContext(ticker, barsToDate, vcpResult, null);
         const prior20High = donchianHigh(bars, 20, i);
         const prior55High = donchianHigh(bars, 55, i);
         const prior10Low = donchianLow(bars, 10, i);
@@ -487,7 +484,7 @@ function simulateCrossTrade(signal, futureBars) {
 /**
  * Capture full entry context for learning
  */
-function captureContext(ticker, bars, spyBars, vcpResult, signal) {
+function captureContext(ticker, bars, vcpResult, signal) {
   const lastIdx = bars.length - 1;
   const lastBar = bars[lastIdx];
   const closes = bars.map(b => b.c);
@@ -541,7 +538,7 @@ function captureContext(ticker, bars, spyBars, vcpResult, signal) {
   const breakoutVolumeRatio = avgVolume50d > 0 ? breakoutVolume / avgVolume50d : null;
   
   // Relative strength
-  const rsData = spyBars ? calculateRelativeStrength(bars, spyBars) : null;
+  const rsData = calculateRelativeStrength(bars);
   
   // Pullback calculation
   const recent5High = Math.max(...bars.slice(-6, -1).map(b => b.c));
@@ -625,11 +622,6 @@ export async function scanMultipleTickers(tickers, lookbackMonths = 60, onProgre
   const fromStr = from.toISOString().slice(0, 10);
   const toStr = to.toISOString().slice(0, 10);
   
-  // Fetch SPY bars first for RS calculation
-  console.log('Fetching SPY bars for RS calculation...');
-  const spyBars = await getBars('SPY', fromStr, toStr);
-  const sortedSpyBars = spyBars ? [...spyBars].sort((a, b) => a.t - b.t) : null;
-  
   const allSignals = [];
   const errors = [];
   const diagnostics = options.diagnostics || createScanDiagnostics();
@@ -659,7 +651,7 @@ export async function scanMultipleTickers(tickers, lookbackMonths = 60, onProgre
       const sortedBars = [...bars].sort((a, b) => a.t - b.t);
       
       // Scan for signals — pass scan metadata through
-      const signals = scanTickerForSignals(ticker, sortedBars, sortedSpyBars, {
+      const signals = scanTickerForSignals(ticker, sortedBars, {
         scanType: 'deep_historical',
         lookbackMonths,
         signalFamilies: options.signalFamilies,

@@ -9,17 +9,15 @@ import momentumScout from './momentumScout.js'
 import baseHunter from './baseHunter.js'
 import breakoutTracker from './breakoutTracker.js'
 import turtleTrader from './turtleTrader.js'
-import maCrossover_10_20 from './maCrossover_10_20.js'
 
 export const AGENT_CHART_CONFIG = {
   momentum_scout: { name: 'Momentum Scout', color: '#22c55e' },
   base_hunter: { name: 'Base Hunter', color: '#3b82f6' },
   breakout_tracker: { name: 'Breakout Tracker', color: '#f59e0b' },
   turtle_trader: { name: 'Turtle Trader', color: '#a855f7' },
-  ma_crossover_10_20: { name: '10-20 Cross Over', color: '#14b8a6' },
 }
 
-const AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader, maCrossover_10_20]
+const AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader]
 const AGENT_BY_TYPE = new Map(AGENTS.map((agent) => [agent.agentType, agent]))
 
 function resolveSignalTimeSec(signal, bars) {

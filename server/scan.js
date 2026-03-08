@@ -16,7 +16,7 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import { getDailyBars } from './yahoo.js';
 import { getTickerListFromScanner } from './tradingViewIndustry.js';
-import { checkVCP, buildSignalSnapshots } from './vcp.js';
+import { checkVCP, buildSignalSnapshots, assignIBDRelativeStrengthRatings } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { classifySignalSetups, classifySignalSetupsRecent } from './learning/signalSetupClassifier.js';
 import { saveScanSnapshot } from './backtest.js';
@@ -99,6 +99,38 @@ async function loadIndustryReturns(fundamentals) {
   return buildIndustryReturnsFromTVMap(tvMap, industryNames);
 }
 
+export function applyRatingsAndEnhancements({
+  results,
+  fundamentals,
+  industryRanks,
+  barsByTicker,
+  snapshotsByTicker,
+}) {
+  const rated = assignIBDRelativeStrengthRatings(results);
+  return rated.map((row) => {
+    const fund = fundamentals?.[row.ticker] || null;
+    const industryData = fund?.industry ? industryRanks?.[fund.industry] : null;
+    const bars = barsByTicker?.get(row.ticker) || null;
+    const enhanced = bars ? computeEnhancedScore(row, bars, fund, industryData, industryRanks) : {};
+    const signalSetups = classifySignalSetups(row);
+    const snapshots = snapshotsByTicker?.get(row.ticker) || [];
+    const snapshotsWithRating = snapshots.map((snapshot) => ({
+      ...snapshot,
+      relativeStrength: row.relativeStrength,
+      rsData: row.rsData,
+    }));
+    const signalSetupsRecent = classifySignalSetupsRecent(snapshotsWithRating);
+    const signalSetupsRecent5 = classifySignalSetupsRecent(snapshotsWithRating, 5);
+    return {
+      ...row,
+      ...enhanced,
+      signalSetups,
+      signalSetupsRecent,
+      signalSetupsRecent5,
+    };
+  });
+}
+
 async function runScan() {
   ensureDataDir();
   const { from, to } = dateRange(320); // 320d supports 200 MA based agent criteria
@@ -109,20 +141,12 @@ async function runScan() {
   const industryReturns = await loadIndustryReturns(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
   
-  // Fetch SPY bars once for RS calculations (NEW)
-  console.log(`Fetching SPY bars for Relative Strength calculations...`);
-  let spyBars = null;
-  try {
-    spyBars = await getBarsForScan('SPY', from, to);
-    console.log(`Loaded SPY bars: ${spyBars.length} days`);
-  } catch (e) {
-    console.warn(`Could not fetch SPY bars: ${e.message}. RS will be null for all stocks.`);
-  }
-  
   console.log(`Scanning ${tickers.length} tickers (${from} to ${to})`);
   console.log(`Loaded ${Object.keys(fundamentals).length} fundamentals, ${Object.keys(industryRanks).length} ranked industries`);
 
   const results = [];
+  const barsByTicker = new Map();
+  const snapshotsByTicker = new Map();
   // Sequential queue: 1 ticker at a time with delay to avoid Yahoo throttling
   const delayMs = Number(process.env.SCAN_DELAY_MS) || 150;
   for (let i = 0; i < tickers.length; i++) {
@@ -133,17 +157,11 @@ async function runScan() {
       if (!bars.length) {
         results.push({ ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] });
       } else {
-        const vcp = checkVCP(bars, spyBars); // Pass SPY bars for RS calculation
-        const fund = fundamentals[ticker] || null;
-        const industryData = fund?.industry ? industryRanks[fund.industry] : null;
-        
-        // Pass industryRanks to apply multiplier
-        const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
-        const merged = { ticker, ...vcp, ...enhanced };
-        merged.signalSetups = classifySignalSetups(merged);
-        const snapshots = buildSignalSnapshots(bars, spyBars, 5);
-        merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
-        merged.signalSetupsRecent5 = classifySignalSetupsRecent(snapshots, 5);
+        const vcp = checkVCP(bars);
+        barsByTicker.set(ticker, bars);
+        const snapshots = buildSignalSnapshots(bars, 5);
+        snapshotsByTicker.set(ticker, snapshots);
+        const merged = { ticker, ...vcp };
         results.push(merged);
       }
     } catch (e) {
@@ -155,14 +173,23 @@ async function runScan() {
     }
   }
 
+  // Convert raw RS weighted performance into IBD-style 1-99 rating across this scan universe.
+  const ratedResults = applyRatingsAndEnhancements({
+    results,
+    fundamentals,
+    industryRanks,
+    barsByTicker,
+    snapshotsByTicker,
+  });
+
   // Sort by enhanced score first (when available), then by original VCP score
-  results.sort((a, b) => {
+  ratedResults.sort((a, b) => {
     const aEnhanced = a.enhancedScore ?? a.score ?? 0;
     const bEnhanced = b.enhancedScore ?? b.score ?? 0;
     if (bEnhanced !== aEnhanced) return bEnhanced - aEnhanced;
     return (b.score ?? 0) - (a.score ?? 0);
   });
-  const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
+  const vcpBullishCount = ratedResults.filter((r) => r.vcpBullish).length;
 
   const payload = {
     scannedAt: new Date().toISOString(),
@@ -170,19 +197,19 @@ async function runScan() {
     to,
     totalTickers: tickers.length,
     vcpBullishCount,
-    results,
+    results: ratedResults,
   };
 
   await saveScanResultsToDb(payload);
 
   // Save backtest snapshot for future analysis
   try {
-    await saveScanSnapshot(results, new Date());
+    await saveScanSnapshot(ratedResults, new Date());
   } catch (e) {
     console.warn('Could not save backtest snapshot:', e.message);
   }
   
-  console.log(`Done. Scored ${results.length} tickers (${vcpBullishCount} VCP bullish). Saved to DB.`);
+  console.log(`Done. Scored ${ratedResults.length} tickers (${vcpBullishCount} VCP bullish). Saved to DB.`);
   return payload;
 }
 
@@ -204,14 +231,6 @@ async function* runScanStream() {
   const industryReturns = await loadIndustryReturns(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
   
-  // Fetch SPY bars once for RS calculations (NEW)
-  let spyBars = null;
-  try {
-    spyBars = await getBarsForScan('SPY', from, to);
-  } catch (e) {
-    console.warn(`Could not fetch SPY bars: ${e.message}`);
-  }
-
   for (let i = 0; i < tickers.length; i++) {
     if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const ticker = tickers[i];
@@ -221,24 +240,26 @@ async function* runScanStream() {
       if (!bars.length) {
         result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, reason: 'no_bars', enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] };
       } else {
-        const vcp = checkVCP(bars, spyBars); // Pass SPY bars for RS
+        const vcp = checkVCP(bars);
         const fund = fundamentals[ticker] || null;
         const industryData = fund?.industry ? industryRanks[fund.industry] : null;
         
-        // Pass industryRanks to apply multiplier
+        // Pass industryRanks to apply multiplier (RS rating not available in stream)
         const enhanced = computeEnhancedScore(vcp, bars, fund, industryData, industryRanks);
         const merged = { ticker, ...vcp, ...enhanced };
         merged.signalSetups = classifySignalSetups(merged);
-        const snapshots = buildSignalSnapshots(bars, spyBars, 5);
+        const snapshots = buildSignalSnapshots(bars, 5);
         merged.signalSetupsRecent = classifySignalSetupsRecent(snapshots);
         merged.signalSetupsRecent5 = classifySignalSetupsRecent(snapshots, 5);
         result = merged;
+        yield { result, index: i + 1, total: tickers.length, bars, snapshots };
+        continue;
       }
     } catch (e) {
       console.warn(ticker, e.message);
       result = { ticker, score: 0, recommendation: 'avoid', vcpBullish: false, error: e.message, enhancedScore: 0, enhancedGrade: 'F', signalSetups: [] };
     }
-    yield { result, index: i + 1, total: tickers.length };
+    yield { result, index: i + 1, total: tickers.length, bars: null, snapshots: null };
   }
 }
 

@@ -174,6 +174,28 @@ export const DEFAULT_WEIGHTS = {
 };
 
 /**
+ * Normalize RS (1-99) into a 0..1 score.
+ * Rationale: use a smooth curve above the mandatory floor to avoid step cliffs.
+ */
+export function normalizeRs(rs, { min = 65, max = 99 } = {}) {
+  if (rs == null || Number.isNaN(rs)) return 0;
+  const clamped = Math.max(min, Math.min(max, Number(rs)));
+  if (max <= min) return 0;
+  return (clamped - min) / (max - min);
+}
+
+/**
+ * Normalize industry rank into a 0..1 score (lower rank = higher score).
+ * Rationale: keep monotonic scoring even when industry universe size changes.
+ */
+export function normalizeIndustryRank(rank, totalIndustries) {
+  if (rank == null || Number.isNaN(rank)) return 0;
+  const total = Number.isFinite(totalIndustries) && totalIndustries > 1 ? totalIndustries : 200;
+  const clampedRank = Math.max(1, Math.min(total, Number(rank)));
+  return (total - clampedRank) / (total - 1);
+}
+
+/**
  * Mandatory criteria thresholds.
  * A stock MUST meet ALL of these to generate an Opus4.5 signal.
  */
@@ -635,6 +657,7 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
     volumeConfirmation,
     relativeStrength,
     industryRank,
+    industryTotalCount,
     institutionalOwnership,
     epsGrowth,
     maSlope,    // 10 MA slope data { slopePct14d, slopePct5d, isRising }
@@ -753,24 +776,38 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
     breakdown.push({ criterion: 'Volume confirmation', points: 0, matched: false });
   }
   
-  // RS > 90 — raised from 5 → 10 pts. Backtest data: RS > 90 stocks (PLTR, APP, NVDA)
-  // produced 2× the win rate of RS 70–80 stocks. Elite momentum stocks only.
-  if (relativeStrength > 90) {
-    score += weights.entryRSAbove90;
-    breakdown.push({ criterion: `RS > 90 (elite momentum): RS=${relativeStrength}`, points: weights.entryRSAbove90, matched: true });
+  // RS contribution (continuous, monotonic above the mandatory floor)
+  const rsNormalized = normalizeRs(relativeStrength);
+  const rsPrimary = rsNormalized * (weights.entryRSAbove90 || 0);
+  const rsSecondary = rsNormalized * (weights.relativeStrengthBonus || 0);
+  if (rsPrimary > 0) {
+    score += rsPrimary;
+    breakdown.push({
+      criterion: `RS strength (normalized): RS=${relativeStrength}`,
+      points: Math.round(rsPrimary * 10) / 10,
+      matched: true,
+      detail: `normalized=${Math.round(rsNormalized * 100)}%`
+    });
+  } else {
+    breakdown.push({ criterion: 'RS strength (normalized)', points: 0, matched: false, actual: relativeStrength });
   }
   
   // === FUNDAMENTALS & CONTEXT (30 pts max) ===
   
-  // Industry rank
-  if (industryRank && industryRank <= 20) {
-    score += weights.industryTop20;
-    breakdown.push({ criterion: `Industry rank #${industryRank} (top 20)`, points: weights.industryTop20, matched: true });
-  } else if (industryRank && industryRank <= 40) {
-    score += weights.industryTop40;
-    breakdown.push({ criterion: `Industry rank #${industryRank} (top 40)`, points: weights.industryTop40, matched: true });
+  // Industry rank contribution (continuous, monotonic; lower rank = higher score)
+  const industryNormalized = normalizeIndustryRank(industryRank, industryTotalCount);
+  const industryMax = (weights.industryTop20 || 0) + (weights.industryTop40 || 0);
+  const industryPoints = industryNormalized * industryMax;
+  if (industryPoints > 0) {
+    score += industryPoints;
+    breakdown.push({
+      criterion: `Industry rank strength: #${industryRank}`,
+      points: Math.round(industryPoints * 10) / 10,
+      matched: true,
+      detail: `normalized=${Math.round(industryNormalized * 100)}%`
+    });
   } else {
-    breakdown.push({ criterion: 'Industry top 40', points: 0, matched: false, actual: industryRank });
+    breakdown.push({ criterion: 'Industry rank strength', points: 0, matched: false, actual: industryRank });
   }
   
   // Institutional ownership
@@ -789,10 +826,15 @@ export function calculateConfidenceScore(params, weights = DEFAULT_WEIGHTS) {
     breakdown.push({ criterion: 'Positive EPS growth', points: 0, matched: false });
   }
   
-  // RS > 80 bonus
-  if (relativeStrength > 80) {
-    score += weights.relativeStrengthBonus;
-    breakdown.push({ criterion: 'RS > 80 bonus', points: weights.relativeStrengthBonus, matched: true });
+  // RS secondary contribution (kept as separate weight for learning compatibility)
+  if (rsSecondary > 0) {
+    score += rsSecondary;
+    breakdown.push({
+      criterion: 'RS quality bonus (normalized)',
+      points: Math.round(rsSecondary * 10) / 10,
+      matched: true,
+      detail: `normalized=${Math.round(rsNormalized * 100)}%`
+    });
   }
 
   // === INDUSTRY TREND (8 pts max) ===
@@ -912,7 +954,7 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
   const maSlope = calculate10MASlope(bars);
   
   // Extract data from VCP result
-  const relativeStrength = vcpResult.relativeStrength || vcpResult.rsData?.rs || null;
+  const relativeStrength = vcpResult?.rsData?.rsRating ?? vcpResult?.relativeStrength ?? null;
   const contractions = vcpResult.contractions || 0;
   const patternConfidence = vcpResult.patternConfidence || 0;
   const volumeDryUp = vcpResult.volumeDryUp || false;
@@ -921,6 +963,7 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
   const institutionalOwnership = fundamentals?.pctHeldByInst || null;
   const epsGrowth = fundamentals?.qtrEarningsYoY || null;
   const industryRank = industryData?.rank || vcpResult.industryRank || null;
+  const industryTotalCount = industryData?.totalCount || vcpResult.industryTotalCount || null;
   const industryReturn3Mo = industryData?.return3Mo ?? null;
   
   // Calculate pullback depth from recent 5-day high
@@ -986,6 +1029,7 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
     volumeConfirmation,
     relativeStrength,
     industryRank,
+    industryTotalCount,
     institutionalOwnership,
     epsGrowth,
     maSlope,            // 10 MA slope data (primary win predictor from backtest)
@@ -1053,6 +1097,7 @@ export function generateOpus45Signal(vcpResult, bars, fundamentals = null, indus
       stats52w,
       entryPoint,
       industryRank,
+      industryTotalCount,
       institutionalOwnership,
       epsGrowth,
       sma10,
