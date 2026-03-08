@@ -85,6 +85,76 @@ describe('scan results batch persistence (file fallback)', () => {
     assert.equal(bbb?.rsData?.rsRating, 22);
   });
 
+  it('preserves enriched industry + signal fields on final update pass', async () => {
+    const scannedAt = new Date('2026-03-08T00:00:00.000Z').toISOString();
+    const from = '2025-01-12';
+    const to = '2026-03-08';
+
+    const { scanRunId } = await createScanRun({
+      scannedAt,
+      from,
+      to,
+      totalTickers: 2,
+      vcpBullishCount: 1,
+    });
+
+    assert.equal(scanRunId, null);
+
+    // Simulate streamed raw rows saved during scan progress.
+    await saveScanResultsBatch({
+      scanRunId,
+      results: [
+        { ticker: 'AAA', vcpBullish: true, relativeStrength: null, industryRank: null, signalSetupsRecent: [] },
+        { ticker: 'BBB', vcpBullish: false, relativeStrength: null, industryRank: null, signalSetupsRecent: [] },
+      ],
+    });
+
+    // Simulate final enriched pass after RS/industry/signal classification is computed.
+    await updateScanResultsBatch({
+      scanRunId,
+      results: [
+        {
+          ticker: 'AAA',
+          vcpBullish: true,
+          relativeStrength: 94,
+          rsData: { rsRaw: 51.2, rsRating: 94 },
+          industryName: 'Software',
+          industryRank: 5,
+          enhancedScore: 86,
+          signalSetups: ['momentum_scout'],
+          signalSetupsRecent: ['momentum_scout'],
+          signalSetupsRecent5: ['momentum_scout'],
+        },
+        {
+          ticker: 'BBB',
+          vcpBullish: false,
+          relativeStrength: 61,
+          rsData: { rsRaw: 18.6, rsRating: 61 },
+          industryName: 'Hardware',
+          industryRank: 18,
+          enhancedScore: 63,
+          signalSetups: ['base_hunter'],
+          signalSetupsRecent: ['base_hunter'],
+          signalSetupsRecent5: ['base_hunter'],
+        },
+      ],
+    });
+
+    const payload = await loadScanResults();
+    const aaa = payload.results.find((r) => r.ticker === 'AAA');
+    const bbb = payload.results.find((r) => r.ticker === 'BBB');
+
+    assert.equal(aaa?.industryName, 'Software');
+    assert.equal(aaa?.industryRank, 5);
+    assert.equal(aaa?.relativeStrength, 94);
+    assert.deepEqual(aaa?.signalSetupsRecent, ['momentum_scout']);
+
+    assert.equal(bbb?.industryName, 'Hardware');
+    assert.equal(bbb?.industryRank, 18);
+    assert.equal(bbb?.relativeStrength, 61);
+    assert.deepEqual(bbb?.signalSetupsRecent, ['base_hunter']);
+  });
+
   it('updates industry rank batches', async () => {
     const scannedAt = new Date('2026-03-08T00:00:00.000Z').toISOString();
     const from = '2025-01-12';

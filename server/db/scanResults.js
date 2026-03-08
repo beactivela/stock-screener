@@ -255,19 +255,25 @@ export async function updateScanResultsBatch({ scanRunId, results, meta }) {
   if (!scanRunId) throw new Error('scanRunId is required when Supabase is configured');
   const supabase = getSupabase();
 
-  const updates = await Promise.all(
-    (results || []).map((r) => supabase
+  const rows = (results || []).map((r) => ({
+    scan_run_id: scanRunId,
+    ticker: r.ticker,
+    vcp_bullish: r.vcpBullish ?? null,
+    contractions: r.contractions ?? null,
+    last_close: r.lastClose ?? null,
+    relative_strength: r.relativeStrength ?? null,
+    score: r.score ?? null,
+    enhanced_score: r.enhancedScore ?? r.score ?? null,
+    industry_name: r.industryName ?? null,
+    industry_rank: r.industryRank ?? null,
+    data: r,
+  }));
+  if (rows.length > 0) {
+    const { error } = await supabase
       .from('scan_results')
-      .update({
-        relative_strength: r.relativeStrength ?? null,
-        enhanced_score: r.enhancedScore ?? r.score ?? null,
-        data: r,
-      })
-      .eq('scan_run_id', scanRunId)
-      .eq('ticker', r.ticker))
-  );
-  const updateError = updates.find((u) => u?.error);
-  if (updateError?.error) throw new Error(updateError.error.message);
+      .upsert(rows, { onConflict: 'scan_run_id,ticker' });
+    if (error) throw new Error(error.message);
+  }
 
   const metaUpdate = buildRunMetaUpdate(meta);
   if (metaUpdate) {
