@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ColorType, PriceScaleMode, createChart } from 'lightweight-charts'
+import { ColorType, PriceScaleMode, createChart, type MouseEventParams, type Time } from 'lightweight-charts'
 import { API_BASE } from '../utils/api'
 import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
@@ -38,6 +38,10 @@ const CHART_OPTIONS = {
   grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
   timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#334155' },
   rightPriceScale: { borderColor: '#334155' },
+}
+
+function toUnixTime(time: Time | undefined): number | null {
+  return typeof time === 'number' ? time : null
 }
 
 function getRegimeTone(regime: MarketRegimeLabel): string {
@@ -349,14 +353,15 @@ function MarketIndexChart({
     })
     chart.timeScale().fitContent()
     chartRef.current = chart
-    const handleCrosshairMove = (param: { time?: number; point?: { x: number; y: number } }) => {
-      if (!param?.time || !param?.point || !wrapperRef.current) {
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const unixTime = toUnixTime(param.time)
+      if (!unixTime || !param?.point || !wrapperRef.current) {
         setLegend(latestLegend)
         setTooltipVisible(false)
         return
       }
       const snapshot = buildLegendSnapshot({
-        time: param.time,
+        time: unixTime,
         barsByTime,
         ma10ByTime,
         ma20ByTime,
