@@ -9,15 +9,17 @@ import momentumScout from './momentumScout.js'
 import baseHunter from './baseHunter.js'
 import breakoutTracker from './breakoutTracker.js'
 import turtleTrader from './turtleTrader.js'
+import breitsteinAgent from './breitsteinAgent.js'
 
 export const AGENT_CHART_CONFIG = {
   momentum_scout: { name: 'Momentum Scout', color: '#22c55e' },
   base_hunter: { name: 'Base Hunter', color: '#3b82f6' },
   breakout_tracker: { name: 'Breakout Tracker', color: '#f59e0b' },
   turtle_trader: { name: 'Turtle Trader', color: '#a855f7' },
+  breitstein: { name: 'Breitstein Signal', color: '#e11d48' },
 }
 
-const AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader]
+const AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader, breitsteinAgent]
 const AGENT_BY_TYPE = new Map(AGENTS.map((agent) => [agent.agentType, agent]))
 
 function resolveSignalTimeSec(signal, bars) {

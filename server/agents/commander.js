@@ -16,11 +16,12 @@ import momentumScout from './momentumScout.js';
 import baseHunter from './baseHunter.js';
 import breakoutTracker from './breakoutTracker.js';
 import turtleTrader from './turtleTrader.js';
+import breitsteinAgent from './breitsteinAgent.js';
 import { getTickerList, scanMultipleTickers } from '../learning/historicalSignalScanner.js';
 import { getStoredSignals, storeSignalsInDatabase } from '../learning/autoPopulate.js';
 import { isSupabaseConfigured } from '../supabase.js';
 
-const STRATEGY_AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader];
+const STRATEGY_AGENTS = [momentumScout, baseHunter, breakoutTracker, turtleTrader, breitsteinAgent];
 
 // Same exit strategy versioning as the single-agent optimizer
 const EXIT_STRATEGY_VERSION = 2;
@@ -72,6 +73,7 @@ export async function runMultiAgentOptimization(options = {}) {
         breakout_tracker: 0.15,
         base_hunter: 0.30,
         turtle_trader: 0.35,
+        breitstein: 0.25,
       },
     };
   }

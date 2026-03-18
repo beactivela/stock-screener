@@ -26,24 +26,28 @@ const DEFAULT_REGIME_BUDGETS = {
     breakout_tracker: 0.20,
     base_hunter: 0.10,
     turtle_trader: 0.30,
+    breitstein: 0.35,
   },
   UNCERTAIN: {
     momentum_scout: 0.20,
     breakout_tracker: 0.15,
     base_hunter: 0.30,
     turtle_trader: 0.35,
+    breitstein: 0.25,
   },
   CORRECTION: {
     momentum_scout: 0.08,
     breakout_tracker: 0.12,
     base_hunter: 0.50,
     turtle_trader: 0.30,
+    breitstein: 0.10,
   },
   BEAR: {
     momentum_scout: 0,
     breakout_tracker: 0,
     base_hunter: 0,
     turtle_trader: 0,
+    breitstein: 0,
   },
 };
 
