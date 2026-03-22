@@ -12,11 +12,12 @@
 # CRON_TZ applies to every line in this file until another CRON_TZ.
 CRON_TZ=America/Chicago
 #
-# 4:38 PM — warm bars_cache (Yahoo daily OHLC) for the full scan universe before the scan.
-38 16 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh >> /var/log/stock-screener-cron.log 2>&1
+# 4:38 PM Mon–Fri — warm bars_cache (Yahoo daily OHLC) for the full scan universe before the scan.
+# (5th field 1-5 = weekdays; US market closed Sat/Sun.)
+38 16 * * 1-5 root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh >> /var/log/stock-screener-cron.log 2>&1
 #
-# 5:12 PM — full VCP scan (same as UI "Run scan").
-12 17 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh >> /var/log/stock-screener-cron.log 2>&1
+# 5:12 PM Mon–Fri — full VCP scan (same as UI "Run scan").
+12 17 * * 1-5 root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh >> /var/log/stock-screener-cron.log 2>&1
 
 # Do not enable this AND SCHEDULE_SCAN=1 in the container, or Supabase pg_cron hitting the same
 # endpoint, unless you accept possible double-runs; the app skips if a scan is already running / cooldown.

@@ -39,7 +39,7 @@ Optional:
 No public URL required. TLS not used on loopback.
 
 1. Set **`CRON_SECRET`** in the app `.env` (same value the cron job will send).
-2. On the host, install a cron entry (see **`deploy/host-cron.example`** — includes **4:38 PM** bars refresh and **5:12 PM** scan in **America/Chicago**).
+2. On the host, install a cron entry (see **`deploy/host-cron.example`** — **weekdays only**: **4:38 PM** bars refresh and **5:12 PM** scan in **America/Chicago**).
 3. Use **`scripts/trigger-scheduled-refresh-bars.sh`** then **`scripts/trigger-scheduled-scan.sh`** with env:
    - **`CRON_SECRET`**
    - **`CRON_BASE_URL`** = `http://127.0.0.1:PORT` where `PORT` is your **`HOST_PORT`** (e.g. `8080`).

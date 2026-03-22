@@ -6,9 +6,9 @@
 # Optional:
 #   CRON_BASE_URL — default http://127.0.0.1:8080 (set to your HOST_PORT mapping)
 #
-# Example (after scan trigger in crontab), America/Chicago 4:38 PM:
+# Example (crontab), America/Chicago 4:38 PM Mon–Fri (1-5 = weekdays):
 #   CRON_TZ=America/Chicago
-#   38 16 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh >> /var/log/stock-screener-cron.log 2>&1
+#   38 16 * * 1-5 root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh >> /var/log/stock-screener-cron.log 2>&1
 #
 set -euo pipefail
 CRON_BASE_URL="${CRON_BASE_URL:-http://127.0.0.1:8080}"

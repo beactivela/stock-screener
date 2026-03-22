@@ -8,6 +8,7 @@
 #
 # Example root crontab (23:00 UTC daily):
 #   0 23 * * * . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh >> /var/log/stock-screener-cron.log 2>&1
+# Weekdays only (Mon–Fri): use 1-5 in the 5th field, e.g. 12 17 * * 1-5 with CRON_TZ=America/Chicago — see deploy/host-cron.example
 #
 set -euo pipefail
 CRON_BASE_URL="${CRON_BASE_URL:-http://127.0.0.1:8080}"
