@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getSupabase, isSupabaseConfigured } from '../supabase.js';
+import { classifySignalSetups } from '../learning/signalSetupClassifier.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -105,6 +106,48 @@ export function mapScanResultSummaryRow(row) {
     industryName: row.industry_name ?? row.industryName ?? null,
     industryRank: row.industry_rank ?? row.industryRank ?? null,
   };
+}
+
+/**
+ * Merge denormalized Supabase columns into `data` when jsonb is stale.
+ * Some deployments saw stream inserts persist raw `data` while upsert updated top-level
+ * columns only (or clients read before jsonb refresh) — UI then showed rsData but RS/agents blank.
+ */
+export function mergeScanResultDataRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const d = row.data;
+  if (!d || typeof d !== 'object') return null;
+  const out = { ...d };
+  if (row.ticker && !out.ticker) out.ticker = row.ticker;
+  if (row.relative_strength != null && out.relativeStrength == null) {
+    out.relativeStrength = row.relative_strength;
+  }
+  if (row.enhanced_score != null && out.enhancedScore == null) {
+    out.enhancedScore = row.enhanced_score;
+  }
+  if (row.industry_rank != null && out.industryRank == null) {
+    out.industryRank = row.industry_rank;
+  }
+  if (row.industry_name != null && out.industryName == null) {
+    out.industryName = row.industry_name;
+  }
+  if (row.last_close != null && out.lastClose == null) {
+    out.lastClose = row.last_close;
+  }
+  if (row.score != null && out.score == null) {
+    out.score = row.score;
+  }
+  if (
+    typeof out.relativeStrength === 'number'
+    && (!Array.isArray(out.signalSetups) || out.signalSetups.length === 0)
+  ) {
+    try {
+      out.signalSetups = classifySignalSetups(out);
+    } catch {
+      /* ignore classifier errors */
+    }
+  }
+  return out;
 }
 
 export function buildScanTickerNav({ results = [], actionableBuyTickers = new Set() } = {}) {
@@ -213,11 +256,11 @@ export async function loadScanResults() {
     }
     const { data: results, error: resErr } = await supabase
       .from('scan_results')
-      .select('data')
+      .select('data, ticker, relative_strength, enhanced_score, industry_rank, industry_name, last_close, score')
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = (results || []).map((r) => r.data);
+    const rows = (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean);
     const vcpBullishCount = rows.filter((r) => r?.vcpBullish).length;
     return {
       scannedAt: run.scanned_at,
@@ -250,11 +293,11 @@ export async function loadLatestScanResultsWithRun() {
     }
     const { data: results, error: resErr } = await supabase
       .from('scan_results')
-      .select('data')
+      .select('data, ticker, relative_strength, enhanced_score, industry_rank, industry_name, last_close, score')
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = (results || []).map((r) => r.data);
+    const rows = (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean);
     const vcpBullishCount = rows.filter((r) => r?.vcpBullish).length;
     return {
       scanRunId: run.id,

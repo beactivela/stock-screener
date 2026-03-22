@@ -10,6 +10,7 @@ import {
   updateIndustryRankBatch,
   loadScanResults,
   inferSupabaseScanRunLooksInProgress,
+  mergeScanResultDataRow,
 } from './scanResults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -247,6 +248,37 @@ describe('scan results batch persistence (file fallback)', () => {
     assert.equal(payload.vcpBullishCount, 1);
     assert.equal(payload.results.find((r) => r.ticker === 'AAA')?.enhancedScore, 94);
     assert.equal(payload.results.find((r) => r.ticker === 'AAA')?.industryRank, 2);
+  });
+});
+
+describe('mergeScanResultDataRow', () => {
+  it('fills relativeStrength from relative_strength and recomputes signalSetups', () => {
+    const row = {
+      ticker: 'AAA',
+      relative_strength: 88,
+      enhanced_score: 92,
+      industry_rank: 5,
+      industry_name: 'Tech',
+      data: {
+        ticker: 'AAA',
+        relativeStrength: null,
+        rsData: { rsRaw: 30 },
+        contractions: 4,
+        patternConfidence: 70,
+        volumeDryUp: true,
+        ma10Slope14d: 6,
+        pctFromHigh: 10,
+        breakoutVolumeRatio: 1.5,
+        signalSetups: [],
+        signalFamily: 'opus45',
+      },
+    };
+    const out = mergeScanResultDataRow(row);
+    assert.equal(out.relativeStrength, 88);
+    assert.equal(out.enhancedScore, 92);
+    assert.equal(out.industryRank, 5);
+    assert.equal(out.industryName, 'Tech');
+    assert.ok(Array.isArray(out.signalSetups) && out.signalSetups.length > 0);
   });
 });
 
