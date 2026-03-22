@@ -28,3 +28,26 @@ export function shouldUseCachedOpusForScan(
   if (!hasCachedOpusPayload(cachedOpus)) return false;
   return scanAtMs - computedAtMs <= staleFallbackMs;
 }
+
+/**
+ * Explain which cache mode is active for Opus merge.
+ * - current: cache computed at/after current scan timestamp
+ * - stale_fallback: older cache used temporarily to avoid flicker
+ * - none: cache not usable
+ */
+export function resolveOpusCacheState(
+  scanData,
+  cachedOpus,
+  { staleFallbackMs = OPUS_STALE_FALLBACK_MS } = {},
+) {
+  if (!scanData?.scannedAt || !cachedOpus?.computedAt) return 'none';
+
+  const scanAtMs = Date.parse(scanData.scannedAt);
+  const computedAtMs = Date.parse(cachedOpus.computedAt);
+  if (!Number.isFinite(scanAtMs) || !Number.isFinite(computedAtMs)) return 'none';
+
+  if (computedAtMs >= scanAtMs) return 'current';
+  if (!hasCachedOpusPayload(cachedOpus)) return 'none';
+  if (scanAtMs - computedAtMs <= staleFallbackMs) return 'stale_fallback';
+  return 'none';
+}

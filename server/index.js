@@ -49,7 +49,7 @@ import {
   saveOpus45Signals as saveOpus45SignalsToDb,
   mergeOpus45AllScoresWithSignals,
 } from './db/opus45.js';
-import { shouldUseCachedOpusForScan } from './opusCachePolicy.js';
+import { resolveOpusCacheState, shouldUseCachedOpusForScan } from './opusCachePolicy.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
 import { buildUppercaseTickerUniverseSet, filterScanResultsToTickerUniverse } from './scanUniverseFilter.js';
 import { assignRatingsFromRaw, buildCalibrationCurve, calibrateRating } from './rsCompare.js';
@@ -510,7 +510,15 @@ app.get('/api/scan-results', async (req, res) => {
     const data = await loadScanData();
 
     if (!data.scannedAt || !data.results?.length) {
-      const emptyPayload = { scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0, opus45Signals: [], opus45Stats: null };
+      const emptyPayload = {
+        scannedAt: null,
+        results: [],
+        totalTickers: 0,
+        vcpBullishCount: 0,
+        opus45Signals: [],
+        opus45Stats: null,
+        opusCacheState: 'none',
+      };
       latestScanResponseCache.set(cacheKey, { at: Date.now(), payload: emptyPayload });
       return res.json(emptyPayload);
     }
@@ -526,7 +534,8 @@ app.get('/api/scan-results', async (req, res) => {
     let opus45Stats = null;
     const opusByTicker = new Map();
 
-    if (cached?.signals?.length >= 0 && shouldUseCachedOpusForScan(data, cached)) {
+    const opusCacheState = resolveOpusCacheState(data, cached);
+    if (cached?.signals?.length >= 0 && opusCacheState !== 'none' && shouldUseCachedOpusForScan(data, cached)) {
       if (shouldRefreshCachedOpusPrices(cached)) {
         await enrichCachedSignalsWithCurrentPrice(cached.signals);
       }
@@ -572,6 +581,7 @@ app.get('/api/scan-results', async (req, res) => {
       results: resultsWithOpus,
       opus45Signals,
       opus45Stats,
+      opusCacheState,
     };
     latestScanResponseCache.set(cacheKey, { at: Date.now(), payload });
     res.json(payload);
