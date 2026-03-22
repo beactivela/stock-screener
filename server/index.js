@@ -49,6 +49,7 @@ import {
   saveOpus45Signals as saveOpus45SignalsToDb,
   mergeOpus45AllScoresWithSignals,
 } from './db/opus45.js';
+import { shouldUseCachedOpusForScan } from './opusCachePolicy.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
 import { buildUppercaseTickerUniverseSet, filterScanResultsToTickerUniverse } from './scanUniverseFilter.js';
 import { assignRatingsFromRaw, buildCalibrationCurve, calibrateRating } from './rsCompare.js';
@@ -188,11 +189,6 @@ function invalidateFundamentalsCache() {
   fundamentalsMemoryCache.value = null;
   fundamentalsMemoryCache.at = 0;
   fundamentalsMemoryCache.promise = null;
-}
-
-function isOpusCacheCurrentForScan(scanData, cachedOpus) {
-  if (!scanData?.scannedAt || !cachedOpus?.computedAt) return false;
-  return new Date(cachedOpus.computedAt).getTime() >= new Date(scanData.scannedAt).getTime();
 }
 
 function shouldRefreshCachedOpusPrices(cachedOpus) {
@@ -530,7 +526,7 @@ app.get('/api/scan-results', async (req, res) => {
     let opus45Stats = null;
     const opusByTicker = new Map();
 
-    if (cached?.signals?.length >= 0 && isOpusCacheCurrentForScan(data, cached)) {
+    if (cached?.signals?.length >= 0 && shouldUseCachedOpusForScan(data, cached)) {
       if (shouldRefreshCachedOpusPrices(cached)) {
         await enrichCachedSignalsWithCurrentPrice(cached.signals);
       }
