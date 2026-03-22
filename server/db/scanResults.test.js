@@ -9,6 +9,7 @@ import {
   updateScanResultsBatch,
   updateIndustryRankBatch,
   loadScanResults,
+  inferSupabaseScanRunLooksInProgress,
 } from './scanResults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -246,5 +247,37 @@ describe('scan results batch persistence (file fallback)', () => {
     assert.equal(payload.vcpBullishCount, 1);
     assert.equal(payload.results.find((r) => r.ticker === 'AAA')?.enhancedScore, 94);
     assert.equal(payload.results.find((r) => r.ticker === 'AAA')?.industryRank, 2);
+  });
+});
+
+describe('inferSupabaseScanRunLooksInProgress', () => {
+  const now = Date.parse('2026-03-21T12:00:00.000Z');
+  const run = (createdOffsetMs, totalTickers, id = 'run-1') => ({
+    id,
+    created_at: new Date(now + createdOffsetMs).toISOString(),
+    total_tickers: totalTickers,
+  });
+
+  it('is false when result count reached total_tickers', () => {
+    assert.equal(inferSupabaseScanRunLooksInProgress(run(-60_000, 100), 100, now), false);
+  });
+
+  it('is true when partial rows and run is recent', () => {
+    assert.equal(inferSupabaseScanRunLooksInProgress(run(-60_000, 500), 10, now), true);
+  });
+
+  it('is false when run is older than maxStaleMs', () => {
+    assert.equal(
+      inferSupabaseScanRunLooksInProgress(run(-3 * 3600_000, 500), 10, now, 2 * 3600_000),
+      false,
+    );
+  });
+
+  it('is false when total_tickers still 0 after warmup window', () => {
+    assert.equal(inferSupabaseScanRunLooksInProgress(run(-6 * 60_000, 0), 0, now), false);
+  });
+
+  it('is true when total_tickers 0 but run just started', () => {
+    assert.equal(inferSupabaseScanRunLooksInProgress(run(-30_000, 0), 0, now), true);
   });
 });

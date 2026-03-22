@@ -39,6 +39,7 @@ import {
   createScanRun,
   saveScanResultsBatch,
   updateScanResultsBatch,
+  getSupabaseScanProgressIfRunning,
 } from './db/scanResults.js';
 import { getBars as getBarsFromDb, getBarsBatch as getBarsBatchFromDb, saveBars as saveBarsToDb } from './db/bars.js';
 import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
@@ -867,15 +868,38 @@ async function executeManagedScan({ onProgress } = {}) {
   };
 }
 
-// Get current scan progress
-app.get('/api/scan/progress', (req, res) => {
+// Get current scan progress (memory on single instance; Supabase when idle memory so Vercel polls stay accurate)
+app.get('/api/scan/progress', async (req, res) => {
   maybeClearStaleActiveScan(activeScan);
-  res.json({
-    scanId: activeScan.id,
-    running: activeScan.running,
-    progress: activeScan.progress,
-    hasResults: activeScan.results.length > 0
-  });
+  const idlePayload = {
+    scanId: null,
+    running: false,
+    progress: {
+      index: 0,
+      total: 0,
+      vcpBullishCount: 0,
+      startedAt: null,
+      completedAt: null,
+    },
+    hasResults: false,
+    source: 'none',
+  };
+  try {
+    if (activeScan.running) {
+      return res.json({
+        scanId: activeScan.id,
+        running: true,
+        progress: activeScan.progress,
+        hasResults: activeScan.results.length > 0,
+        source: 'memory',
+      });
+    }
+    const dbSnapshot = await getSupabaseScanProgressIfRunning();
+    if (dbSnapshot) return res.json(dbSnapshot);
+  } catch (e) {
+    console.warn('GET /api/scan/progress:', e?.message || e);
+  }
+  res.json(idlePayload);
 });
 
 // Trigger scan: streams each ticker result as SSE. Throttled queue (1 ticker at a time) avoids rate limits.

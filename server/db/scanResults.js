@@ -130,6 +130,76 @@ async function loadLatestRun(supabase) {
   return run;
 }
 
+/** Max age for treating a partial scan_run as still running (abandoned runs stop reporting). */
+const DEFAULT_SCAN_DB_PROGRESS_MAX_AGE_MS = 2 * 3600 * 1000;
+/** If total_tickers is still 0, assume warmup only for this long after run creation. */
+const SCAN_DB_WARMUP_MAX_MS = 5 * 60 * 1000;
+
+/**
+ * Pure helper for tests — whether latest run row + saved row count looks like an in-flight scan.
+ * @param {{ id: string, created_at: string, total_tickers?: number|null }} run
+ * @param {number} resultCount
+ * @param {number} [nowMs]
+ * @param {number} [maxStaleMs]
+ */
+export function inferSupabaseScanRunLooksInProgress(run, resultCount, nowMs = Date.now(), maxStaleMs = DEFAULT_SCAN_DB_PROGRESS_MAX_AGE_MS) {
+  if (!run?.id || !run.created_at) return false;
+  const createdMs = Date.parse(run.created_at);
+  if (Number.isNaN(createdMs)) return false;
+  if (nowMs - createdMs > maxStaleMs) return false;
+  const total = Number(run.total_tickers) || 0;
+  const n = Number(resultCount) || 0;
+  if (total > 0 && n >= total) return false;
+  if (total === 0 && nowMs - createdMs > SCAN_DB_WARMUP_MAX_MS) return false;
+  return true;
+}
+
+/**
+ * Serverless-safe scan progress: any Vercel instance can read Supabase row counts.
+ * Returns null when no scan looks in progress or Supabase is not configured.
+ */
+export async function getSupabaseScanProgressIfRunning() {
+  if (!isSupabaseConfigured()) return null;
+  const maxStaleMs = Number(process.env.SCAN_DB_PROGRESS_MAX_AGE_MS) || DEFAULT_SCAN_DB_PROGRESS_MAX_AGE_MS;
+  try {
+    const supabase = getSupabase();
+    const { data: run, error: runErr } = await supabase
+      .from('scan_runs')
+      .select('id, scanned_at, total_tickers, vcp_bullish_count, created_at')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (runErr || !run) return null;
+
+    const { count, error: cErr } = await supabase
+      .from('scan_results')
+      .select('*', { count: 'exact', head: true })
+      .eq('scan_run_id', run.id);
+    if (cErr) throw new Error(cErr.message);
+    const n = count ?? 0;
+    const nowMs = Date.now();
+    if (!inferSupabaseScanRunLooksInProgress(run, n, nowMs, maxStaleMs)) return null;
+
+    const total = Number(run.total_tickers) || 0;
+    return {
+      scanId: run.id,
+      running: true,
+      progress: {
+        index: n,
+        total,
+        vcpBullishCount: run.vcp_bullish_count ?? 0,
+        startedAt: run.scanned_at,
+        completedAt: null,
+      },
+      hasResults: n > 0,
+      source: 'database',
+    };
+  } catch (err) {
+    console.warn('getSupabaseScanProgressIfRunning:', err?.message || err);
+    return null;
+  }
+}
+
 /** @returns {Promise<{ scannedAt: string|null, from?: string, to?: string, totalTickers: number, vcpBullishCount: number, results: object[] }>} */
 export async function loadScanResults() {
   if (!isSupabaseConfigured()) return readScanResultsFile();

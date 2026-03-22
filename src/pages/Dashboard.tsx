@@ -695,21 +695,38 @@ export default function Dashboard() {
             <div>
               <p className="text-sky-200 font-medium">🔄 Scan running in background</p>
               <p className="text-sky-200/80 text-sm mt-1">
-                Progress: {scanState.progress.index}/{scanState.progress.total} tickers 
-                · {scanState.progress.vcpBullishCount} VCP bullish
-                · You can navigate away, the scan will continue
+                Progress:{' '}
+                {scanState.progress.total > 0
+                  ? `${scanState.progress.index}/${scanState.progress.total} tickers`
+                  : `${scanState.progress.index} tickers saved (universe size updates after the first batch)`}
+                {' · '}
+                {scanState.progress.vcpBullishCount} VCP bullish
+                {' · '}
+                You can navigate away, the scan will continue
               </p>
+              {scanState.progressSource === 'database' && (
+                <p className="text-sky-300/90 text-xs mt-2">
+                  Progress is read from Supabase (works across Vercel instances). To double-check: Vercel → your project → Logs (filter <code className="bg-slate-800 px-1 rounded">/api/scan</code>), or Supabase → Table Editor → <code className="bg-slate-800 px-1 rounded">scan_results</code> row count for the latest run.
+                </p>
+              )}
             </div>
             <div className="text-right">
               <div className="text-2xl font-bold text-sky-400">
-                {Math.round((scanState.progress.index / Math.max(scanState.progress.total, 1)) * 100)}%
+                {scanState.progress.total > 0
+                  ? `${Math.round((scanState.progress.index / scanState.progress.total) * 100)}%`
+                  : '…'}
               </div>
             </div>
           </div>
           <div className="mt-3 h-2 bg-slate-800 rounded-full overflow-hidden">
-            <div 
+            <div
               className="h-full bg-sky-500 transition-all duration-300"
-              style={{ width: `${(scanState.progress.index / Math.max(scanState.progress.total, 1)) * 100}%` }}
+              style={{
+                width:
+                  scanState.progress.total > 0
+                    ? `${(scanState.progress.index / scanState.progress.total) * 100}%`
+                    : '0%',
+              }}
             />
           </div>
         </div>
@@ -824,7 +841,9 @@ export default function Dashboard() {
           className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-sm ml-auto"
         >
           {scanState.running
-            ? `Scanning ${scanState.progress.index}/${scanState.progress.total}…`
+            ? scanState.progress.total > 0
+              ? `Scanning ${scanState.progress.index}/${scanState.progress.total}…`
+              : `Scanning (${scanState.progress.index} saved)…`
             : 'Run Scan'}
         </button>
       </div>

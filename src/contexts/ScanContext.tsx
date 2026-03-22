@@ -9,10 +9,14 @@ interface ScanProgress {
   completedAt: string | null;
 }
 
+type ProgressSource = 'memory' | 'database' | 'none';
+
 interface ScanState {
   scanId: string | null;
   running: boolean;
   progress: ScanProgress;
+  /** From GET /api/scan/progress — database means counts come from Supabase (reliable on multi-instance Vercel). */
+  progressSource: ProgressSource | null;
 }
 
 interface ScanContextValue {
@@ -34,6 +38,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
       startedAt: null,
       completedAt: null,
     },
+    progressSource: null,
   });
 
   // Check for active scan on mount
@@ -45,12 +50,20 @@ export function ScanProvider({ children }: { children: ReactNode }) {
         // Check if scan is still running on server
         fetch(`${API_BASE}/api/scan/progress`)
           .then((r) => r.json())
-          .then((data) => {
-            if (data.running && data.scanId === parsed.scanId) {
+          .then((data: { running?: boolean; scanId?: string; progress?: ScanProgress; source?: string }) => {
+            const src = (data.source as ProgressSource) || null;
+            if (data.running && (data.scanId === parsed.scanId || src === 'database')) {
               setScanState({
-                scanId: data.scanId,
-                running: data.running,
-                progress: data.progress,
+                scanId: data.scanId ?? null,
+                running: !!data.running,
+                progress: data.progress ?? {
+                  index: 0,
+                  total: 0,
+                  vcpBullishCount: 0,
+                  startedAt: null,
+                  completedAt: null,
+                },
+                progressSource: src,
               });
               // Start polling
               startPolling();
@@ -91,11 +104,26 @@ export function ScanProvider({ children }: { children: ReactNode }) {
       try {
         const response = await fetch(`${API_BASE}/api/scan/progress`);
         const data = await response.json();
-        
-        setScanState({
-          scanId: data.scanId,
-          running: data.running,
-          progress: data.progress,
+        const src = (data.source as ProgressSource) || null;
+
+        setScanState((prev) => {
+          const justFinished = !data.running && prev.running;
+          const p = data.progress as ScanProgress | undefined;
+          return {
+            scanId: data.scanId ?? null,
+            running: !!data.running,
+            progress: {
+              index: p?.index ?? 0,
+              total: p?.total ?? 0,
+              vcpBullishCount: p?.vcpBullishCount ?? 0,
+              startedAt: p?.startedAt ?? null,
+              // API idle payload has no completedAt; Dashboard reloads when this flips after a run.
+              completedAt: justFinished
+                ? new Date().toISOString()
+                : (p?.completedAt ?? prev.progress.completedAt ?? null),
+            },
+            progressSource: src,
+          };
         });
 
         // Stop polling if scan complete
@@ -122,11 +150,25 @@ export function ScanProvider({ children }: { children: ReactNode }) {
     try {
       const response = await fetch(`${API_BASE}/api/scan/progress`);
       const data = await response.json();
-      
-      setScanState({
-        scanId: data.scanId,
-        running: data.running,
-        progress: data.progress,
+      const src = (data.source as ProgressSource) || null;
+
+      setScanState((prev) => {
+        const justFinished = !data.running && prev.running;
+        const p = data.progress as ScanProgress | undefined;
+        return {
+          scanId: data.scanId ?? null,
+          running: !!data.running,
+          progress: {
+            index: p?.index ?? 0,
+            total: p?.total ?? 0,
+            vcpBullishCount: p?.vcpBullishCount ?? 0,
+            startedAt: p?.startedAt ?? null,
+            completedAt: justFinished
+              ? new Date().toISOString()
+              : (p?.completedAt ?? prev.progress.completedAt ?? null),
+          },
+          progressSource: src,
+        };
       });
     } catch (error) {
       console.error('Failed to check scan progress:', error);
@@ -139,6 +181,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
     setScanState((prev) => ({
       ...prev,
       running: true,
+      progressSource: 'memory',
       progress: {
         index: 0,
         total: 0,
@@ -164,6 +207,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
           setScanState({
             scanId: body.scanId,
             running: true,
+            progressSource: 'memory',
             progress: {
               index: body.progress?.index ?? 0,
               total: body.progress?.total ?? 0,
@@ -175,19 +219,19 @@ export function ScanProvider({ children }: { children: ReactNode }) {
           startPolling();
           return;
         }
-        setScanState((prev) => ({ ...prev, running: false }));
+        setScanState((prev) => ({ ...prev, running: false, progressSource: null }));
         throw new Error(errMsg);
       }
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         // Reset optimistic state on failure
-        setScanState((prev) => ({ ...prev, running: false }));
+        setScanState((prev) => ({ ...prev, running: false, progressSource: null }));
         throw new Error((error as { error?: string }).error || 'Scan failed to start');
       }
 
       if (!response.body) {
-        setScanState((prev) => ({ ...prev, running: false }));
+        setScanState((prev) => ({ ...prev, running: false, progressSource: null }));
         throw new Error('No response body');
       }
 
@@ -212,6 +256,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
                   setScanState({
                     scanId: msg.scanId,
                     running: true,
+                    progressSource: 'memory',
                     progress: {
                       index: 0,
                       total: 0,
@@ -241,7 +286,7 @@ export function ScanProvider({ children }: { children: ReactNode }) {
       reader.cancel();
     } catch (error) {
       console.error('Failed to start scan:', error);
-      setScanState((prev) => ({ ...prev, running: false }));
+      setScanState((prev) => ({ ...prev, running: false, progressSource: null }));
       throw error;
     }
   };
