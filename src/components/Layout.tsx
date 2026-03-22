@@ -50,12 +50,6 @@ export default function Layout({ children }: LayoutProps) {
               Industry
             </Link>
             <Link
-              to="/backtest"
-              className={`text-sm ${location.pathname === '/backtest' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              Learning
-            </Link>
-            <Link
               to="/regime"
               className={`text-sm ${location.pathname === '/regime' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >

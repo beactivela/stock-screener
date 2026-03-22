@@ -87,6 +87,12 @@ const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 100
 app.use(cors());
 app.use(express.json());
 
+// Docker / load balancers — no auth, no DB hit
+app.get('/api/health', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, uptime: process.uptime() });
+});
+
 // On Vercel without Supabase, writes cannot persist (read-only filesystem). With Supabase, POSTs write to DB.
 app.use((req, res, next) => {
   const nonWriteApiPosts = new Set([
@@ -980,17 +986,27 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
-// Cron-only endpoint: trigger full scan (e.g. from Supabase Cron). Returns 202 immediately; scan runs in background.
-// Auth: set CRON_SECRET in .env; caller must send Authorization: Bearer <CRON_SECRET> or x-cron-secret: <CRON_SECRET>.
-// Schedule in Supabase: Database → Cron → New job → HTTP request → POST to https://YOUR_API_URL/api/cron/scan at 5 PM CST (23:00 UTC).
-app.post('/api/cron/scan', async (req, res) => {
-  const secret = process.env.CRON_SECRET;
+// Cron-only: trigger full scan (VPS cron → localhost, Supabase pg_cron + pg_net → https, etc.). Returns 202; scan runs in background.
+// POST /api/cron/scan and POST /api/cron/run-scan are aliases.
+// Auth: Authorization: Bearer <CRON_SECRET> or x-cron-secret: <CRON_SECRET>. In production, CRON_SECRET must be set (endpoint stays closed until then).
+// Idempotency: returns 202 with "already in progress" or cooldown skip if a scan is active / recently started.
+async function postCronScanHandler(req, res) {
+  const secret = process.env.CRON_SECRET?.trim();
   const authHeader = req.headers.authorization;
   const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const headerSecret = req.headers['x-cron-secret'] || bearer;
-  if (secret && headerSecret !== secret) {
+  const headerSecret = String(req.headers['x-cron-secret'] || bearer || '').trim() || null;
+
+  if (process.env.NODE_ENV === 'production') {
+    if (!secret) {
+      return res.status(503).json({ error: 'CRON_SECRET is not set; configure it for scheduled scan triggers.' });
+    }
+    if (headerSecret !== secret) {
+      return res.status(401).json({ error: 'Invalid or missing cron secret' });
+    }
+  } else if (secret && headerSecret !== secret) {
     return res.status(401).json({ error: 'Invalid or missing cron secret' });
   }
+
   maybeClearStaleActiveScan(activeScan);
   if (activeScan.running) {
     return res.status(202).json({
@@ -1038,9 +1054,13 @@ app.post('/api/cron/scan', async (req, res) => {
     ok: true,
     started: true,
     scanId: activeScan.id,
-    message: 'Scan started in background (runs every 24h after 5 PM CST via Supabase Cron)'
+    message: 'Scan started in background',
   });
-});
+}
+
+app.post('/api/cron/scan', postCronScanHandler);
+// Alias for external schedulers / docs (same handler, same auth)
+app.post('/api/cron/run-scan', postCronScanHandler);
 
 // OHLC bars for a ticker. Query: days (default 180), interval (1d|1wk|1mo, default 1d).
 app.get('/api/bars/:ticker', async (req, res) => {

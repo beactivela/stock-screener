@@ -4,13 +4,12 @@ import Layout from './components/Layout'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ScanProvider } from './contexts/ScanContext'
 
-// Lazy-load heavy pages (StockDetail uses lightweight-charts ~100KB; Backtest/Industry have extra logic)
+// Lazy-load heavy pages (StockDetail uses lightweight-charts ~100KB; Industry has extra logic)
 // Dashboard stays eager since it's the landing page
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const StockDetail = lazy(() => import('./pages/StockDetail'))
 const Industry = lazy(() => import('./pages/Industry'))
 const IndustryTickers = lazy(() => import('./pages/IndustryTickers'))
-const Backtest = lazy(() => import('./pages/Backtest'))
 const Regime = lazy(() => import('./pages/Regime'))
 const Agents = lazy(() => import('./pages/Agents'))
 const Style = lazy(() => import('./pages/Style'))
@@ -35,7 +34,6 @@ export default function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/industry" element={<Industry />} />
                 <Route path="/industry-tickers/:industryName" element={<IndustryTickers />} />
-                <Route path="/backtest" element={<Backtest />} />
                 <Route path="/regime" element={<Regime />} />
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/stock/:ticker" element={<StockDetail />} />

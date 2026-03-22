@@ -1,41 +1,38 @@
-# Multi-stage: build frontend + run Node in production.
-# Your server serves API + static files from dist/ when NODE_ENV !== 'development'.
-
-# --- Stage 1: build frontend and install all deps (needed for build) ---
-FROM node:20-alpine AS builder
-
+# syntax=docker/dockerfile:1
+# Hostinger VPS / any Docker host: Express + Vite dist, NODE_ENV=production.
+# Point SUPABASE_* + CRON_SECRET at runtime via docker-compose env_file (.env on the VPS).
+# UI + API same origin — do not set VITE_API_URL for this image.
+# One `npm ci`, then npm prune — avoids a second install in the final stage.
+FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 
-# Copy dependency manifests so we can cache this layer
-COPY package.json package-lock.json* ./
-
-# Install all deps (including devDependencies for TypeScript + Vite build)
+COPY package.json package-lock.json ./
 RUN npm ci
 
-# Copy source and build
 COPY . .
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
 
-# --- Stage 2: production image (no devDependencies, no source maps) ---
-FROM node:20-alpine AS runner
-
+FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
-# Run as non-root
-RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+ENV NODE_ENV=production
+ENV PORT=3000
 
-# Copy only what's needed to run
-COPY --from=builder /app/package.json /app/package-lock.json* ./
-COPY --from=builder /app/server ./server
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/package-lock.json ./package-lock.json
 COPY --from=builder /app/dist ./dist
+COPY server ./server
 
-# Production deps only (smaller image)
-RUN npm ci --omit=dev && npm cache clean --force
+RUN mkdir -p data/bars \
+  && groupadd --system --gid 1001 nodejs \
+  && useradd --system --uid 999 --gid nodejs nodejs \
+  && chown -R nodejs:nodejs /app
 
 USER nodejs
+EXPOSE 3000
 
-# Server reads PORT from env; default 3001
-ENV NODE_ENV=production
-EXPOSE 3001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "server/index.js"]

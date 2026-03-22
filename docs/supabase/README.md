@@ -102,7 +102,7 @@ To run the full VCP scan **every 24 hours after 5 PM CST**, use Supabase’s Cro
    ```
    (Store the secret in Vault or an `app.cron_secret` setting instead of hardcoding.)
 
-4. **Optional:** Leave `CRON_SECRET` unset in development if you want to call `POST /api/cron/scan` without auth (not recommended in production).
+4. **Auth:** In **production** (`NODE_ENV=production`, including Docker on a VPS), `CRON_SECRET` **must** be set or the cron endpoints return 503. In local development you may omit it to call `POST /api/cron/scan` or `POST /api/cron/run-scan` without auth (not recommended if the dev server is reachable on a network).
 
 The `/api/cron/scan` endpoint returns **202 Accepted** immediately and runs the scan in the background so the Cron request does not time out.
 

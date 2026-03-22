@@ -1,0 +1,15 @@
+# Example: VPS host cron calling the Docker-mapped port (no TLS on loopback).
+# 1. Copy to /etc/cron.d/stock-screener (or use root crontab).
+# 2. Create a root-only env file, e.g. /opt/stock-screener/.cron-env:
+#      export CRON_SECRET='your-long-random-secret'
+#      export CRON_BASE_URL='http://127.0.0.1:8080'
+#    (8080 = HOST_PORT from docker-compose; use 80 if you map that.)
+# 3. chmod 600 /opt/stock-screener/.cron-env
+# 4. chmod +x /path/to/stock-screener/scripts/trigger-scheduled-scan.sh
+#
+# Daily at 23:00 UTC (adjust to your market close):
+# m h dom mon dow user command
+0 23 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh
+
+# Do not enable this AND SCHEDULE_SCAN=1 in the container, or Supabase pg_cron hitting the same
+# endpoint, unless you accept possible double-runs; the app skips if a scan is already running / cooldown.

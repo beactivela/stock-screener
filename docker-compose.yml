@@ -1,18 +1,38 @@
-# Optional: run the app locally with Docker (production is Vercel).
-# Usage: copy .env.example to .env, set your secrets, then:
-#   docker compose up -d
-# Logs: docker compose logs -f
+# Stock screener on Hostinger VPS (or any Docker host)
+# ─────────────────────────────────────────────────────
+# Traefik (Hostinger template): host network + Docker provider, exposedbydefault=false.
+# Set TRAEFIK_HOST in .env to a DNS name that points at this VPS (for HTTPS + routing).
+# Published HOST_PORT is optional (localhost/cron); Traefik reaches the container on port 3000.
+#
+#   docker compose up -d --build
+#
+networks:
+  default:
+    name: stock-screener-net
 
 services:
-  app:
+  stock-screener:
     build: .
     image: stock-screener:latest
     container_name: stock-screener
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "${HOST_PORT:-8080}:3000"
     env_file:
       - .env
-    # Optional: persist local data/ on host (if not using Supabase)
-    # volumes:
-    #   - ./data:/app/data
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      VERCEL: ""
+    volumes:
+      - screener-data:/app/data
+    labels:
+      - "traefik.enable=true"
+      # Set TRAEFIK_HOST in .env (DNS must point at this VPS for Let’s Encrypt)
+      - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST}`)"
+      - "traefik.http.routers.stock-screener.entrypoints=websecure"
+      - "traefik.http.routers.stock-screener.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stock-screener.loadbalancer.server.port=3000"
+
+volumes:
+  screener-data:
