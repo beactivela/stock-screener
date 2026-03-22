@@ -19,6 +19,7 @@ import { getTickerListFromScanner } from './tradingViewIndustry.js';
 import { checkVCP, buildSignalSnapshots, assignIBDRelativeStrengthRatings } from './vcp.js';
 import { computeEnhancedScore, rankIndustries } from './enhancedScan.js';
 import { classifySignalSetups, classifySignalSetupsRecent } from './learning/signalSetupClassifier.js';
+import { computeLancePreTrade, shouldIncludeLanceInSignalSetups } from './learning/lanceBreitstein.js';
 import { saveScanSnapshot } from './backtest.js';
 import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from './db/tickers.js';
 import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
@@ -46,6 +47,9 @@ const DEFAULT_SCAN_YAHOO_CONCURRENCY = 20;
 const DEFAULT_SCAN_DELAY_MS = 40;
 
 function ensureDataDir() {
+  // Vercel serverless runtime uses a read-only filesystem for /var/task.
+  // Scan persistence is DB-backed there, so local data dirs should be skipped.
+  if (process.env.VERCEL) return;
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
 }
@@ -296,6 +300,12 @@ async function loadIndustryReturns(fundamentals) {
   return buildIndustryReturnsFromTVMap(tvMap, industryNames);
 }
 
+function appendLanceSetup(list, lancePreTrade) {
+  if (!shouldIncludeLanceInSignalSetups(lancePreTrade)) return list;
+  if (list.includes('lance')) return list;
+  return [...list, 'lance'];
+}
+
 export function applyRatingsAndEnhancements({
   results,
   fundamentals,
@@ -309,18 +319,23 @@ export function applyRatingsAndEnhancements({
     const industryData = fund?.industry ? industryRanks?.[fund.industry] : null;
     const bars = barsByTicker?.get(row.ticker) || null;
     const enhanced = bars ? computeEnhancedScore(row, bars, fund, industryData, industryRanks) : {};
-    const signalSetups = classifySignalSetups(row);
+    const lancePreTrade = computeLancePreTrade(row, bars || []);
+    let signalSetups = classifySignalSetups(row);
+    signalSetups = appendLanceSetup(signalSetups, lancePreTrade);
     const snapshots = snapshotsByTicker?.get(row.ticker) || [];
     const snapshotsWithRating = snapshots.map((snapshot) => ({
       ...snapshot,
       relativeStrength: row.relativeStrength,
       rsData: row.rsData,
     }));
-    const signalSetupsRecent = classifySignalSetupsRecent(snapshotsWithRating);
-    const signalSetupsRecent5 = classifySignalSetupsRecent(snapshotsWithRating, 5);
+    let signalSetupsRecent = classifySignalSetupsRecent(snapshotsWithRating);
+    signalSetupsRecent = appendLanceSetup(signalSetupsRecent, lancePreTrade);
+    let signalSetupsRecent5 = classifySignalSetupsRecent(snapshotsWithRating, 5);
+    signalSetupsRecent5 = appendLanceSetup(signalSetupsRecent5, lancePreTrade);
     return {
       ...row,
       ...enhanced,
+      lancePreTrade,
       signalSetups,
       signalSetupsRecent,
       signalSetupsRecent5,

@@ -42,7 +42,9 @@ export default function IndustryTickers() {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
+    const params = new URLSearchParams()
+    if (decodedName) params.set('industry', decodedName)
+    fetch(`${API_BASE}/api/industry-trend?${params.toString()}`)
       .then((r) => r.json())
       .then((data) => {
         setPayload(data)
@@ -50,7 +52,7 @@ export default function IndustryTickers() {
       })
       .catch((e) => setError(e?.message ?? 'Failed to load'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [decodedName])
 
   const industry = payload?.industries?.find(
     (i) => i.industry === decodedName
@@ -122,7 +124,7 @@ export default function IndustryTickers() {
       </div>
 
       <p className="text-slate-400 text-sm">
-        Ranked by 6-month return (descending). Chart: price + 10/20/50/150 MA (orange/blue/purple/pink) + volume.
+        Ranked by 6-month return (descending). Charts load as rows enter view so the page does not hammer the API all at once.
       </p>
 
       {tickersSorted.length === 0 ? (
@@ -159,7 +161,7 @@ export default function IndustryTickers() {
                   </td>
                   <td className="px-4 py-3 text-right">{fmtPct(t.change6mo)}</td>
                   <td className="px-4 py-2 pl-4">
-                    <MiniChart ticker={t.ticker} />
+                    <MiniChart ticker={t.ticker} loadWhenVisible />
                   </td>
                 </tr>
               ))}

@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getBreadthTrendRatingFromAngle, getBreadthTrendRatingFromRecentMa50 } from './breadthTrendRating.js'
+import {
+  BREADTH_TREND_SEGMENTS,
+  getBreadthTrendRatingFromAngle,
+  getBreadthTrendRatingFromRecentMa50,
+} from './breadthTrendRating.js'
 
 test('getBreadthTrendRatingFromAngle maps strong bullish at >= 20', () => {
   assert.equal(getBreadthTrendRatingFromAngle(20).score, 7)
@@ -51,4 +55,34 @@ test('getBreadthTrendRatingFromRecentMa50 computes score from trend angle', () =
 
   assert.equal(getBreadthTrendRatingFromRecentMa50(strongUp).score, 7)
   assert.equal(getBreadthTrendRatingFromRecentMa50(strongDown).score, 1)
+})
+
+test('breadth rating includes mapped market exposure percentages', () => {
+  assert.deepEqual(
+    BREADTH_TREND_SEGMENTS.map((segment) => ({
+      score: segment.score,
+      label: segment.label,
+      exposureLabel: segment.exposureLabel,
+      exposurePercentage: segment.exposurePercentage,
+    })),
+    [
+      { score: 1, label: 'Strong Negative', exposureLabel: 'Bearish', exposurePercentage: 20 },
+      { score: 2, label: 'Negative', exposureLabel: 'Bearish', exposurePercentage: 20 },
+      { score: 3, label: 'Neutral Negative', exposureLabel: 'Neutral', exposurePercentage: 40 },
+      { score: 4, label: 'Neutral', exposureLabel: 'Neutral', exposurePercentage: 40 },
+      { score: 5, label: 'Neutral Positive', exposureLabel: 'Semi Bullish', exposurePercentage: 70 },
+      { score: 6, label: 'Bullish', exposureLabel: 'Bullish', exposurePercentage: 80 },
+      { score: 7, label: 'Strong Bullish', exposureLabel: 'Bullish', exposurePercentage: 80 },
+    ],
+  )
+})
+
+test('getBreadthTrendRatingFromAngle returns market exposure details', () => {
+  assert.deepEqual(getBreadthTrendRatingFromAngle(0), {
+    score: 4,
+    label: 'Neutral',
+    angle: 0,
+    exposureLabel: 'Neutral',
+    exposurePercentage: 40,
+  })
 })

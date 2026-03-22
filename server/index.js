@@ -32,6 +32,9 @@ import { loadTickers as loadTickersFromDb, saveTickers as saveTickersToDb } from
 import { loadFundamentals as loadFundamentalsFromDb, saveFundamentals as saveFundamentalsToDb } from './db/fundamentals.js';
 import {
   loadScanResults as loadScanResultsFromDb,
+  loadScanResultSummaries as loadScanResultSummariesFromDb,
+  loadLatestScanResultForTicker,
+  buildScanTickerNav,
   saveScanResults as saveScanResultsToDb,
   createScanRun,
   saveScanResultsBatch,
@@ -47,6 +50,7 @@ import {
   loadTrades, 
   getAllTrades, 
   getTradesByStatus, 
+  getTradesByTicker,
   getTradeById, 
   createTrade, 
   updateTrade, 
@@ -182,8 +186,34 @@ function shouldRefreshCachedOpusPrices(cachedOpus) {
   return Date.now() - new Date(cachedOpus.computedAt).getTime() > OPUS_PRICE_REFRESH_TTL_MS;
 }
 
+function parseCsvQuery(value) {
+  if (Array.isArray(value)) return value.flatMap((item) => parseCsvQuery(item) || []);
+  const parsed = String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : null;
+}
+
+function parseBooleanQuery(value, defaultValue = false) {
+  if (value == null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return defaultValue;
+}
+
 /** Wrappers that delegate to db layer (Supabase when configured, else files) */
-async function loadFundamentals() {
+async function loadFundamentals(options = {}) {
+  const useProjection = Boolean(
+    options?.tickers ||
+    options?.fields ||
+    options?.includeRaw === false
+  );
+  if (useProjection) {
+    return loadFundamentalsFromDb(options);
+  }
   return readThroughMemoryCache(
     fundamentalsMemoryCache,
     FUNDAMENTALS_RESPONSE_CACHE_TTL_MS,
@@ -215,7 +245,12 @@ function loadFundamentalsFilteredSync(raw) {
 app.get('/api/fundamentals', async (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   try {
-    res.json(await loadFundamentals());
+    const tickers = parseCsvQuery(req.query.tickers);
+    const fields = parseCsvQuery(req.query.fields);
+    const includeRaw = req.query.includeRaw == null
+      ? fields == null
+      : parseBooleanQuery(req.query.includeRaw, fields == null);
+    res.json(await loadFundamentals({ tickers, fields, includeRaw }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -226,7 +261,17 @@ app.get('/api/fundamentals/:ticker', async (req, res) => {
   try {
     const ticker = String(req.params.ticker || '').toUpperCase();
     if (!ticker) return res.status(400).json({ error: 'Ticker required.' });
-    const all = await loadFundamentals();
+    const fields = parseCsvQuery(req.query.fields) ?? [
+      'pctHeldByInst',
+      'qtrEarningsYoY',
+      'profitMargin',
+      'operatingMargin',
+      'industry',
+      'sector',
+      'companyName',
+      'fetchedAt',
+    ];
+    const all = await loadFundamentals({ tickers: [ticker], fields, includeRaw: false });
     const f = all[ticker] || null;
     res.json(f ? { ticker, ...f } : { ticker, pctHeldByInst: null, qtrEarningsYoY: null, profitMargin: null, operatingMargin: null, industry: null });
   } catch (e) {
@@ -376,8 +421,72 @@ async function loadScanData() {
   );
 }
 
+async function loadScanSummaryData() {
+  const data = await loadScanResultSummariesFromDb();
+  if (!data || !data.results?.length) {
+    return { ...data, results: data?.results ?? [], totalTickers: 0, vcpBullishCount: 0 };
+  }
+  const tickers = await loadTickersFromDb();
+  const tickerSet = new Set(tickers);
+  const results = tickerSet.size > 0
+    ? data.results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase()))
+    : data.results;
+  return {
+    ...data,
+    results,
+    totalTickers: results.length,
+    vcpBullishCount: results.filter((r) => r.vcpBullish).length,
+  };
+}
+
 // Latest scan results. Filtered to tickers in tickers.txt (source of truth).
 // When ?includeOpus=true (default), merges Opus4.5 scores into each result for unified payload.
+app.get('/api/scan-results/nav', async (req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
+  try {
+    const data = await loadScanSummaryData();
+    if (!data.scannedAt || !data.results?.length) {
+      return res.json({ scannedAt: null, totalTickers: 0, results: [] });
+    }
+    const cached = await loadOpus45SignalsFromDb().catch(() => null);
+    const actionableBuyTickers = new Set(
+      (cached?.signals || [])
+        .map((signal) => String(signal?.ticker || '').toUpperCase())
+        .filter(Boolean)
+    );
+    res.json({
+      scannedAt: data.scannedAt,
+      totalTickers: data.totalTickers,
+      results: buildScanTickerNav({ results: data.results, actionableBuyTickers }),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/scan-results/summary', async (req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
+  try {
+    const data = await loadScanSummaryData();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/scan-results/ticker/:ticker', async (req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
+  try {
+    const ticker = String(req.params.ticker || '').toUpperCase();
+    if (!ticker) return res.status(400).json({ error: 'Ticker required.' });
+    const row = await loadLatestScanResultForTicker(ticker);
+    if (!row) return res.status(404).json({ error: 'Scan result not found.' });
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/scan-results', async (req, res) => {
   res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
   try {
@@ -1718,22 +1827,43 @@ app.get('/api/industry-trend', async (req, res) => {
   // Allow browser caching for 5 minutes (server uses stale-while-revalidate internally)
   res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
   try {
-    const [fundamentals, scanData] = await Promise.all([loadFundamentals(), loadScanData()]);
+    const requestedIndustry = String(req.query.industry || '').trim() || null;
+    const includeTickers = !parseBooleanQuery(req.query.summary, false) && parseBooleanQuery(req.query.includeTickers, true);
+    const scanData = await loadScanSummaryData();
     if (!scanData.results?.length) {
       return res.json({ industries: [], scannedAt: null, source: 'tradingview' });
     }
     const results = scanData.results || [];
+    const fundamentals = await loadFundamentals({
+      tickers: results.map((row) => row.ticker),
+      fields: ['industry'],
+      includeRaw: false,
+    });
 
     const byIndustry = new Map();
     for (const r of results) {
       const ind = fundamentals[r.ticker]?.industry ?? 'Unknown';
+      if (requestedIndustry && ind !== requestedIndustry) continue;
       if (!byIndustry.has(ind)) byIndustry.set(ind, []);
       byIndustry.get(ind).push(r);
     }
 
+    if (byIndustry.size === 0) {
+      return res.json({
+        industries: [],
+        scannedAt: scanData.scannedAt,
+        source: 'tradingview',
+        cached: false,
+        cacheAge: 0,
+        stale: false,
+      });
+    }
+
     // Industry returns from TradingView scanner (3M, 6M, 1Y, YTD).
     // OPTIMIZATION: Pass requiredIndustries for early exit - stops fetching when all needed industries found
-    const requiredIndustries = getRequiredIndustries(fundamentals);
+    const requiredIndustries = requestedIndustry
+      ? [requestedIndustry]
+      : [...byIndustry.keys()];
     const { 
       returnsMap: tvReturnsByIndustry, 
       tickerToTvIndustry, 
@@ -1772,7 +1902,14 @@ app.get('/api/industry-trend', async (req, res) => {
         ytd: null,
         score: r.score,
       }));
-      industries.push({ industry, tickers: withTrend, industryAvg3Mo, industryAvg6Mo, industryAvg1Y, industryYtd });
+      industries.push({
+        industry,
+        ...(includeTickers ? { tickers: withTrend } : {}),
+        industryAvg3Mo,
+        industryAvg6Mo,
+        industryAvg1Y,
+        industryYtd,
+      });
     }
     industries.sort((a, b) => a.industry.localeCompare(b.industry));
     
@@ -3271,9 +3408,20 @@ app.get('/api/regime/bars/:ticker', async (req, res) => {
 app.get('/api/trades', async (req, res) => {
   try {
     const status = req.query.status;
-    const trades = status ? await getTradesByStatus(status) : await getAllTrades();
-    const stats = await getTradeStats();
-    res.json({ trades, stats, total: trades.length });
+    const ticker = String(req.query.ticker || '').trim();
+    const limit = req.query.limit != null ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset != null ? Number(req.query.offset) : undefined;
+    const includeStats = parseBooleanQuery(req.query.includeStats, true);
+    const trades = ticker
+      ? await getTradesByTicker(ticker, { status, limit, offset })
+      : status
+        ? await getTradesByStatus(status)
+        : await getAllTrades();
+    const payload = { trades, total: trades.length };
+    if (includeStats) {
+      payload.stats = await getTradeStats();
+    }
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3317,35 +3465,31 @@ app.post('/api/trades', async (req, res) => {
     
     if (!entryMetrics || Object.keys(entryMetrics).length === 0) {
       try {
-        // Try to get metrics from latest scan results
-        const scanData = await loadScanResultsFromDb();
-        if (scanData?.results?.length) {
-          const scanResult = scanData.results.find(r => r.ticker === ticker.toUpperCase());
-          
-          if (scanResult) {
-            metrics = {
-              sma10: scanResult.sma10 || null,
-              sma20: scanResult.sma20 || null,
-              sma50: scanResult.sma50 || null,
-              sma150: null, // Not in scan results
-              sma200: null, // Not in scan results
-              contractions: scanResult.contractions || 0,
-              volumeDryUp: scanResult.volumeDryUp || false,
-              pattern: scanResult.pattern || 'VCP',
-              patternConfidence: scanResult.patternConfidence || null,
-              relativeStrength: scanResult.relativeStrength || null,
-              pctFromHigh: null, // Would need to calculate
-              pctAboveLow: null, // Would need to calculate
-              high52w: null, // Would need to calculate
-              low52w: null, // Would need to calculate
-              industryName: scanResult.industryName || null,
-              industryRank: scanResult.industryRank || null,
-              opus45Confidence: scanResult.opus45Confidence || null,
-              opus45Grade: scanResult.opus45Grade || null,
-              vcpScore: scanResult.score || null,
-              enhancedScore: scanResult.enhancedScore || null
-            };
-          }
+        // Pull only the target ticker instead of loading the entire latest scan.
+        const scanResult = await loadLatestScanResultForTicker(ticker);
+        if (scanResult) {
+          metrics = {
+            sma10: scanResult.sma10 || null,
+            sma20: scanResult.sma20 || null,
+            sma50: scanResult.sma50 || null,
+            sma150: null, // Not in scan results
+            sma200: null, // Not in scan results
+            contractions: scanResult.contractions || 0,
+            volumeDryUp: scanResult.volumeDryUp || false,
+            pattern: scanResult.pattern || 'VCP',
+            patternConfidence: scanResult.patternConfidence || null,
+            relativeStrength: scanResult.relativeStrength || null,
+            pctFromHigh: null, // Would need to calculate
+            pctAboveLow: null, // Would need to calculate
+            high52w: null, // Would need to calculate
+            low52w: null, // Would need to calculate
+            industryName: scanResult.industryName || null,
+            industryRank: scanResult.industryRank || null,
+            opus45Confidence: scanResult.opus45Confidence || null,
+            opus45Grade: scanResult.opus45Grade || null,
+            vcpScore: scanResult.score || null,
+            enhancedScore: scanResult.enhancedScore || null
+          };
         }
       } catch (e) {
         console.error('Error fetching metrics for trade:', e.message);

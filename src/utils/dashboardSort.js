@@ -25,5 +25,8 @@ export function getDefaultSortForFilter(filterId) {
   if (filterId === 'all') {
     return { sortColumn: 'opus45', sortDir: 'desc' }
   }
+  if (filterId === 'lance') {
+    return { sortColumn: 'lance', sortDir: 'desc' }
+  }
   return { sortColumn: 'score', sortDir: 'desc' }
 }

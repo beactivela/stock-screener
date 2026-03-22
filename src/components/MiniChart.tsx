@@ -28,22 +28,49 @@ const CHART_OPTIONS = {
 
 interface MiniChartProps {
   ticker: string
+  loadWhenVisible?: boolean
 }
 
-export default function MiniChart({ ticker }: MiniChartProps) {
+export default function MiniChart({ ticker, loadWhenVisible = false }: MiniChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null)
-  const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading')
+  const [shouldLoad, setShouldLoad] = useState(!loadWhenVisible)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>(loadWhenVisible ? 'idle' : 'loading')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!ticker) return
+    setShouldLoad(!loadWhenVisible)
+    setStatus(loadWhenVisible ? 'idle' : 'loading')
+    setErrorMsg(null)
+  }, [loadWhenVisible, ticker])
+
+  useEffect(() => {
+    if (!loadWhenVisible || shouldLoad) return
+    const node = containerRef.current
+    if (!node) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldLoad(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '350px 0px' },
+    )
+
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [loadWhenVisible, shouldLoad, ticker])
+
+  useEffect(() => {
+    if (!ticker || !shouldLoad) return
 
     setStatus('loading')
     setErrorMsg(null)
 
     const url = `${API_BASE}/api/bars/${encodeURIComponent(ticker)}?days=365&interval=1d`
-    fetch(url, { cache: 'no-store' })
+    fetch(url)
       .then((r) => r.json())
       .then((data) => {
         if (data?.error) {
@@ -164,7 +191,7 @@ export default function MiniChart({ ticker }: MiniChartProps) {
         chartRef.current = null
       }
     }
-  }, [ticker])
+  }, [shouldLoad, ticker])
 
   // Chart container must always be in the DOM so ref is set when fetch completes.
   return (
@@ -176,6 +203,14 @@ export default function MiniChart({ ticker }: MiniChartProps) {
           style={{ width: WIDTH, height: HEIGHT }}
         >
           Loading…
+        </div>
+      )}
+      {status === 'idle' && (
+        <div
+          className="absolute inset-0 flex items-center justify-center rounded bg-slate-900/50 text-slate-500 text-xs"
+          style={{ width: WIDTH, height: HEIGHT }}
+        >
+          Scroll to load
         </div>
       )}
       {status === 'error' && (

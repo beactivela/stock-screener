@@ -11,6 +11,15 @@ import { getSupabase, isSupabaseConfigured } from '../supabase.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const SCAN_RESULTS_PATH = path.join(DATA_DIR, 'scan-results.json');
+const SCAN_RESULT_SUMMARY_SELECT = 'ticker,vcp_bullish,contractions,last_close,relative_strength,score,enhanced_score,industry_name,industry_rank';
+
+function getScanRunMeta(run) {
+  return {
+    scannedAt: run?.scanned_at ?? null,
+    from: run?.date_from,
+    to: run?.date_to,
+  };
+}
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -83,18 +92,51 @@ function buildRunMetaUpdate(meta) {
   return Object.keys(payload).length > 0 ? payload : null;
 }
 
+export function mapScanResultSummaryRow(row) {
+  if (!row) return null;
+  return {
+    ticker: row.ticker,
+    vcpBullish: row.vcp_bullish ?? row.vcpBullish ?? false,
+    contractions: row.contractions ?? null,
+    lastClose: row.last_close ?? row.lastClose ?? null,
+    relativeStrength: row.relative_strength ?? row.relativeStrength ?? null,
+    score: row.score ?? null,
+    enhancedScore: row.enhanced_score ?? row.enhancedScore ?? row.score ?? null,
+    industryName: row.industry_name ?? row.industryName ?? null,
+    industryRank: row.industry_rank ?? row.industryRank ?? null,
+  };
+}
+
+export function buildScanTickerNav({ results = [], actionableBuyTickers = new Set() } = {}) {
+  return (results || [])
+    .map((row) => ({
+      ticker: row.ticker,
+      score: row.enhancedScore ?? row.score ?? 0,
+      relativeStrength: row.relativeStrength ?? null,
+      industryRank: row.industryRank ?? null,
+      hasActionableBuy: actionableBuyTickers.has(row.ticker),
+    }))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+}
+
+async function loadLatestRun(supabase) {
+  const { data: run, error: runErr } = await supabase
+    .from('scan_runs')
+    .select('*')
+    .order('scanned_at', { ascending: false })
+    .limit(1)
+    .single();
+  if (runErr || !run) return null;
+  return run;
+}
+
 /** @returns {Promise<{ scannedAt: string|null, from?: string, to?: string, totalTickers: number, vcpBullishCount: number, results: object[] }>} */
 export async function loadScanResults() {
   if (!isSupabaseConfigured()) return readScanResultsFile();
   try {
     const supabase = getSupabase();
-    const { data: run, error: runErr } = await supabase
-      .from('scan_runs')
-      .select('*')
-      .order('scanned_at', { ascending: false })
-      .limit(1)
-      .single();
-    if (runErr || !run) {
+    const run = await loadLatestRun(supabase);
+    if (!run) {
       return { scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 };
     }
     const { data: results, error: resErr } = await supabase
@@ -130,13 +172,8 @@ export async function loadLatestScanResultsWithRun() {
   }
   try {
     const supabase = getSupabase();
-    const { data: run, error: runErr } = await supabase
-      .from('scan_runs')
-      .select('*')
-      .order('scanned_at', { ascending: false })
-      .limit(1)
-      .single();
-    if (runErr || !run) {
+    const run = await loadLatestRun(supabase);
+    if (!run) {
       return { scanRunId: null, scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 };
     }
     const { data: results, error: resErr } = await supabase
@@ -160,6 +197,79 @@ export async function loadLatestScanResultsWithRun() {
     console.warn('Load scan results with run failed; using file fallback.', err?.message || err);
     const payload = readScanResultsFile();
     return { scanRunId: null, ...payload };
+  }
+}
+
+export async function loadScanResultSummaries() {
+  if (!isSupabaseConfigured()) {
+    const payload = readScanResultsFile();
+    const results = (payload.results || []).map(mapScanResultSummaryRow).filter(Boolean);
+    return {
+      scannedAt: payload.scannedAt ?? null,
+      from: payload.from,
+      to: payload.to,
+      totalTickers: results.length,
+      vcpBullishCount: results.filter((row) => row?.vcpBullish).length,
+      results,
+    };
+  }
+  try {
+    const supabase = getSupabase();
+    const run = await loadLatestRun(supabase);
+    if (!run) {
+      return { scannedAt: null, results: [], totalTickers: 0, vcpBullishCount: 0 };
+    }
+    const { data: results, error: resErr } = await supabase
+      .from('scan_results')
+      .select(SCAN_RESULT_SUMMARY_SELECT)
+      .eq('scan_run_id', run.id)
+      .order('enhanced_score', { ascending: false, nullsFirst: false });
+    if (resErr) throw new Error(resErr.message);
+    const rows = (results || []).map(mapScanResultSummaryRow).filter(Boolean);
+    return {
+      ...getScanRunMeta(run),
+      totalTickers: rows.length,
+      vcpBullishCount: rows.filter((row) => row?.vcpBullish).length,
+      results: rows,
+    };
+  } catch (err) {
+    console.warn('Load scan summaries failed; using file fallback.', err?.message || err);
+    const payload = readScanResultsFile();
+    const results = (payload.results || []).map(mapScanResultSummaryRow).filter(Boolean);
+    return {
+      scannedAt: payload.scannedAt ?? null,
+      from: payload.from,
+      to: payload.to,
+      totalTickers: results.length,
+      vcpBullishCount: results.filter((row) => row?.vcpBullish).length,
+      results,
+    };
+  }
+}
+
+export async function loadLatestScanResultForTicker(ticker) {
+  const normalizedTicker = String(ticker || '').trim().toUpperCase();
+  if (!normalizedTicker) return null;
+  if (!isSupabaseConfigured()) {
+    const payload = readScanResultsFile();
+    return (payload.results || []).find((row) => String(row?.ticker || '').toUpperCase() === normalizedTicker) || null;
+  }
+  try {
+    const supabase = getSupabase();
+    const run = await loadLatestRun(supabase);
+    if (!run) return null;
+    const { data, error } = await supabase
+      .from('scan_results')
+      .select('data')
+      .eq('scan_run_id', run.id)
+      .eq('ticker', normalizedTicker)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data?.data ?? null;
+  } catch (err) {
+    console.warn(`Load latest scan result for ${normalizedTicker} failed.`, err?.message || err);
+    const payload = readScanResultsFile();
+    return (payload.results || []).find((row) => String(row?.ticker || '').toUpperCase() === normalizedTicker) || null;
   }
 }
 

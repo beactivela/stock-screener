@@ -96,7 +96,7 @@ export default function TradePanel({ ticker, companyName, currentPrice, metrics 
     
     async function loadTrades() {
       try {
-        const res = await fetch(`${API_BASE}/api/trades`)
+        const res = await fetch(`${API_BASE}/api/trades?ticker=${encodeURIComponent(ticker)}&includeStats=false`)
         if (!res.ok) throw new Error('Failed to load trades')
         
         const data = await res.json()

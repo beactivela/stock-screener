@@ -4,6 +4,7 @@ const AGENT_LABELS = {
   breakout_tracker: 'Breakout',
   turtle_trader: 'Turtle',
   unusual_vol: 'Unusual Vol.',
+  lance: 'Lance',
 };
 
 const AGENT_PRIORITY = [
@@ -12,6 +13,7 @@ const AGENT_PRIORITY = [
   'base_hunter',
   'breakout_tracker',
   'turtle_trader',
+  'lance',
 ];
 
 /**
@@ -99,6 +101,14 @@ export const SIGNAL_AGENT_CRITERIA = {
       '200 MA rising',
       'Relative Strength ≥ 80',
       'Signal family: turtle',
+    ],
+  },
+  lance: {
+    label: 'Lance (pre-trade quality)',
+    criteria: [
+      'Pre-trade A–D score from daily-bar proxies (time behavior, ROC, RS vs market, location vs MAs / highs)',
+      'Tagged when score is A+ through C (D = no tag)',
+      'Confirm on intraday tape (VWAP, vs SPY, 5–30m follow-through)',
     ],
   },
 };

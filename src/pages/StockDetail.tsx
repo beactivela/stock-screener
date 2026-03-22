@@ -53,6 +53,20 @@ interface VCPInfo {
   enhancedScore?: number
   recommendation?: 'buy' | 'hold' | 'avoid'
   scoreBreakdown?: ScoreCriterion[]
+  /** Lance Breitstein–style pre-trade grade from last scan (daily proxies). */
+  lancePreTrade?: {
+    score: 'A+' | 'A' | 'B' | 'C' | 'D' | null
+    insufficientData?: boolean
+    timeBehavior?: string
+    rateOfChange?: string
+    relativeStrength?: string
+    location?: string
+    actionable?: boolean
+    sizeHint?: string
+    watchConfirm?: string
+    watchInvalidate?: string
+    summaryLine?: string
+  } | null
 }
 
 /** API response for historical Opus4.5 signals */
@@ -76,6 +90,14 @@ interface Opus45HistoryResponse {
   isActionableBuy?: boolean  // true only if buy signal triggered in last 2 days
   weightsVersion?: string
   reason?: string
+}
+
+interface ScanNavItem {
+  ticker: string
+  score?: number
+  relativeStrength?: number | null
+  industryRank?: number | null
+  hasActionableBuy?: boolean
 }
 
 const TIMEFRAMES = [
@@ -188,7 +210,7 @@ export default function StockDetail() {
   const [agentSignalHistory, setAgentSignalHistory] = useState<AgentSignalHistoryResponse | null>(null)
   
   // Scan results for horizontal ticker navigation bar
-  const [scanTickers, setScanTickers] = useState<Array<{ ticker: string; score?: number; hasActionableBuy?: boolean }>>([])
+  const [scanTickers, setScanTickers] = useState<ScanNavItem[]>([])
   const [scanRsByTicker, setScanRsByTicker] = useState<Record<string, number | null>>({})
   const [scanIndustryRankByTicker, setScanIndustryRankByTicker] = useState<Record<string, number | null>>({})
   const tickerBarRef = useRef<HTMLDivElement>(null)
@@ -198,33 +220,24 @@ export default function StockDetail() {
   // Fetch scan results for ticker navigation bar (once on mount)
   // Syncs with Dashboard: sorted by score desc, green highlight for actionable buy signals
   useEffect(() => {
-    Promise.all([
-      fetch(`${API_BASE}/api/scan-results`).then(r => r.json()),
-      fetch(`${API_BASE}/api/opus45/signals`).then(r => r.json())
-    ])
-      .then(([scanData, opusData]) => {
+    fetch(`${API_BASE}/api/scan-results/nav`)
+      .then(r => r.json())
+      .then((scanData: { results?: ScanNavItem[] }) => {
         const results = scanData.results || []
-        // signals array contains only actionable buys (triggered within 2 days)
-        const actionableBuys = new Set(
-          (opusData.signals || []).map((s: { ticker: string }) => s.ticker)
-        )
-        // Combine scan results with actionable buy status, sort by score desc (matching Dashboard)
-        const tickers = results
-          .map((r: { ticker: string; enhancedScore?: number; score?: number }) => ({
-            ticker: r.ticker,
-            score: r.enhancedScore ?? r.score ?? 0,
-            hasActionableBuy: actionableBuys.has(r.ticker)
-          }))
-          .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
+        const tickers = results.map((row) => ({
+          ticker: row.ticker,
+          score: row.score ?? 0,
+          hasActionableBuy: row.hasActionableBuy ?? false,
+        }))
         // Build a quick lookup for IBD-style RS ratings (1–99) by ticker.
-        const rsMap = results.reduce((acc: Record<string, number | null>, r: { ticker: string; relativeStrength?: number | null }) => {
+        const rsMap = results.reduce((acc: Record<string, number | null>, r) => {
           const key = String(r.ticker || '').toUpperCase()
           if (!key) return acc
           acc[key] = typeof r.relativeStrength === 'number' ? r.relativeStrength : null
           return acc
         }, {})
         // Build a quick lookup for industry rank by ticker.
-        const industryRankMap = results.reduce((acc: Record<string, number | null>, r: { ticker: string; industryRank?: number | null }) => {
+        const industryRankMap = results.reduce((acc: Record<string, number | null>, r) => {
           const key = String(r.ticker || '').toUpperCase()
           if (!key) return acc
           acc[key] = typeof r.industryRank === 'number' ? r.industryRank : null
@@ -376,11 +389,10 @@ export default function StockDetail() {
       if (!failed) setScanFallback(null)
       return
     }
-    fetch(`${API_BASE}/api/scan-results`, { cache: 'no-store' })
+    fetch(`${API_BASE}/api/scan-results/ticker/${encodeURIComponent(ticker)}`)
       .then((r) => r.json())
-      .then((data: { results?: VCPInfo[] }) => {
-        const found = (data?.results ?? []).find((r) => (r.ticker || '').toUpperCase() === ticker.toUpperCase())
-        setScanFallback(found && !found.error ? found : null)
+      .then((data: VCPInfo & { error?: string }) => {
+        setScanFallback(data && !data.error ? data : null)
       })
       .catch(() => setScanFallback(null))
   }, [ticker, vcp, scanResult])
@@ -420,7 +432,10 @@ export default function StockDetail() {
       setIndustryYtd(null)
       return
     }
-    fetch(`${API_BASE}/api/industry-trend`, { cache: 'no-store' })
+    const params = new URLSearchParams()
+    params.set('industry', fundamentals.industry)
+    params.set('summary', 'true')
+    fetch(`${API_BASE}/api/industry-trend?${params.toString()}`)
       .then((r) => r.json())
       .then((d) => {
         const g = (d?.industries ?? []).find((x: { industry: string }) => x.industry === fundamentals?.industry)
@@ -1153,6 +1168,15 @@ export default function StockDetail() {
                 VCP Bullish
               </span>
             )}
+            {displayVcp?.lancePreTrade?.score &&
+              !displayVcp.lancePreTrade.insufficientData && (
+                <span
+                  className="px-2 py-1 rounded bg-violet-900/50 text-violet-200 text-sm font-medium"
+                  title={displayVcp.lancePreTrade.summaryLine ?? 'Lance pre-trade quality (from last scan)'}
+                >
+                  Lance {displayVcp.lancePreTrade.score}
+                </span>
+              )}
             <button
               type="button"
               onClick={handleToggleWatchlist}
@@ -1200,6 +1224,55 @@ export default function StockDetail() {
             </>
           )}
           {watchlistFeedback && <p className="mt-1 text-xs text-emerald-400">{watchlistFeedback}</p>}
+          {displayVcp?.lancePreTrade &&
+            !displayVcp.lancePreTrade.insufficientData &&
+            displayVcp.lancePreTrade.score && (
+              <div className="mt-4 rounded-xl border border-violet-900/40 bg-slate-900/60 p-4 text-sm space-y-2">
+                <h3 className="text-violet-200 font-medium text-base">Lance — pre-trade quality</h3>
+                <p className="text-slate-500 text-xs leading-relaxed">
+                  Daily-bar proxy of time behavior, ROC, RS, and location. Confirm on intraday tape (VWAP, vs SPY,
+                  5–30m follow-through) before sizing.
+                </p>
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-slate-300">
+                  <div className="flex justify-between gap-2 border-b border-slate-800/80 py-1">
+                    <dt className="text-slate-500">Score</dt>
+                    <dd className="font-mono font-semibold text-violet-200">{displayVcp.lancePreTrade.score}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2 border-b border-slate-800/80 py-1">
+                    <dt className="text-slate-500">Size hint</dt>
+                    <dd className="capitalize">{displayVcp.lancePreTrade.sizeHint ?? '—'}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2 border-b border-slate-800/80 py-1">
+                    <dt className="text-slate-500">Time behavior</dt>
+                    <dd>{displayVcp.lancePreTrade.timeBehavior ?? '—'}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2 border-b border-slate-800/80 py-1">
+                    <dt className="text-slate-500">Rate of change</dt>
+                    <dd>{displayVcp.lancePreTrade.rateOfChange ?? '—'}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2 border-b border-slate-800/80 py-1">
+                    <dt className="text-slate-500">RS vs market</dt>
+                    <dd>{displayVcp.lancePreTrade.relativeStrength ?? '—'}</dd>
+                  </div>
+                  <div className="flex justify-between gap-2 border-b border-slate-800/80 py-1">
+                    <dt className="text-slate-500">Location</dt>
+                    <dd>{displayVcp.lancePreTrade.location ?? '—'}</dd>
+                  </div>
+                </dl>
+                {displayVcp.lancePreTrade.watchConfirm && (
+                  <p className="text-slate-400 text-xs pt-1">
+                    <span className="text-emerald-500/90 font-medium">Watch for: </span>
+                    {displayVcp.lancePreTrade.watchConfirm}
+                  </p>
+                )}
+                {displayVcp.lancePreTrade.watchInvalidate && (
+                  <p className="text-slate-400 text-xs">
+                    <span className="text-red-400/90 font-medium">Invalidates: </span>
+                    {displayVcp.lancePreTrade.watchInvalidate}
+                  </p>
+                )}
+              </div>
+            )}
         </div>
       </div>
 

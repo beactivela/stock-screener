@@ -75,6 +75,8 @@ describe('applyRatingsAndEnhancements', () => {
     assert.ok(typeof rated[0].enhancedScore === 'number');
     assert.ok(Array.isArray(rated[0].signalSetups));
     assert.ok(Array.isArray(rated[0].signalSetupsRecent));
+    assert.ok(rated[0].lancePreTrade && rated[0].lancePreTrade.score);
+    assert.ok(rated[0].signalSetups.includes('lance'));
   });
 });
 

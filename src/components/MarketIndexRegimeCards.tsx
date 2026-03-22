@@ -233,13 +233,18 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       <div className="px-3 py-2 border-b border-slate-800">
         <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
           <span className="text-slate-400">Breadth trend rating</span>
-          <span className="font-medium text-slate-200">
-            {breadthRating.label} ({breadthRating.score}/7)
-          </span>
+          <div className="text-right leading-tight">
+            <div className="font-medium text-slate-200">
+              {breadthRating.label} ({breadthRating.score}/7)
+            </div>
+            <div className="text-slate-400">
+              Market exposure: {breadthRating.exposureLabel} {breadthRating.exposurePercentage}%
+            </div>
+          </div>
         </div>
         <div
           className="grid grid-cols-7 overflow-hidden rounded-sm border-2 border-slate-500"
-          aria-label={`Breadth trend rating ${breadthRating.score} of 7 (${breadthRating.label})`}
+          aria-label={`Breadth trend rating ${breadthRating.score} of 7 (${breadthRating.label}), market exposure ${breadthRating.exposurePercentage}%`}
         >
           {BREADTH_TREND_SEGMENTS.map((segment) => {
             const isActive = segment.score === breadthRating.score
@@ -248,9 +253,11 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
                 key={segment.score}
                 className={`${segment.className} ${
                   isActive ? 'border-2 border-slate-100 opacity-100' : 'border border-slate-900/40 opacity-40'
-                } min-h-[24px]`}
-                title={`${segment.score}/7 ${segment.label}`}
-              />
+                } flex min-h-[28px] items-center justify-center px-1 text-center text-[9px] font-semibold leading-none`}
+                title={`${segment.score}/7 ${segment.label} - ${segment.exposureLabel} ${segment.exposurePercentage}%`}
+              >
+                {segment.exposurePercentage}%
+              </div>
             )
           })}
         </div>

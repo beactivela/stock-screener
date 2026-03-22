@@ -25,6 +25,7 @@ describe('signalAgentDisplay helpers', () => {
       resolveSignalAgentLabel(['momentum_scout', 'base_hunter'], 'base_hunter'),
       'Base',
     );
+    assert.equal(resolveSignalAgentLabel(['lance', 'momentum_scout'], 'lance'), 'Lance');
   });
 
   it('formats entry date into YYYY-MM-DD', () => {

@@ -9,6 +9,12 @@ import { evaluateCompiledCriteria, type CompiledCriterion } from '../utils/agent
 import { readWatchlist, getWatchlistTickersSet } from '../utils/watchlistStorage.js'
 import { buildTopRs50 } from '../utils/topRsScreen.js'
 import { getNextSortState, getDefaultSortForFilter } from '../utils/dashboardSort.js'
+
+/** Descending table sort: A+ highest */
+function lanceGradeSortValue(score: string | null | undefined): number {
+  const order: Record<string, number> = { 'A+': 6, A: 5, B: 4, C: 3, D: 2 }
+  return score != null && order[score] != null ? order[score]! : 0
+}
 import { getOpusDisplayState } from '../utils/opusScoreDisplay.js'
 import { readLocalDataCache, writeLocalDataCache } from '../utils/localDataCache.js'
 import { getInitialChartCount, getNextChartCount } from '../utils/chartRenderWindow.js'
@@ -54,6 +60,19 @@ interface ScanResult {
   signalSetups?: string[]
   signalSetupsRecent?: string[]
   signalSetupsRecent5?: string[]
+  lancePreTrade?: {
+    score: 'A+' | 'A' | 'B' | 'C' | 'D' | null
+    insufficientData?: boolean
+    timeBehavior?: string
+    rateOfChange?: string
+    relativeStrength?: string
+    location?: string
+    actionable?: boolean
+    sizeHint?: string
+    watchConfirm?: string
+    watchInvalidate?: string
+    summaryLine?: string
+  } | null
 }
 
 // Opus4.5 Signal from API (entryDate/daysSinceBuy/pctChange used for Open Trade column)
@@ -95,6 +114,15 @@ interface ScanPayload {
   to?: string
 }
 
+type Opus45Stats = {
+  total: number
+  strong: number
+  moderate: number
+  weak: number
+  avgConfidence: number
+  avgRiskReward: number
+} | null
+
 const CRITERIA_OVERRIDES_KEY = 'stock-screener:signalAgentCriteriaOverrides'
 const COMPILED_CRITERIA_OVERRIDES_KEY = 'stock-screener:signalAgentCompiledCriteriaOverrides'
 const DASHBOARD_SCAN_CACHE_KEY = 'stock-screener:dashboard:scan-results'
@@ -104,6 +132,15 @@ const DASHBOARD_SCAN_CACHE_TTL_MS = 15 * 1000
 const DASHBOARD_FUNDAMENTALS_CACHE_TTL_MS = 5 * 60 * 1000
 const DASHBOARD_INDUSTRY_TREND_CACHE_TTL_MS = 5 * 60 * 1000
 const CHART_BATCH_SIZE = 12
+const DASHBOARD_FUNDAMENTALS_FIELDS = [
+  'pctHeldByInst',
+  'qtrEarningsYoY',
+  'profitMargin',
+  'operatingMargin',
+  'industry',
+  'sector',
+  'companyName',
+] as const
 const LazyTickerChart = lazy(() => import('../components/TickerChart'))
 const LazyMarketIndexRegimeCards = lazy(() => import('../components/MarketIndexRegimeCards'))
 
@@ -193,6 +230,7 @@ export default function Dashboard() {
     | 'base_hunter'
     | 'breakout_tracker'
     | 'turtle_trader'
+    | 'lance'
   >('all')
   const [fundamentals, setFundamentals] = useState<
     Record<string, { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null; sector?: string | null; companyName?: string | null }>
@@ -201,8 +239,6 @@ export default function Dashboard() {
   const [industryTrendMap6M, setIndustryTrendMap6M] = useState<Record<string, number>>({})
   const [industryTrendMap1Y, setIndustryTrendMap1Y] = useState<Record<string, number>>({})
   const [industryTrendMapYtd, setIndustryTrendMapYtd] = useState<Record<string, number>>({})
-  const [fetchingFundamentals, setFetchingFundamentals] = useState(false)
-  const [fundamentalsProgress, setFundamentalsProgress] = useState<{ index: number; total: number } | null>(null)
   const initialSort = getDefaultSortForFilter('all')
   const [sortColumn, setSortColumn] = useState<string>(initialSort.sortColumn)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(initialSort.sortDir)
@@ -217,7 +253,7 @@ export default function Dashboard() {
   /** Per-ticker Opus score for every analyzed ticker (800+); used for table column. */
   const [opus45AllScores, setOpus45AllScores] = useState<Array<{ ticker: string; opus45Confidence: number; opus45Grade: string }>>([])
   const [, setOpus45Loading] = useState(false)
-  const [opus45Stats, setOpus45Stats] = useState<{ total: number; strong: number; moderate: number; weak: number; avgConfidence: number; avgRiskReward: number } | null>(null)
+  const [, setOpus45Stats] = useState<Opus45Stats>(null)
   const [watchlistOnly, setWatchlistOnly] = useState(false)
   const [watchlistMap, setWatchlistMap] = useState<Record<string, { note: string }>>({})
   const [watchlistTickers, setWatchlistTickers] = useState<Set<string>>(() => getWatchlistTickersSet())
@@ -241,7 +277,7 @@ export default function Dashboard() {
     setIndustryTrendMapYtd(mapYtd)
   }, [])
 
-  const applyScanPayload = useCallback((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
+  const applyScanPayload = useCallback((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: Opus45Stats }) => {
     setData(d)
     setApiError(null)
 
@@ -277,10 +313,27 @@ export default function Dashboard() {
     setOpus45Stats(null)
   }, [])
 
+  const loadDashboardFundamentals = useCallback(async (sourceResults: ScanResult[] = data?.results ?? []) => {
+    const tickers = [...new Set(sourceResults.map((row) => row.ticker).filter(Boolean))]
+    if (tickers.length === 0) {
+      setFundamentals({})
+      return
+    }
+    const params = new URLSearchParams()
+    params.set('tickers', tickers.join(','))
+    params.set('fields', DASHBOARD_FUNDAMENTALS_FIELDS.join(','))
+    params.set('includeRaw', 'false')
+    const response = await fetch(`${API_BASE}/api/fundamentals?${params.toString()}`)
+    if (!response.ok) throw new Error(`API ${response.status}`)
+    const payload = await response.json()
+    setFundamentals(payload)
+    writeLocalDataCache(DASHBOARD_FUNDAMENTALS_CACHE_KEY, payload)
+  }, [data?.results])
+
   // Load scan-results (includes Opus4.5 when ?includeOpus=true) — single fetch for unified payload
   useEffect(() => {
     let cancelled = false
-    const cached = readLocalDataCache<ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }>(
+    const cached = readLocalDataCache<ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: Opus45Stats }>(
       DASHBOARD_SCAN_CACHE_KEY,
       { ttlMs: DASHBOARD_SCAN_CACHE_TTL_MS, allowStale: true },
     )
@@ -294,7 +347,7 @@ export default function Dashboard() {
         if (!r.ok) throw new Error(`API ${r.status}`)
         return r.json()
       })
-      .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
+      .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: Opus45Stats }) => {
         if (!cancelled) {
           writeLocalDataCache(DASHBOARD_SCAN_CACHE_KEY, d)
           applyScanPayload(d)
@@ -326,12 +379,9 @@ export default function Dashboard() {
       setOpus45Loading(true)
       fetch(`${API_BASE}/api/scan-results`)
         .then((r) => r.json())
-        .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: typeof opus45Stats }) => {
+        .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: Opus45Stats }) => {
           writeLocalDataCache(DASHBOARD_SCAN_CACHE_KEY, d)
           applyScanPayload(d)
-          if ((d.results || []).length > 0) {
-            void fetchFundamentals(d.results || [])
-          }
         })
         .catch(() => {})
         .finally(() => setOpus45Loading(false))
@@ -344,15 +394,12 @@ export default function Dashboard() {
       { ttlMs: DASHBOARD_FUNDAMENTALS_CACHE_TTL_MS, allowStale: true },
     )
     if (cached?.payload) setFundamentals(cached.payload)
-
-    fetch(`${API_BASE}/api/fundamentals`)
-      .then((r) => r.json())
-      .then((payload) => {
-        setFundamentals(payload)
-        writeLocalDataCache(DASHBOARD_FUNDAMENTALS_CACHE_KEY, payload)
-      })
-      .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!data?.results?.length) return
+    loadDashboardFundamentals(data.results).catch(() => {})
+  }, [data?.scannedAt, data?.results, loadDashboardFundamentals])
 
   useEffect(() => {
     const cached = readLocalDataCache<{ industries?: Parameters<typeof buildIndustryMaps>[0] }>(
@@ -361,7 +408,7 @@ export default function Dashboard() {
     )
     if (cached?.payload) applyIndustryTrendPayload(cached.payload)
 
-    fetch(`${API_BASE}/api/industry-trend`)
+    fetch(`${API_BASE}/api/industry-trend?summary=true`)
       .then((r) => r.json())
       .then((d) => {
         applyIndustryTrendPayload(d)
@@ -386,96 +433,6 @@ export default function Dashboard() {
       await triggerScan()
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to start scan')
-    }
-  }
-
-  async function fetchFundamentals(sourceResults: ScanResult[] = data?.results ?? []) {
-    const tickers = sourceResults.map((r) => r.ticker).filter(Boolean)
-    if (tickers.length === 0) {
-      alert('Run a scan first to get tickers.')
-      return
-    }
-    setFetchingFundamentals(true)
-    setFundamentalsProgress(null)
-    try {
-      const res = await fetch(`${API_BASE}/api/fundamentals/fetch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers, force: true }), // true = always refetch to get company names (Yahoo cache can be stale)
-        cache: 'no-store',
-      })
-      if (!res.ok || !res.body) {
-        const body = await res.json().catch(() => ({}))
-        alert(body?.error || res.statusText || 'Fetch failed')
-        return
-      }
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      const merged: Record<
-        string,
-        { pctHeldByInst?: number | null; qtrEarningsYoY?: number | null; profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null; sector?: string | null; companyName?: string | null }
-      > = {}
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          const idx = line.indexOf('data: ')
-          if (idx === -1) continue
-          try {
-            const msg = JSON.parse(line.slice(idx + 6).trim()) as {
-              ticker?: string
-              pctHeldByInst?: number | null
-              qtrEarningsYoY?: number | null
-              profitMargin?: number | null
-              operatingMargin?: number | null
-              industry?: string | null
-              sector?: string | null
-              companyName?: string | null
-              index?: number
-              total?: number
-              done?: boolean
-              error?: string
-            }
-            if (msg.done) break
-            if (msg.ticker) {
-              merged[msg.ticker] = {
-                pctHeldByInst: msg.pctHeldByInst ?? null,
-                qtrEarningsYoY: msg.qtrEarningsYoY ?? null,
-                profitMargin: msg.profitMargin ?? null,
-                operatingMargin: msg.operatingMargin ?? null,
-                industry: msg.industry ?? null,
-                sector: msg.sector ?? null,
-                companyName: msg.companyName ?? null,
-              }
-              setFundamentalsProgress(msg.index != null && msg.total ? { index: msg.index, total: msg.total } : null)
-              setFundamentals((prev) => ({ ...prev, ...merged }))
-            }
-          } catch {
-            /* skip */
-          }
-        }
-      }
-      const finalRes = await fetch(`${API_BASE}/api/fundamentals?t=${Date.now()}`)
-      const final = await finalRes.json()
-      const nextFundamentals = { ...final, ...merged }
-      setFundamentals(nextFundamentals)
-      writeLocalDataCache(DASHBOARD_FUNDAMENTALS_CACHE_KEY, nextFundamentals)
-      // Refetch industry trend so Industry 3M/6M/1Y/YTD columns update with new industry groupings
-      fetch(`${API_BASE}/api/industry-trend`)
-        .then((r) => r.json())
-        .then((d) => {
-          applyIndustryTrendPayload(d)
-          writeLocalDataCache(DASHBOARD_INDUSTRY_TREND_CACHE_KEY, d)
-        })
-        .catch(() => {})
-    } finally {
-      setFetchingFundamentals(false)
-      setFundamentalsProgress(null)
     }
   }
 
@@ -618,6 +575,8 @@ export default function Dashboard() {
         return industryTrendMap1Y[fundamentals[r.ticker]?.industry ?? ''] ?? -Infinity
       case 'industryYtd':
         return industryTrendMapYtd[fundamentals[r.ticker]?.industry ?? ''] ?? -Infinity
+      case 'lance':
+        return lanceGradeSortValue(r.lancePreTrade?.score ?? null)
       default:
         return ''
     }
@@ -766,6 +725,7 @@ export default function Dashboard() {
             { id: 'base_hunter', label: 'Base' },
             { id: 'breakout_tracker', label: 'Breakout' },
             { id: 'turtle_trader', label: 'Turtle' },
+            { id: 'lance', label: 'Lance' },
           ] as const).map((f) => {
             const meta = f.id !== 'all' ? SIGNAL_AGENT_CRITERIA[f.id] : null
             return (
@@ -773,11 +733,9 @@ export default function Dashboard() {
                 <button
                   onClick={() => {
                     setFilter(f.id)
-                    if (f.id === 'all') {
-                      const next = getDefaultSortForFilter('all')
-                      setSortColumn(next.sortColumn)
-                      setSortDir(next.sortDir)
-                    }
+                    const next = getDefaultSortForFilter(f.id)
+                    setSortColumn(next.sortColumn)
+                    setSortDir(next.sortDir)
                   }}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
                     filter === f.id
@@ -862,16 +820,12 @@ export default function Dashboard() {
         </div>
         <button
           onClick={runScan}
-          disabled={scanState.running || fetchingFundamentals}
+          disabled={scanState.running}
           className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-sm ml-auto"
         >
           {scanState.running
             ? `Scanning ${scanState.progress.index}/${scanState.progress.total}…`
-            : fetchingFundamentals
-              ? fundamentalsProgress
-                ? `Fetching ${fundamentalsProgress.index}/${fundamentalsProgress.total}…`
-                : 'Fetching fundamentals…'
-              : 'Run Scan'}
+            : 'Run Scan'}
         </button>
       </div>
 
@@ -932,6 +886,7 @@ export default function Dashboard() {
               <col className="w-16" />
               <col className="w-20" />
               <col className="w-36" />
+              <col className="w-24" />
               <col className="w-20" />
               <col className="w-20" />
               <col className="w-40" />
@@ -956,6 +911,7 @@ export default function Dashboard() {
                 <SortHeader col="relativeStrength" label="RS" {...sortHeaderProps} alignRight />
                 <SortHeader col="industryRank" label="Ind.Rank" {...sortHeaderProps} alignRight />
                 <SortHeader col="signalAgent" label="Signal Agent" {...sortHeaderProps} />
+                <SortHeader col="lance" label="Lance" {...sortHeaderProps} alignRight />
                 <SortHeader col="pl" label="P/L" {...sortHeaderProps} alignRight />
                 <SortHeader col="close" label="Price" {...sortHeaderProps} alignRight />
                 <SortHeader col="openTrade" label="Open Trade" {...sortHeaderProps} alignRight />
@@ -977,7 +933,7 @@ export default function Dashboard() {
             <tbody>
               {sorted.length === 0 ? (
                 <tr>
-                    <td colSpan={21} className="px-4 py-8 text-center text-slate-500">
+                    <td colSpan={22} className="px-4 py-8 text-center text-slate-500">
                     {watchlistOnly
                       ? topRsOnly
                         ? 'No watchlist stocks currently qualify for Top 50 RS+Ind in this Signal Agent filter.'
@@ -1107,6 +1063,41 @@ export default function Dashboard() {
                           activeSignalLabelFilter,
                         )}
                       </span>
+                    </td>
+                    {/* Lance pre-trade grade (A+–D from scan) */}
+                    <td className="px-4 py-3 text-right text-sm font-mono tabular-nums">
+                      {(() => {
+                        const lp = r.lancePreTrade
+                        if (!lp || lp.insufficientData) {
+                          return <span className="text-slate-500">–</span>
+                        }
+                        const g = lp.score
+                        if (!g) return <span className="text-slate-500">–</span>
+                        const cls =
+                          g === 'A+'
+                            ? 'text-emerald-400 font-semibold'
+                            : g === 'A'
+                              ? 'text-green-400 font-medium'
+                              : g === 'B'
+                                ? 'text-amber-200'
+                                : g === 'C'
+                                  ? 'text-orange-400'
+                                  : 'text-red-400'
+                        const title = [
+                          `Time: ${lp.timeBehavior}`,
+                          `ROC: ${lp.rateOfChange}`,
+                          `RS: ${lp.relativeStrength}`,
+                          `Loc: ${lp.location}`,
+                          lp.sizeHint ? `Size: ${lp.sizeHint}` : '',
+                        ]
+                          .filter(Boolean)
+                          .join('\n')
+                        return (
+                          <span className={cls} title={title}>
+                            {g}
+                          </span>
+                        )
+                      })()}
                     </td>
                     {/* Current P/L */}
                     <td className="px-4 py-3 font-mono text-right text-sm">

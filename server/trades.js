@@ -55,39 +55,97 @@ function initTradesFile() {
   };
 }
 
+function mapTradeRow(r) {
+  return {
+    id: r.id,
+    ticker: r.ticker,
+    companyName: r.company_name,
+    entryDate: r.entry_date,
+    entryPrice: r.entry_price,
+    entryMetrics: r.entry_metrics,
+    conviction: r.conviction,
+    notes: r.notes,
+    exitDate: r.exit_date,
+    exitPrice: r.exit_price,
+    exitType: r.exit_type,
+    exitNotes: r.exit_notes,
+    status: r.status,
+    returnPct: r.return_pct,
+    holdingDays: r.holding_days,
+    stopLossPrice: r.stop_loss_price,
+    targetPrice: r.target_price,
+    lastCheckedDate: r.last_checked_date,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function normalizeTradeQuery(options = {}) {
+  const limit = Number.isFinite(Number(options.limit)) ? Math.max(0, Number(options.limit)) : null;
+  const offset = Number.isFinite(Number(options.offset)) ? Math.max(0, Number(options.offset)) : 0;
+  return {
+    ticker: options.ticker ? String(options.ticker).trim().toUpperCase() : null,
+    status: options.status ? String(options.status).trim() : null,
+    limit,
+    offset,
+  };
+}
+
+export function applyTradeQuery(trades, options = {}) {
+  const { ticker, status, limit, offset } = normalizeTradeQuery(options);
+  let filtered = [...(trades || [])];
+  if (ticker) {
+    filtered = filtered.filter((trade) => String(trade?.ticker || '').toUpperCase() === ticker);
+  }
+  if (status) {
+    filtered = filtered.filter((trade) => trade?.status === status);
+  }
+  if (offset > 0) {
+    filtered = filtered.slice(offset);
+  }
+  if (limit != null) {
+    filtered = filtered.slice(0, limit);
+  }
+  return filtered;
+}
+
+async function loadTradeStatsFromStore() {
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  const supabase = getSupabase();
+  const { data: statsRow } = await supabase
+    .from('trade_stats')
+    .select('*')
+    .order('last_updated', { ascending: false })
+    .limit(1)
+    .single();
+  return statsRow?.stats_json || null;
+}
+
+export async function queryTrades(options = {}) {
+  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
+  const supabase = getSupabase();
+  const { ticker, status, limit, offset } = normalizeTradeQuery(options);
+  let query = supabase
+    .from('trades')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (ticker) query = query.eq('ticker', ticker);
+  if (status) query = query.eq('status', status);
+  if (limit != null) {
+    query = query.range(offset, offset + limit - 1);
+  }
+  const { data: rows, error } = await query;
+  if (error) throw new Error(error.message);
+  return (rows || []).map(mapTradeRow);
+}
+
 /**
  * Load trades from DB or file
  * @returns {Promise<Object>} Trades file content
  */
 export async function loadTrades() {
-  if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
-  const supabase = getSupabase();
-  const { data: rows, error } = await supabase.from('trades').select('*').order('created_at', { ascending: true });
-  if (error) throw new Error(error.message);
-  const trades = (rows || []).map((r) => ({
-      id: r.id,
-      ticker: r.ticker,
-      companyName: r.company_name,
-      entryDate: r.entry_date,
-      entryPrice: r.entry_price,
-      entryMetrics: r.entry_metrics,
-      conviction: r.conviction,
-      notes: r.notes,
-      exitDate: r.exit_date,
-      exitPrice: r.exit_price,
-      exitType: r.exit_type,
-      exitNotes: r.exit_notes,
-      status: r.status,
-      returnPct: r.return_pct,
-      holdingDays: r.holding_days,
-      stopLossPrice: r.stop_loss_price,
-      targetPrice: r.target_price,
-      lastCheckedDate: r.last_checked_date,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-    }));
-  const { data: statsRow } = await supabase.from('trade_stats').select('*').order('last_updated', { ascending: false }).limit(1).single();
-  const stats = statsRow?.stats_json || recalcStatsFromTrades(trades);
+  const trades = await queryTrades();
+  const stats = await loadTradeStatsFromStore() || recalcStatsFromTrades(trades);
   return { version: 1, trades, lastUpdated: new Date().toISOString(), stats };
 }
 
@@ -164,8 +222,7 @@ export async function saveTrades(data) {
  * @returns {Promise<Array>} Array of trades
  */
 export async function getAllTrades() {
-  const data = await loadTrades();
-  return data.trades;
+  return queryTrades();
 }
 
 /**
@@ -174,8 +231,11 @@ export async function getAllTrades() {
  * @returns {Promise<Array>} Filtered trades
  */
 export async function getTradesByStatus(status) {
-  const trades = await getAllTrades();
-  return trades.filter(t => t.status === status);
+  return queryTrades({ status });
+}
+
+export async function getTradesByTicker(ticker, options = {}) {
+  return queryTrades({ ...options, ticker });
 }
 
 /**
@@ -184,8 +244,18 @@ export async function getTradesByStatus(status) {
  * @returns {Promise<Object|null>} Trade or null
  */
 export async function getTradeById(id) {
-  const trades = await getAllTrades();
-  return trades.find(t => t.id === id) || null;
+  if (!isSupabaseConfigured()) {
+    const trades = await getAllTrades();
+    return trades.find(t => t.id === id) || null;
+  }
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? mapTradeRow(data) : null;
 }
 
 /**
@@ -781,6 +851,8 @@ function generateRecommendation(correlations, weights) {
  * @returns {Object} Trade statistics
  */
 export async function getTradeStats() {
-  const data = await loadTrades();
-  return data.stats;
+  const stats = await loadTradeStatsFromStore();
+  if (stats) return stats;
+  const trades = await queryTrades();
+  return recalcStatsFromTrades(trades);
 }
