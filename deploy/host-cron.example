@@ -5,11 +5,18 @@
 #      export CRON_BASE_URL='http://127.0.0.1:8080'
 #    (8080 = HOST_PORT from docker-compose; use 80 if you map that.)
 # 3. chmod 600 /opt/stock-screener/.cron-env
-# 4. chmod +x /path/to/stock-screener/scripts/trigger-scheduled-scan.sh
+# 4. chmod +x /opt/stock-screener/scripts/trigger-scheduled-scan.sh
+#    chmod +x /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh
 #
-# Daily at 23:00 UTC (adjust to your market close):
-# m h dom mon dow user command
-0 23 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh
+# America/Chicago = US Central (CST/CDT). All times below are local wall clock.
+# CRON_TZ applies to every line in this file until another CRON_TZ.
+CRON_TZ=America/Chicago
+#
+# 4:38 PM — warm bars_cache (Yahoo daily OHLC) for the full scan universe before the scan.
+38 16 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh >> /var/log/stock-screener-cron.log 2>&1
+#
+# 5:12 PM — full VCP scan (same as UI "Run scan").
+12 17 * * * root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh >> /var/log/stock-screener-cron.log 2>&1
 
 # Do not enable this AND SCHEDULE_SCAN=1 in the container, or Supabase pg_cron hitting the same
 # endpoint, unless you accept possible double-runs; the app skips if a scan is already running / cooldown.

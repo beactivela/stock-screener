@@ -986,11 +986,8 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
-// Cron-only: trigger full scan (VPS cron → localhost, Supabase pg_cron + pg_net → https, etc.). Returns 202; scan runs in background.
-// POST /api/cron/scan and POST /api/cron/run-scan are aliases.
-// Auth: Authorization: Bearer <CRON_SECRET> or x-cron-secret: <CRON_SECRET>. In production, CRON_SECRET must be set (endpoint stays closed until then).
-// Idempotency: returns 202 with "already in progress" or cooldown skip if a scan is active / recently started.
-async function postCronScanHandler(req, res) {
+// Shared auth for POST /api/cron/* (Bearer CRON_SECRET or x-cron-secret).
+function validateCronSecret(req, res) {
   const secret = process.env.CRON_SECRET?.trim();
   const authHeader = req.headers.authorization;
   const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -998,14 +995,25 @@ async function postCronScanHandler(req, res) {
 
   if (process.env.NODE_ENV === 'production') {
     if (!secret) {
-      return res.status(503).json({ error: 'CRON_SECRET is not set; configure it for scheduled scan triggers.' });
+      res.status(503).json({ error: 'CRON_SECRET is not set; configure it for scheduled scan triggers.' });
+      return false;
     }
     if (headerSecret !== secret) {
-      return res.status(401).json({ error: 'Invalid or missing cron secret' });
+      res.status(401).json({ error: 'Invalid or missing cron secret' });
+      return false;
     }
   } else if (secret && headerSecret !== secret) {
-    return res.status(401).json({ error: 'Invalid or missing cron secret' });
+    res.status(401).json({ error: 'Invalid or missing cron secret' });
+    return false;
   }
+  return true;
+}
+
+// Cron-only: trigger full scan (VPS cron → localhost, Supabase pg_cron + pg_net → https, etc.). Returns 202; scan runs in background.
+// POST /api/cron/scan and POST /api/cron/run-scan are aliases.
+// Idempotency: returns 202 with "already in progress" or cooldown skip if a scan is active / recently started.
+async function postCronScanHandler(req, res) {
+  if (!validateCronSecret(req, res)) return;
 
   maybeClearStaleActiveScan(activeScan);
   if (activeScan.running) {
@@ -1061,6 +1069,43 @@ async function postCronScanHandler(req, res) {
 app.post('/api/cron/scan', postCronScanHandler);
 // Alias for external schedulers / docs (same handler, same auth)
 app.post('/api/cron/run-scan', postCronScanHandler);
+
+// Pre-fetch daily bars for the scan universe (Yahoo → bars_cache). Run ~30+ min before cron scan so EOD data is warm.
+const barsRefreshJob = { running: false, lastResult: null, lastStartedAt: null, lastFinishedAt: null };
+
+async function postCronRefreshBarsHandler(req, res) {
+  if (!validateCronSecret(req, res)) return;
+  if (barsRefreshJob.running) {
+    return res.status(202).json({ ok: true, message: 'Bars refresh already in progress' });
+  }
+  barsRefreshJob.running = true;
+  barsRefreshJob.lastStartedAt = new Date().toISOString();
+  barsRefreshJob.lastResult = null;
+
+  (async () => {
+    try {
+      const { runUniverseBarsRefresh } = await import('./cronRefreshBars.js');
+      const result = await runUniverseBarsRefresh();
+      barsRefreshJob.lastResult = result;
+      console.log('Cron bars refresh finished:', result);
+    } catch (e) {
+      console.error('Cron bars refresh failed:', e);
+      barsRefreshJob.lastResult = { ok: false, error: e.message };
+    } finally {
+      barsRefreshJob.running = false;
+      barsRefreshJob.lastFinishedAt = new Date().toISOString();
+    }
+  })();
+
+  res.status(202).json({
+    ok: true,
+    started: true,
+    message: 'Universe bars refresh started in background',
+  });
+}
+
+app.post('/api/cron/refresh-bars', postCronRefreshBarsHandler);
+app.post('/api/cron/fetch-prices', postCronRefreshBarsHandler);
 
 // OHLC bars for a ticker. Query: days (default 180), interval (1d|1wk|1mo, default 1d).
 app.get('/api/bars/:ticker', async (req, res) => {
