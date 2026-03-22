@@ -118,13 +118,11 @@ describe('5-year bar count validation', () => {
     }
   });
 
-  it('rejects a fetch with < 250 bars (scanner minimum)', () => {
-    // The scanner skips tickers with < 250 bars — validate that threshold
+  it('rejects a fetch with < 253 bars (IBD RS minimum)', () => {
     const tooFewBars = generateBars(100);
-    assert.ok(tooFewBars.length < 250, 'Should have fewer than scanner minimum');
-    // Simulate the scanner check
-    const wouldSkip = !tooFewBars || tooFewBars.length < 250;
-    assert.ok(wouldSkip, 'Scanner should skip tickers with < 250 bars');
+    assert.ok(tooFewBars.length < 253, 'Should have fewer than IBD RS floor');
+    const wouldSkip = !tooFewBars || tooFewBars.length < 253;
+    assert.ok(wouldSkip, 'Long-range paths should skip when under 253 daily bars');
   });
 
   it('detects missing bars (gaps > 5 trading days)', () => {
@@ -292,7 +290,7 @@ describe('Cache layer: Yahoo failure handling', () => {
   it('scanner skips tickers where getBars returns null', () => {
     // Simulate the scanner loop's null check (historicalSignalScanner.js line ~393)
     const bars = null;
-    const wouldContinue = !bars || bars.length < 250;
+    const wouldContinue = !bars || bars.length < 253;
     assert.ok(wouldContinue, 'Scanner should skip when bars is null');
   });
 });

@@ -33,6 +33,7 @@ import {
 } from './db/scanResults.js';
 import { getCachedBars, saveBars as saveBarsToDb, saveBarsBatch as saveBarsBatchToDb } from './db/bars.js';
 import { getScanPersistenceStrategy } from './scanPersistence.js';
+import { MIN_DAILY_BARS_FOR_IBD_RS } from './barHistoryLimits.js';
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
@@ -46,12 +47,8 @@ const DEFAULT_SCAN_CONCURRENCY = 20;
 const DEFAULT_SCAN_YAHOO_CONCURRENCY = 20;
 const DEFAULT_SCAN_DELAY_MS = 40;
 
-/**
- * vcp.calculateRelativeStrength requires stockBars.length > 252 (12m lookback index).
- * Legacy bars_cache rows often held ~6 months; scan used them (VCP OK) but RS stayed null →
- * blank RS / Ind.Rank / Signal Agent / Lance / Opus merge in the dashboard.
- */
-const MIN_CACHED_DAILY_BARS_FOR_SCAN = 253;
+/** Same floor as vcp.calculateRelativeStrength (>252 bars). */
+const MIN_CACHED_DAILY_BARS_FOR_SCAN = MIN_DAILY_BARS_FOR_IBD_RS;
 
 function ensureDataDir() {
   // Vercel serverless runtime uses a read-only filesystem for /var/task.

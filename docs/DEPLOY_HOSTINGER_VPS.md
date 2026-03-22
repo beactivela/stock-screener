@@ -210,8 +210,12 @@ docker volume inspect stock-screener_screener-data
 
 Usually **short `bars_cache` history**: VCP needs ~60 daily bars; IBD-style RS needs **253+** trading days in the slice. Old caches (e.g. ~6 months) satisfied the first but not the second.
 
-**Fix in app:** scans now ignore cache slices shorter than 253 daily bars and refetch Yahoo for the full `dateRange`, then repopulate cache.
+**Fix in app:** scans ignore short cache for long windows; **`getCachedBars` also drops poisoned in-memory entries** so a stale short slice is not reused for ~24h. Refetch repopulates Supabase.
 
 **On the VPS after deploy:** run **Run Scan** again (expect more Yahoo traffic on the first run). Optional one-off: set **`SCAN_SKIP_CACHE=1`** in the container env, run a scan, then remove it so normal caching resumes.
+
+**If `git pull` fails** with “local changes would be overwritten”: your server copy has edited tracked files (`Dockerfile`, `server/index.js`, etc.). Stash or commit them, then pull, then **`docker compose build --no-cache`** once so the image is not stuck on old `COPY` layers.
+
+**Verify API (on the VPS):** after a full scan, `curl -sS 'http://127.0.0.1:8080/api/scan-results?cb=1' | head -c 2000` — the first `results` entry should include **`relativeStrength`** (a number) and **`signalSetups`** (array), not only `lastClose` / `pattern`.
 
 **Verify in Supabase (SQL):** for a ticker that looked broken, `jsonb_array_length(results)` on `bars_cache` for `interval = '1d'` should be **≥ 253** after a full fetch.

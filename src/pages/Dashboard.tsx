@@ -342,7 +342,7 @@ export default function Dashboard() {
       setLoading(false)
     }
     setOpus45Loading(true)
-    fetch(`${API_BASE}/api/scan-results`)
+    fetch(`${API_BASE}/api/scan-results?cb=${Date.now()}`, { cache: 'no-store' })
       .then((r) => {
         if (!r.ok) throw new Error(`API ${r.status}`)
         return r.json()
@@ -377,7 +377,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!scanState.running && scanState.progress.completedAt) {
       setOpus45Loading(true)
-      fetch(`${API_BASE}/api/scan-results`)
+      fetch(`${API_BASE}/api/scan-results?cb=${Date.now()}`, { cache: 'no-store' })
         .then((r) => r.json())
         .then((d: ScanPayload & { opus45Signals?: Opus45Signal[]; opus45Stats?: Opus45Stats }) => {
           writeLocalDataCache(DASHBOARD_SCAN_CACHE_KEY, d)

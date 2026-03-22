@@ -12,6 +12,7 @@
 
 import { getSupabase, isSupabaseConfigured } from '../supabase.js';
 import { getBars as fetchFromYahoo, getBarsBatch as fetchBarsBatchFromYahoo } from '../yahoo.js';
+import { MIN_DAILY_BARS_FOR_IBD_RS, longRangeExpectsIbdrs } from '../barHistoryLimits.js';
 
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
 // 5-year historical bars are immutable — cache for 90 days
@@ -122,6 +123,13 @@ function filterBarsToRange(bars, from, to) {
   });
 }
 
+/** Long scan windows need enough daily rows for IBD RS; short chart windows may be smaller. */
+function barsSatisfyIbdrsForRequest(bars, from, to) {
+  if (!Array.isArray(bars) || bars.length === 0) return false;
+  if (!longRangeExpectsIbdrs(from, to)) return true;
+  return bars.length >= MIN_DAILY_BARS_FOR_IBD_RS;
+}
+
 function buildBarsCacheRows(entries, fetchedAt = new Date().toISOString()) {
   return (entries || [])
     .filter((entry) => entry?.ticker && entry?.from && entry?.to && Array.isArray(entry?.results))
@@ -171,7 +179,13 @@ export async function getCachedBars(ticker, from, to, interval = '1d') {
   const cacheTtl = isDeepRange(from, to) ? DEEP_CACHE_TTL_MS : CACHE_TTL_MS;
 
   const mem = barsMemoryCache.get(key);
-  if (mem && Date.now() - mem.at < cacheTtl) return mem.data;
+  if (mem && Date.now() - mem.at < cacheTtl) {
+    if (!barsSatisfyIbdrsForRequest(mem.data, from, to)) {
+      barsMemoryCache.delete(key);
+    } else {
+      return mem.data;
+    }
+  }
 
   if (!isSupabaseConfigured()) return null;
 
@@ -196,7 +210,7 @@ export async function getCachedBars(ticker, from, to, interval = '1d') {
 
         if (rawFrom === from && rawTo === to && results.length > 0) {
           const fresh = isBarsUpToDate(results, to);
-          if (fresh) {
+          if (fresh && barsSatisfyIbdrsForRequest(results, from, to)) {
             barsMemoryCache.set(key, { data: results, at: Date.now() - age });
             return results;
           }
@@ -209,7 +223,7 @@ export async function getCachedBars(ticker, from, to, interval = '1d') {
           });
           if (filtered.length > 0) {
             const fresh = isBarsUpToDate(filtered, to);
-            if (fresh) {
+            if (fresh && barsSatisfyIbdrsForRequest(filtered, from, to)) {
               barsMemoryCache.set(key, { data: filtered, at: Date.now() - age });
               return filtered;
             }
@@ -232,7 +246,7 @@ export async function getCachedBars(ticker, from, to, interval = '1d') {
         .gte(dateCol, from)
         .lte(dateCol, to)
         .order(dateCol, { ascending: true });
-      if (error || !rows || rows.length < 250) continue;
+      if (error || !rows || rows.length < MIN_DAILY_BARS_FOR_IBD_RS) continue;
       const o = rows[0].open != null ? 'open' : 'o';
       const h = rows[0].high != null ? 'high' : 'h';
       const l = rows[0].low != null ? 'low' : 'l';
