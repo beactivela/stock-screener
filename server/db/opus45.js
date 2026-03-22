@@ -25,6 +25,67 @@ export function buildOpus45CacheInsertRow(data = {}) {
   };
 }
 
+/**
+ * Merge cached all-scores rows with active signal trade fields.
+ *
+ * Why this exists:
+ * Older cache rows (or partial migrations) can contain all_scores entries
+ * with only score fields. The Dashboard Open Trade / P&L columns rely on
+ * trade fields from active signals.
+ *
+ * @param {object[]} allScores
+ * @param {object[]} signals
+ * @returns {object[]}
+ */
+export function mergeOpus45AllScoresWithSignals(allScores = [], signals = []) {
+  const safeAllScores = Array.isArray(allScores) ? allScores : [];
+  const safeSignals = Array.isArray(signals) ? signals : [];
+
+  if (safeAllScores.length === 0) return safeSignals;
+
+  const signalByTicker = new Map();
+  for (const signal of safeSignals) {
+    const ticker = signal?.ticker;
+    if (ticker) signalByTicker.set(ticker, signal);
+  }
+
+  const fieldsToBackfill = [
+    'entryDate',
+    'daysSinceBuy',
+    'isNewBuyToday',
+    'rankScore',
+    'pctChange',
+    'entryPrice',
+    'stopLossPrice',
+    'riskRewardRatio',
+    'currentPrice',
+  ];
+
+  const merged = safeAllScores.map((scoreRow) => {
+    const ticker = scoreRow?.ticker;
+    if (!ticker) return scoreRow;
+    const signalRow = signalByTicker.get(ticker);
+    if (!signalRow) return scoreRow;
+
+    const next = { ...scoreRow };
+    for (const field of fieldsToBackfill) {
+      if (next[field] == null && signalRow[field] != null) {
+        next[field] = signalRow[field];
+      }
+    }
+    return next;
+  });
+
+  const tickersInMerged = new Set(merged.map((row) => row?.ticker).filter(Boolean));
+  for (const signalRow of safeSignals) {
+    if (signalRow?.ticker && !tickersInMerged.has(signalRow.ticker)) {
+      merged.push(signalRow);
+    }
+  }
+
+  return merged;
+}
+
 /** @returns {Promise<{ signals: object[], allScores: object[], stats?: object, total?: number, computedAt?: string }|null>} */
 export async function loadOpus45Signals() {
   if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');

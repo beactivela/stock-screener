@@ -44,7 +44,11 @@ import {
 } from './db/scanResults.js';
 import { getBars as getBarsFromDb, getBarsBatch as getBarsBatchFromDb, saveBars as saveBarsToDb } from './db/bars.js';
 import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
-import { loadOpus45Signals as loadOpus45SignalsFromDb, saveOpus45Signals as saveOpus45SignalsToDb } from './db/opus45.js';
+import {
+  loadOpus45Signals as loadOpus45SignalsFromDb,
+  saveOpus45Signals as saveOpus45SignalsToDb,
+  mergeOpus45AllScoresWithSignals,
+} from './db/opus45.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
 import { buildUppercaseTickerUniverseSet, filterScanResultsToTickerUniverse } from './scanUniverseFilter.js';
 import { assignRatingsFromRaw, buildCalibrationCurve, calibrateRating } from './rsCompare.js';
@@ -532,7 +536,8 @@ app.get('/api/scan-results', async (req, res) => {
       }
       opus45Signals = cached.signals;
       opus45Stats = cached.stats ?? getSignalStats(cached.signals);
-      const allScores = mapCachedSignalsToAllScores(cached.allScores?.length ? cached.allScores : cached.signals);
+      const mergedCachedScores = mergeOpus45AllScoresWithSignals(cached.allScores, cached.signals);
+      const allScores = mapCachedSignalsToAllScores(mergedCachedScores);
       allScores.forEach((s) => opusByTicker.set(s.ticker, {
         opus45Confidence: s.opus45Confidence,
         opus45Grade: s.opus45Grade,
@@ -2725,7 +2730,8 @@ app.get('/api/opus45/signals', async (req, res) => {
       const cached = await loadOpus45SignalsFromDb();
       if (cached && cached.signals?.length >= 0) {
         await enrichCachedSignalsWithCurrentPrice(cached.signals);
-        const allScores = mapCachedSignalsToAllScores(cached.allScores?.length ? cached.allScores : cached.signals);
+        const mergedCachedScores = mergeOpus45AllScoresWithSignals(cached.allScores, cached.signals);
+        const allScores = mapCachedSignalsToAllScores(mergedCachedScores);
         return res.json({ signals: cached.signals, allScores, total: cached.total ?? cached.signals?.length, stats: cached.stats, fromCache: true });
       }
     }
