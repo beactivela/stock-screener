@@ -46,6 +46,13 @@ const DEFAULT_SCAN_CONCURRENCY = 20;
 const DEFAULT_SCAN_YAHOO_CONCURRENCY = 20;
 const DEFAULT_SCAN_DELAY_MS = 40;
 
+/**
+ * vcp.calculateRelativeStrength requires stockBars.length > 252 (12m lookback index).
+ * Legacy bars_cache rows often held ~6 months; scan used them (VCP OK) but RS stayed null →
+ * blank RS / Ind.Rank / Signal Agent / Lance / Opus merge in the dashboard.
+ */
+const MIN_CACHED_DAILY_BARS_FOR_SCAN = 253;
+
 function ensureDataDir() {
   // Vercel serverless runtime uses a read-only filesystem for /var/task.
   // Scan persistence is DB-backed there, so local data dirs should be skipped.
@@ -58,7 +65,7 @@ function ensureDataDir() {
 async function getBarsForScan(ticker, from, to, opts = {}) {
   if (!process.env.SCAN_SKIP_CACHE) {
     const cached = await getCachedBars(ticker, from, to, '1d');
-    if (cached && cached.length > 0) return cached;
+    if (cached && cached.length >= MIN_CACHED_DAILY_BARS_FOR_SCAN) return cached;
   }
   const fetchBars = () => getDailyBars(ticker, from, to);
   const bars = typeof opts.withYahooLimit === 'function'

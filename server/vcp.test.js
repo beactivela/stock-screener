@@ -72,6 +72,13 @@ describe('calculateRelativeStrength (IBD RS raw)', () => {
     const rs = calculateRelativeStrength(bars);
     assert.equal(rs, null);
   });
+
+  it('requires 253+ daily bars (matches scan cache gate for RS / agents)', () => {
+    const at252 = buildBars({ days: 252, start: 100, step: 0.5 });
+    assert.equal(calculateRelativeStrength(at252), null);
+    const at253 = buildBars({ days: 253, start: 100, step: 0.5 });
+    assert.ok(calculateRelativeStrength(at253), 'expected RS at 253 bars');
+  });
 });
 
 describe('assignIBDRelativeStrengthRatings', () => {
