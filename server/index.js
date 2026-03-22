@@ -45,6 +45,7 @@ import { getBars as getBarsFromDb, getBarsBatch as getBarsBatchFromDb, saveBars 
 import { loadIndustryCache, saveIndustryCache } from './db/industry.js';
 import { loadOpus45Signals as loadOpus45SignalsFromDb, saveOpus45Signals as saveOpus45SignalsToDb } from './db/opus45.js';
 import { getSupabase, isSupabaseConfigured } from './supabase.js';
+import { buildUppercaseTickerUniverseSet, filterScanResultsToTickerUniverse } from './scanUniverseFilter.js';
 import { assignRatingsFromRaw, buildCalibrationCurve, calibrateRating } from './rsCompare.js';
 // Trade Journal system for logging and learning from real trades
 import { 
@@ -75,6 +76,7 @@ import { translateCriteriaToSearchCriteria } from './agents/criteriaTranslator.j
 import { summarizePercentiles } from './utils/percentiles.js';
 import { getScanPersistenceStrategy } from './scanPersistence.js';
 import { maybeClearStaleActiveScan } from './scanStaleLock.js';
+import { registerDeployRoutes } from './deployRemote.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -92,6 +94,8 @@ app.get('/api/health', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json({ ok: true, uptime: process.uptime() });
 });
+
+registerDeployRoutes(app);
 
 // On Vercel without Supabase, writes cannot persist (read-only filesystem). With Supabase, POSTs write to DB.
 app.use((req, res, next) => {
@@ -420,9 +424,8 @@ async function loadScanData() {
       if (!data || !data.results?.length) {
         return { ...data, results: data?.results ?? [], totalTickers: 0, vcpBullishCount: 0 };
       }
-      const tickers = await loadTickersFromDb();
-      const tickerSet = new Set(tickers);
-      const results = tickerSet.size > 0 ? data.results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase())) : data.results;
+      const tickerSet = buildUppercaseTickerUniverseSet(await loadTickersFromDb());
+      const results = filterScanResultsToTickerUniverse(data.results, tickerSet);
       const vcpBullishCount = results.filter((r) => r.vcpBullish).length;
       return { ...data, results, totalTickers: results.length, vcpBullishCount };
     },
@@ -434,11 +437,8 @@ async function loadScanSummaryData() {
   if (!data || !data.results?.length) {
     return { ...data, results: data?.results ?? [], totalTickers: 0, vcpBullishCount: 0 };
   }
-  const tickers = await loadTickersFromDb();
-  const tickerSet = new Set(tickers);
-  const results = tickerSet.size > 0
-    ? data.results.filter((r) => tickerSet.has((r.ticker || '').toUpperCase()))
-    : data.results;
+  const tickerSet = buildUppercaseTickerUniverseSet(await loadTickersFromDb());
+  const results = filterScanResultsToTickerUniverse(data.results, tickerSet);
   return {
     ...data,
     results,

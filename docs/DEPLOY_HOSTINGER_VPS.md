@@ -156,11 +156,40 @@ yourdomain.com {
 
 ## 5. Updates
 
+### A) Classic: git + rebuild on the VPS
+
 ```bash
 cd stock-screener
 git pull
 docker compose up -d --build
 ```
+
+### B) GHCR image + Watchtower (GitHub is source of truth)
+
+Flow: **GitHub Actions** builds and pushes **`ghcr.io/<owner>/<repo>:latest`** with **`GIT_COMMIT=<sha>`** in the image. The app compares that env to GitHub’s default branch and shows **“New on GitHub”** when they differ. **Watchtower** (optional Compose profile) polls the registry and recreates the labeled container when the digest changes.
+
+1. **Workflow:** `.github/workflows/docker-publish.yml` — runs on **`workflow_dispatch`** and on **`push` to `main`** (filtered paths). Ensure **Actions** and **Packages** are enabled for the repo.
+2. **PAT on the VPS** (server-side only; never in the browser bundle):
+   - **`GITHUB_REPO`** = `owner/repo`
+   - **`GITHUB_TOKEN`** = classic PAT with **`repo`** (or fine-grained: **Contents: Read**, **Actions: Write**) so the server can call the Actions dispatch API.
+   - **`GITHUB_DEFAULT_BRANCH`** = `main` (or your default)
+3. **Trigger auth:** **`DEPLOY_SECRET`** (recommended) or reuse **`CRON_SECRET`**. The production UI asks for this once when you click **Build & deploy**; it is sent as **`Authorization: Bearer …`**.
+4. **Image on the VPS:** set **`DEPLOY_IMAGE=ghcr.io/<owner>/<repo>:latest`** in `.env` and use the override file:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.ghcr.override.yml pull
+   docker compose -f docker-compose.yml -f docker-compose.ghcr.override.yml up -d
+   ```
+
+   If Compose still insists on a local **`build:`**, delete that block on the server-only compose copy or maintain a tiny prod compose that only sets **`image`** + **`pull_policy: always`**. Private GHCR packages require **`docker login ghcr.io`** on the host (or a pull secret).
+
+5. **Watchtower (optional):**
+
+   ```bash
+   docker compose --profile watchtower up -d
+   ```
+
+   Only containers with label **`com.centurylinklabs.watchtower.enable=true`** are updated (already set on **`stock-screener`** in this repo).
 
 ---
 

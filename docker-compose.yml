@@ -6,6 +6,9 @@
 #
 #   docker compose up -d --build
 #
+# Optional auto-pull when GHCR :latest digest changes (label-scoped):
+#   docker compose --profile watchtower up -d
+#
 networks:
   default:
     name: stock-screener-net
@@ -27,12 +30,25 @@ services:
     volumes:
       - screener-data:/app/data
     labels:
+      - "com.centurylinklabs.watchtower.enable=true"
       - "traefik.enable=true"
       # Set TRAEFIK_HOST in .env (DNS must point at this VPS for Let’s Encrypt)
       - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST}`)"
       - "traefik.http.routers.stock-screener.entrypoints=websecure"
       - "traefik.http.routers.stock-screener.tls.certresolver=letsencrypt"
       - "traefik.http.services.stock-screener.loadbalancer.server.port=3000"
+
+  watchtower:
+    profiles: ["watchtower"]
+    image: containrrr/watchtower:latest
+    container_name: stock-screener-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_POLL_INTERVAL: "300"
 
 volumes:
   screener-data:

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import TickerSearch from './TickerSearch'
+import DeployUpdateControl from './DeployUpdateControl'
 
 const LazyMinerviniChat = lazy(() => import('./MinerviniChat'))
 
@@ -42,6 +43,7 @@ export default function Layout({ children }: LayoutProps) {
           </Link>
           <div className="flex items-center gap-6">
           <TickerSearch />
+          <DeployUpdateControl />
           <nav className="flex items-center gap-6">
             <Link
               to="/industry"

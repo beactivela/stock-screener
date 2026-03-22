@@ -120,10 +120,12 @@ export function buildScanTickerNav({ results = [], actionableBuyTickers = new Se
 }
 
 async function loadLatestRun(supabase) {
+  // Match getSupabaseScanProgressIfRunning: newest run by insert time so progress + results
+  // refer to the same scan (scanned_at alone can diverge if backfills or clocks differ).
   const { data: run, error: runErr } = await supabase
     .from('scan_runs')
     .select('*')
-    .order('scanned_at', { ascending: false })
+    .order('created_at', { ascending: false })
     .limit(1)
     .single();
   if (runErr || !run) return null;

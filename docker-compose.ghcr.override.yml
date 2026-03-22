@@ -1,0 +1,13 @@
+# Optional: pull pre-built images from GitHub Container Registry instead of `build: .` on the VPS.
+#
+#   export DEPLOY_IMAGE=ghcr.io/OWNER/REPO:latest   # add to .env on the server
+#   docker login ghcr.io   # once per machine, if the package is private
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.override.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.ghcr.override.yml up -d
+#
+# If Compose still tries to build, remove the `build:` block from docker-compose.yml on that host
+# or use a small prod-only compose file that only references `image` + `pull_policy: always`.
+services:
+  stock-screener:
+    image: ${DEPLOY_IMAGE:?Set DEPLOY_IMAGE e.g. ghcr.io/your-org/stock-screener:latest}
+    pull_policy: always
