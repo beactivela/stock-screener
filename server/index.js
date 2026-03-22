@@ -73,6 +73,7 @@ import { buildAgentSignalOverlay } from './agents/agentSignalOverlay.js';
 import { translateCriteriaToSearchCriteria } from './agents/criteriaTranslator.js';
 import { summarizePercentiles } from './utils/percentiles.js';
 import { getScanPersistenceStrategy } from './scanPersistence.js';
+import { maybeClearStaleActiveScan } from './scanStaleLock.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -868,6 +869,7 @@ async function executeManagedScan({ onProgress } = {}) {
 
 // Get current scan progress
 app.get('/api/scan/progress', (req, res) => {
+  maybeClearStaleActiveScan(activeScan);
   res.json({
     scanId: activeScan.id,
     running: activeScan.running,
@@ -881,6 +883,7 @@ let lastScanStarted = 0;
 const SCAN_COOLDOWN_MS = 10 * 1000; // 10s between scan starts (allow new scan if previous finished)
 
 app.post('/api/scan', async (req, res) => {
+  maybeClearStaleActiveScan(activeScan);
   if (activeScan.running) {
     return res.status(429).json({ 
       error: 'Scan already in progress', 
@@ -964,6 +967,7 @@ app.post('/api/cron/scan', async (req, res) => {
   if (secret && headerSecret !== secret) {
     return res.status(401).json({ error: 'Invalid or missing cron secret' });
   }
+  maybeClearStaleActiveScan(activeScan);
   if (activeScan.running) {
     return res.status(202).json({
       ok: true,

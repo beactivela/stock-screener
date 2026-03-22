@@ -150,12 +150,40 @@ export function ScanProvider({ children }: { children: ReactNode }) {
 
     try {
       const response = await fetch(`${API_BASE}/api/scan`, { method: 'POST' });
-      
+
+      // 429 + "already in progress": join the scan already running on the server (same tab double-submit or reconnect).
+      if (response.status === 429) {
+        let body: { error?: string; scanId?: string; progress?: ScanProgress } = {};
+        try {
+          body = await response.json();
+        } catch {
+          /* non-JSON 429 */
+        }
+        const errMsg = body.error || 'Too many requests';
+        if (errMsg.includes('already in progress') && body.scanId) {
+          setScanState({
+            scanId: body.scanId,
+            running: true,
+            progress: {
+              index: body.progress?.index ?? 0,
+              total: body.progress?.total ?? 0,
+              vcpBullishCount: body.progress?.vcpBullishCount ?? 0,
+              startedAt: body.progress?.startedAt ?? null,
+              completedAt: body.progress?.completedAt ?? null,
+            },
+          });
+          startPolling();
+          return;
+        }
+        setScanState((prev) => ({ ...prev, running: false }));
+        throw new Error(errMsg);
+      }
+
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
         // Reset optimistic state on failure
         setScanState((prev) => ({ ...prev, running: false }));
-        throw new Error(error.error || 'Scan failed to start');
+        throw new Error((error as { error?: string }).error || 'Scan failed to start');
       }
 
       if (!response.body) {
