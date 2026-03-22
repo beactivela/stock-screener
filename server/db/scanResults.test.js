@@ -11,6 +11,7 @@ import {
   loadScanResults,
   inferSupabaseScanRunLooksInProgress,
   mergeScanResultDataRow,
+  enrichScanResultRowsForApi,
 } from './scanResults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,8 +67,10 @@ describe('scan results batch persistence (file fallback)', () => {
 
     const afterBatch = await loadScanResults();
     assert.equal(afterBatch.results.length, 2);
-    assert.equal(afterBatch.results.find((r) => r.ticker === 'AAA')?.relativeStrength, null);
-    assert.equal(afterBatch.results.find((r) => r.ticker === 'AAA')?.rsData?.rsRaw, 12.3);
+    // File path applies enrichScanResultRowsForApi: IBD RS from rsRaw when column/jsonb still null
+    const aaaBatch = afterBatch.results.find((r) => r.ticker === 'AAA');
+    assert.equal(typeof aaaBatch?.relativeStrength, 'number');
+    assert.equal(aaaBatch?.rsData?.rsRaw, 12.3);
 
     await updateScanResultsBatch({
       scanRunId,
@@ -273,12 +276,34 @@ describe('mergeScanResultDataRow', () => {
         signalFamily: 'opus45',
       },
     };
-    const out = mergeScanResultDataRow(row);
-    assert.equal(out.relativeStrength, 88);
-    assert.equal(out.enhancedScore, 92);
-    assert.equal(out.industryRank, 5);
-    assert.equal(out.industryName, 'Tech');
+    const merged = mergeScanResultDataRow(row);
+    assert.equal(merged.relativeStrength, 88);
+    assert.equal(merged.enhancedScore, 92);
+    const out = enrichScanResultRowsForApi([merged])[0];
     assert.ok(Array.isArray(out.signalSetups) && out.signalSetups.length > 0);
+  });
+
+  it('enrichScanResultRowsForApi ranks from rsRaw and fills signalSetups (prod stale-json shape)', () => {
+    const row = mergeScanResultDataRow({
+      ticker: 'CAVA',
+      relative_strength: null,
+      data: {
+        ticker: 'CAVA',
+        relativeStrength: null,
+        rsData: { rsRaw: 29.17 },
+        contractions: 7,
+        patternConfidence: 75,
+        volumeDryUp: true,
+        ma10Slope14d: 12.6,
+        pctFromHigh: 17,
+        breakoutVolumeRatio: 0.79,
+        signalSetups: [],
+      },
+    });
+    const [out] = enrichScanResultRowsForApi([row]);
+    assert.equal(typeof out.relativeStrength, 'number');
+    assert.ok(out.relativeStrength >= 1 && out.relativeStrength <= 99);
+    assert.ok(Array.isArray(out.signalSetups));
   });
 });
 

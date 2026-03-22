@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getSupabase, isSupabaseConfigured } from '../supabase.js';
 import { classifySignalSetups } from '../learning/signalSetupClassifier.js';
+import { assignIBDRelativeStrengthRatings } from '../vcp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -137,17 +138,33 @@ export function mergeScanResultDataRow(row) {
   if (row.score != null && out.score == null) {
     out.score = row.score;
   }
-  if (
-    typeof out.relativeStrength === 'number'
-    && (!Array.isArray(out.signalSetups) || out.signalSetups.length === 0)
-  ) {
-    try {
-      out.signalSetups = classifySignalSetups(out);
-    } catch {
-      /* ignore classifier errors */
-    }
-  }
   return out;
+}
+
+/**
+ * When `data` jsonb stayed at stream-insert shape (rsData.rsRaw set, relativeStrength null) and
+ * denormalized columns are also null, merge alone never runs classifySignalSetups (needs IBD 1–99).
+ * Re-rank the universe from raw RS here, then fill empty signalSetups.
+ */
+export function enrichScanResultRowsForApi(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const needIbdr = rows.some((r) => {
+    if (!r || typeof r !== 'object') return false;
+    if (typeof r.relativeStrength === 'number' && Number.isFinite(r.relativeStrength)) return false;
+    const raw = r?.rsData?.rsRaw ?? r?.relativeStrengthRaw ?? r?.relativeStrength;
+    return Number.isFinite(Number(raw));
+  });
+  const rated = needIbdr ? assignIBDRelativeStrengthRatings(rows) : rows;
+  return rated.map((row) => {
+    if (!row || typeof row !== 'object') return row;
+    const existing = Array.isArray(row.signalSetups) ? row.signalSetups : [];
+    if (existing.length > 0) return row;
+    try {
+      return { ...row, signalSetups: classifySignalSetups(row) };
+    } catch {
+      return { ...row, signalSetups: [] };
+    }
+  });
 }
 
 export function buildScanTickerNav({ results = [], actionableBuyTickers = new Set() } = {}) {
@@ -247,7 +264,10 @@ export async function getSupabaseScanProgressIfRunning() {
 
 /** @returns {Promise<{ scannedAt: string|null, from?: string, to?: string, totalTickers: number, vcpBullishCount: number, results: object[] }>} */
 export async function loadScanResults() {
-  if (!isSupabaseConfigured()) return readScanResultsFile();
+  if (!isSupabaseConfigured()) {
+    const payload = readScanResultsFile();
+    return { ...payload, results: enrichScanResultRowsForApi(payload.results || []) };
+  }
   try {
     const supabase = getSupabase();
     const run = await loadLatestRun(supabase);
@@ -260,7 +280,9 @@ export async function loadScanResults() {
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean);
+    const rows = enrichScanResultRowsForApi(
+      (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean),
+    );
     const vcpBullishCount = rows.filter((r) => r?.vcpBullish).length;
     return {
       scannedAt: run.scanned_at,
@@ -272,7 +294,8 @@ export async function loadScanResults() {
     };
   } catch (err) {
     console.warn('Load scan results failed; using file fallback.', err?.message || err);
-    return readScanResultsFile();
+    const payload = readScanResultsFile();
+    return { ...payload, results: enrichScanResultRowsForApi(payload.results || []) };
   }
 }
 
@@ -283,7 +306,11 @@ export async function loadScanResults() {
 export async function loadLatestScanResultsWithRun() {
   if (!isSupabaseConfigured()) {
     const payload = readScanResultsFile();
-    return { scanRunId: null, ...payload };
+    return {
+      scanRunId: null,
+      ...payload,
+      results: enrichScanResultRowsForApi(payload.results || []),
+    };
   }
   try {
     const supabase = getSupabase();
@@ -297,7 +324,9 @@ export async function loadLatestScanResultsWithRun() {
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean);
+    const rows = enrichScanResultRowsForApi(
+      (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean),
+    );
     const vcpBullishCount = rows.filter((r) => r?.vcpBullish).length;
     return {
       scanRunId: run.id,
@@ -311,7 +340,11 @@ export async function loadLatestScanResultsWithRun() {
   } catch (err) {
     console.warn('Load scan results with run failed; using file fallback.', err?.message || err);
     const payload = readScanResultsFile();
-    return { scanRunId: null, ...payload };
+    return {
+      scanRunId: null,
+      ...payload,
+      results: enrichScanResultRowsForApi(payload.results || []),
+    };
   }
 }
 
