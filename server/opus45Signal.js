@@ -1333,19 +1333,22 @@ export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicke
       industryData = industryRanks[result.industryName];
     }
 
-    // Find if there's an active (non-exited) buy signal that's recent
-    const activeBuySignal = findActiveBuySignal(
-      bars, 
-      result, 
-      fundamentals, 
-      industryData, 
-      weights,
-      MAX_DAYS_FOR_RECOMMENDATION,
-      spyBars  // Pass SPY bars for accurate historical signal detection
-    );
+    const displaySignal = bars?.length
+      ? generateOpus45Signal(result, bars, fundamentals, industryData, weights)
+      : null;
+    const hasDisplaySignal = !!displaySignal?.signal;
+    const activeBuySignal = hasDisplaySignal
+      ? findActiveBuySignal(
+        bars,
+        result,
+        fundamentals,
+        industryData,
+        weights,
+        MAX_DAYS_FOR_RECOMMENDATION,
+        spyBars,
+      )
+      : null;
 
-    // For allScores: show the confidence if there's an active position (even if old)
-    // Show 0/F if position was exited or never had a signal
     if (activeBuySignal?.stillActive) {
       const lastClose = bars && bars.length > 0 ? bars[bars.length - 1].c : null;
       const entryPrice = activeBuySignal.entryPrice;
@@ -1384,12 +1387,12 @@ export function findOpus45Signals(scanResults, barsByTicker, fundamentalsByTicke
         });
       }
     } else {
-      // No active position - either never had signal or was exited
+      // Non-actionable rows still keep a setup score for dashboard display.
       allScores.push({
         ticker,
-        opus45Confidence: 0,
-        opus45Grade: 'F',
-        stillInPosition: false
+        opus45Confidence: hasDisplaySignal ? (displaySignal.opus45Confidence ?? 0) : 0,
+        opus45Grade: hasDisplaySignal ? (displaySignal.opus45Grade ?? 'F') : 'F',
+        stillInPosition: hasDisplaySignal,
       });
     }
   }

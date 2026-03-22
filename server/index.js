@@ -532,7 +532,7 @@ app.get('/api/scan-results', async (req, res) => {
       }
       opus45Signals = cached.signals;
       opus45Stats = cached.stats ?? getSignalStats(cached.signals);
-      const allScores = mapCachedSignalsToAllScores(cached.signals);
+      const allScores = mapCachedSignalsToAllScores(cached.allScores?.length ? cached.allScores : cached.signals);
       allScores.forEach((s) => opusByTicker.set(s.ticker, {
         opus45Confidence: s.opus45Confidence,
         opus45Grade: s.opus45Grade,
@@ -2637,7 +2637,13 @@ async function computeAndSaveOpus45Scores(context = {}) {
       tickersWithBars: Object.keys(barsByTicker).length
     };
 
-    await saveOpus45SignalsToDb({ signals: cacheData.signals, stats: cacheData.stats, total: cacheData.total, computedAt: cacheData.computedAt });
+    await saveOpus45SignalsToDb({
+      signals: cacheData.signals,
+      allScores: cacheData.allScores,
+      stats: cacheData.stats,
+      total: cacheData.total,
+      computedAt: cacheData.computedAt,
+    });
     console.log(`Opus4.5: Cached ${signals.length} active signals; ${allScores.length} tickers scored.`);
     
     return cacheData;
@@ -2719,7 +2725,7 @@ app.get('/api/opus45/signals', async (req, res) => {
       const cached = await loadOpus45SignalsFromDb();
       if (cached && cached.signals?.length >= 0) {
         await enrichCachedSignalsWithCurrentPrice(cached.signals);
-        const allScores = mapCachedSignalsToAllScores(cached.signals);
+        const allScores = mapCachedSignalsToAllScores(cached.allScores?.length ? cached.allScores : cached.signals);
         return res.json({ signals: cached.signals, allScores, total: cached.total ?? cached.signals?.length, stats: cached.stats, fromCache: true });
       }
     }

@@ -167,6 +167,25 @@ export function enrichScanResultRowsForApi(rows) {
   });
 }
 
+export function dedupeScanResultsByTicker(rows = []) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const byTicker = new Map();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const ticker = String(row.ticker || '').trim().toUpperCase();
+    if (!ticker) continue;
+    const prev = byTicker.get(ticker);
+    if (!prev) {
+      byTicker.set(ticker, row);
+      continue;
+    }
+    const prevScore = Number(prev.enhancedScore ?? prev.score ?? -Infinity);
+    const nextScore = Number(row.enhancedScore ?? row.score ?? -Infinity);
+    if (nextScore >= prevScore) byTicker.set(ticker, row);
+  }
+  return [...byTicker.values()];
+}
+
 export function buildScanTickerNav({ results = [], actionableBuyTickers = new Set() } = {}) {
   return (results || [])
     .map((row) => ({
@@ -280,9 +299,8 @@ export async function loadScanResults() {
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = enrichScanResultRowsForApi(
-      (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean),
-    );
+    const mergedRows = (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean);
+    const rows = enrichScanResultRowsForApi(dedupeScanResultsByTicker(mergedRows));
     const vcpBullishCount = rows.filter((r) => r?.vcpBullish).length;
     return {
       scannedAt: run.scanned_at,
@@ -324,9 +342,8 @@ export async function loadLatestScanResultsWithRun() {
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = enrichScanResultRowsForApi(
-      (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean),
-    );
+    const mergedRows = (results || []).map((r) => mergeScanResultDataRow(r)).filter(Boolean);
+    const rows = enrichScanResultRowsForApi(dedupeScanResultsByTicker(mergedRows));
     const vcpBullishCount = rows.filter((r) => r?.vcpBullish).length;
     return {
       scanRunId: run.id,
@@ -351,7 +368,9 @@ export async function loadLatestScanResultsWithRun() {
 export async function loadScanResultSummaries() {
   if (!isSupabaseConfigured()) {
     const payload = readScanResultsFile();
-    const results = (payload.results || []).map(mapScanResultSummaryRow).filter(Boolean);
+    const results = dedupeScanResultsByTicker(
+      (payload.results || []).map(mapScanResultSummaryRow).filter(Boolean),
+    );
     return {
       scannedAt: payload.scannedAt ?? null,
       from: payload.from,
@@ -373,7 +392,7 @@ export async function loadScanResultSummaries() {
       .eq('scan_run_id', run.id)
       .order('enhanced_score', { ascending: false, nullsFirst: false });
     if (resErr) throw new Error(resErr.message);
-    const rows = (results || []).map(mapScanResultSummaryRow).filter(Boolean);
+    const rows = dedupeScanResultsByTicker((results || []).map(mapScanResultSummaryRow).filter(Boolean));
     return {
       ...getScanRunMeta(run),
       totalTickers: rows.length,
@@ -383,7 +402,9 @@ export async function loadScanResultSummaries() {
   } catch (err) {
     console.warn('Load scan summaries failed; using file fallback.', err?.message || err);
     const payload = readScanResultsFile();
-    const results = (payload.results || []).map(mapScanResultSummaryRow).filter(Boolean);
+    const results = dedupeScanResultsByTicker(
+      (payload.results || []).map(mapScanResultSummaryRow).filter(Boolean),
+    );
     return {
       scannedAt: payload.scannedAt ?? null,
       from: payload.from,
@@ -483,7 +504,9 @@ export async function saveScanResultsBatch({ scanRunId, results, meta }) {
   }));
 
   if (rows.length > 0) {
-    const { error } = await supabase.from('scan_results').insert(rows);
+    const { error } = await supabase
+      .from('scan_results')
+      .upsert(rows, { onConflict: 'scan_run_id,ticker' });
     if (error) throw new Error(error.message);
   }
 

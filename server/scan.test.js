@@ -11,6 +11,6 @@ describe('scan dateRange', () => {
     const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
 
     // allow 1-day variance due to local date rollover
-    assert.ok(diffDays >= 319 && diffDays <= 321, `expected ~320 days, got ${diffDays}`);
+    assert.ok(diffDays >= 419 && diffDays <= 421, `expected ~420 days, got ${diffDays}`);
   });
 });

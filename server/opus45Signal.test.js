@@ -17,7 +17,8 @@ import {
   getRecencyBoost,
   computeRankScore,
   isNewBuyToday,
-  normalizeRs
+  normalizeRs,
+  findOpus45Signals
 } from './opus45Signal.js';
 
 // ============================================================================
@@ -711,6 +712,40 @@ describe('generateOpus45Signal', () => {
     const seedSignal = generateOpus45Signal(vcpResult, bars, null, null, DEFAULT_WEIGHTS, null, true);
     assert.strictEqual(seedSignal.signal, true);
     assert.strictEqual(seedSignal.seedMode, true);
+  });
+});
+
+describe('findOpus45Signals', () => {
+  it('returns allScores entry for every scan result ticker', () => {
+    const bars = generateStage2Bars(280);
+    const result = {
+      ticker: 'TEST',
+      contractions: 3,
+      relativeStrength: 88,
+      patternConfidence: 70,
+      volumeDryUp: true,
+      pattern: 'VCP',
+      industryName: 'Software',
+      enhancedScore: 80,
+      score: 80,
+    };
+
+    const { allScores } = findOpus45Signals(
+      [result, { ...result, ticker: 'TEST2' }],
+      { TEST: bars, TEST2: bars },
+      {
+        TEST: { industry: 'Software' },
+        TEST2: { industry: 'Software' },
+      },
+      {
+        Software: { rank: 10, totalCount: 197, return3Mo: 8 },
+      },
+      DEFAULT_WEIGHTS,
+    );
+
+    assert.equal(allScores.length, 2);
+    assert.equal(allScores[0].ticker, 'TEST');
+    assert.equal(allScores[1].ticker, 'TEST2');
   });
 });
 

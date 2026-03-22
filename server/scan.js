@@ -310,6 +310,25 @@ function appendLanceSetup(list, lancePreTrade) {
   return [...list, 'lance'];
 }
 
+function buildNormalizedIndustryRankIndex(industryRanks = {}) {
+  const index = new Map();
+  for (const [name, data] of Object.entries(industryRanks || {})) {
+    const normalized = normalizeIndustryName(name);
+    if (!normalized || index.has(normalized)) continue;
+    index.set(normalized, data);
+  }
+  return index;
+}
+
+function resolveIndustryRankData(industryName, industryRanks = {}, normalizedIndex = new Map()) {
+  if (!industryName) return null;
+  return (
+    industryRanks?.[industryName] ||
+    normalizedIndex.get(normalizeIndustryName(industryName)) ||
+    null
+  );
+}
+
 export function applyRatingsAndEnhancements({
   results,
   fundamentals,
@@ -318,9 +337,14 @@ export function applyRatingsAndEnhancements({
   snapshotsByTicker,
 }) {
   const rated = assignIBDRelativeStrengthRatings(results);
+  const normalizedIndustryRanks = buildNormalizedIndustryRankIndex(industryRanks);
   return rated.map((row) => {
     const fund = fundamentals?.[row.ticker] || null;
-    const industryData = fund?.industry ? industryRanks?.[fund.industry] : null;
+    const industryData = resolveIndustryRankData(
+      fund?.industry,
+      industryRanks,
+      normalizedIndustryRanks,
+    );
     const bars = barsByTicker?.get(row.ticker) || null;
     const enhanced = bars ? computeEnhancedScore(row, bars, fund, industryData, industryRanks) : {};
     const lancePreTrade = computeLancePreTrade(row, bars || []);
@@ -369,11 +393,16 @@ export async function backfillIndustryRanks({ batchSize = 20 } = {}) {
   const fundamentals = await loadFundamentals();
   const industryReturns = await loadIndustryReturns(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
+  const normalizedIndustryRanks = buildNormalizedIndustryRankIndex(industryRanks);
 
   const updatedResults = results.map((row) => {
     const fund = fundamentals?.[row.ticker] || null;
     const industryName = fund?.industry ?? row.industryName ?? null;
-    const rankData = industryName ? industryRanks?.[industryName] : null;
+    const rankData = resolveIndustryRankData(
+      industryName,
+      industryRanks,
+      normalizedIndustryRanks,
+    );
     const industryRank = rankData?.rank ?? null;
     return { ...row, industryName, industryRank };
   });
@@ -411,9 +440,20 @@ async function runScan() {
   const fundamentals = await loadFundamentals();
   const industryReturns = await loadIndustryReturns(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
+  const normalizedIndustryRanks = buildNormalizedIndustryRankIndex(industryRanks);
+  const requiredIndustries = new Set(
+    Object.values(fundamentals || {})
+      .map((entry) => normalizeIndustryName(entry?.industry))
+      .filter(Boolean),
+  );
+  let matchedIndustryCount = 0;
+  requiredIndustries.forEach((industry) => {
+    if (normalizedIndustryRanks.has(industry)) matchedIndustryCount += 1;
+  });
   
   console.log(`Scanning ${tickers.length} tickers (${from} to ${to})`);
   console.log(`Loaded ${Object.keys(fundamentals).length} fundamentals, ${Object.keys(industryRanks).length} ranked industries`);
+  console.log(`Industry rank coverage: ${matchedIndustryCount}/${requiredIndustries.size} mapped from fundamentals`);
 
   const results = [];
   const barsByTicker = new Map();

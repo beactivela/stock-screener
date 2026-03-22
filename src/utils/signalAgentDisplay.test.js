@@ -49,9 +49,20 @@ describe('signalAgentDisplay helpers', () => {
     );
     assert.deepEqual(
       getEffectiveSignalSetups(['momentum_scout'], ['base_hunter']),
-      ['momentum_scout'],
+      ['momentum_scout', 'base_hunter'],
     );
     assert.deepEqual(getEffectiveSignalSetups(null, ['base_hunter']), ['base_hunter']);
     assert.deepEqual(getEffectiveSignalSetups(undefined, undefined), []);
+  });
+
+  it('merges recent and full setups without duplicates', () => {
+    assert.deepEqual(
+      getEffectiveSignalSetups(['momentum_scout'], ['momentum_scout', 'turtle_trader', 'lance']),
+      ['momentum_scout', 'turtle_trader', 'lance'],
+    );
+    assert.deepEqual(
+      getEffectiveSignalSetups(['unusual_vol'], ['turtle_trader']),
+      ['unusual_vol', 'turtle_trader'],
+    );
   });
 });

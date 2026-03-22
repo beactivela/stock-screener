@@ -1038,7 +1038,7 @@ export default function Dashboard() {
                           return (
                             <span
                               className={`inline-block whitespace-nowrap px-2 py-0.5 rounded text-sm font-medium ${badgeClass}`}
-                              title="Opus4.5 signal strength (entry quality, pattern, volume)"
+                              title="Opus4.5 setup strength (shows ranked setup score even when no active open trade)"
                             >
                               {display.label}
                             </span>

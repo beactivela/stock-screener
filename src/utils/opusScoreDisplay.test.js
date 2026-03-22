@@ -39,4 +39,14 @@ describe('getOpusDisplayState', () => {
     assert.equal(state.hasActiveSetup, true)
     assert.equal(state.label, '0% F')
   })
+
+  it('shows non-F grades even when confidence is zero', () => {
+    const state = getOpusDisplayState({
+      opus45Confidence: 0,
+      opus45Grade: 'C',
+    })
+
+    assert.equal(state.hasActiveSetup, true)
+    assert.equal(state.label, '0% C')
+  })
 })

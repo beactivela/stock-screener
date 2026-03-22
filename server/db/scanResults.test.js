@@ -12,6 +12,7 @@ import {
   inferSupabaseScanRunLooksInProgress,
   mergeScanResultDataRow,
   enrichScanResultRowsForApi,
+  dedupeScanResultsByTicker,
 } from './scanResults.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,6 +130,7 @@ describe('scan results batch persistence (file fallback)', () => {
           signalSetups: ['momentum_scout'],
           signalSetupsRecent: ['momentum_scout'],
           signalSetupsRecent5: ['momentum_scout'],
+          lancePreTrade: { score: 'B', insufficientData: false },
         },
         {
           ticker: 'BBB',
@@ -153,6 +155,7 @@ describe('scan results batch persistence (file fallback)', () => {
     assert.equal(aaa?.industryRank, 5);
     assert.equal(aaa?.relativeStrength, 94);
     assert.deepEqual(aaa?.signalSetupsRecent, ['momentum_scout']);
+    assert.equal(aaa?.lancePreTrade?.score, 'B');
 
     assert.equal(bbb?.industryName, 'Hardware');
     assert.equal(bbb?.industryRank, 18);
@@ -336,5 +339,19 @@ describe('inferSupabaseScanRunLooksInProgress', () => {
 
   it('is true when total_tickers 0 but run just started', () => {
     assert.equal(inferSupabaseScanRunLooksInProgress(run(-30_000, 0), 0, now), true);
+  });
+});
+
+describe('dedupeScanResultsByTicker', () => {
+  it('keeps highest enhancedScore row for each ticker', () => {
+    const deduped = dedupeScanResultsByTicker([
+      { ticker: 'AAA', enhancedScore: 60, source: 'older' },
+      { ticker: 'AAA', enhancedScore: 90, source: 'newer' },
+      { ticker: 'BBB', enhancedScore: 40 },
+    ]);
+    assert.equal(deduped.length, 2);
+    const aaa = deduped.find((row) => row.ticker === 'AAA');
+    assert.equal(aaa?.enhancedScore, 90);
+    assert.equal(aaa?.source, 'newer');
   });
 });

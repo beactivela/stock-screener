@@ -21,9 +21,20 @@ const AGENT_PRIORITY = [
  * This avoids empty filters when recent classification is unavailable.
  */
 export function getEffectiveSignalSetups(signalSetupsRecent = null, signalSetups = null) {
-  if (Array.isArray(signalSetupsRecent) && signalSetupsRecent.length > 0) return signalSetupsRecent;
-  if (Array.isArray(signalSetups)) return signalSetups;
-  return [];
+  const recent = Array.isArray(signalSetupsRecent) ? signalSetupsRecent : [];
+  const full = Array.isArray(signalSetups) ? signalSetups : [];
+  if (recent.length === 0) return full;
+  if (full.length === 0) return recent;
+
+  // Preserve recent-first ordering while keeping same-day full-row tags (e.g. turtle).
+  const merged = [...recent];
+  const seen = new Set(merged);
+  for (const setup of full) {
+    if (seen.has(setup)) continue;
+    seen.add(setup);
+    merged.push(setup);
+  }
+  return merged;
 }
 
 export function resolveSignalAgentLabel(signalSetups = [], preferredAgentId = null) {
