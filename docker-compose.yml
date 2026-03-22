@@ -1,4 +1,4 @@
-# Run the stock-screener app on Hostinger VPS (or any host with Docker).
+# Optional: run the app locally with Docker (production is Vercel).
 # Usage: copy .env.example to .env, set your secrets, then:
 #   docker compose up -d
 # Logs: docker compose logs -f

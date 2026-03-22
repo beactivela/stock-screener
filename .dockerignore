@@ -5,7 +5,7 @@ npm-debug.log*
 # Build output (rebuilt in container)
 dist
 
-# Local data / caches (don’t bake into image; use volumes or Supabase on VPS)
+# Local data / caches (don’t bake into image; use volumes or Supabase in production)
 data
 .env
 .env.*
