@@ -282,8 +282,18 @@ export function ScanProvider({ children }: { children: ReactNode }) {
         startPolling();
       }
 
-      // Close the stream - polling handles the rest
-      reader.cancel();
+      // Do NOT call reader.cancel(): that aborts the POST in browsers, which can break the server's
+      // SSE response and stop or error the scan. Drain the stream in the background until the server closes it.
+      void (async () => {
+        try {
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+          }
+        } catch {
+          /* ignore */
+        }
+      })();
     } catch (error) {
       console.error('Failed to start scan:', error);
       setScanState((prev) => ({ ...prev, running: false, progressSource: null }));

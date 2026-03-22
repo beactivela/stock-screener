@@ -60,8 +60,17 @@ async function testBackgroundScan() {
       }
     }
     
-    // Close the stream immediately - we'll poll instead
-    reader.cancel();
+    // Keep the request alive: canceling the reader aborts POST and can break the server-side scan.
+    void (async () => {
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
     
     if (!scanId) {
       throw new Error('Failed to get scan ID');

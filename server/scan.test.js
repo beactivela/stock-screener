@@ -1,6 +1,6 @@
 import assert from 'assert';
 import { describe, it } from 'node:test';
-import { dateRange } from './scan.js';
+import { dateRange, runScanStream } from './scan.js';
 
 describe('scan dateRange', () => {
   it('defaults to enough history for 200 MA based criteria', () => {
@@ -12,5 +12,15 @@ describe('scan dateRange', () => {
 
     // allow 1-day variance due to local date rollover
     assert.ok(diffDays >= 419 && diffDays <= 421, `expected ~420 days, got ${diffDays}`);
+  });
+});
+
+describe('runScanStream(preloadedTickers)', () => {
+  it('with an empty list yields nothing (no network)', async () => {
+    const yielded = [];
+    for await (const row of runScanStream([])) {
+      yielded.push(row);
+    }
+    assert.strictEqual(yielded.length, 0);
   });
 });

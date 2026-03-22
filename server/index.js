@@ -781,13 +781,17 @@ function queueOpus45Recompute(context = {}) {
     });
 }
 
-async function executeManagedScan({ onProgress } = {}) {
-  const { runScanStream, applyRatingsAndEnhancements, resolveScanExecutionConfig } = await import('./scan.js');
+async function executeManagedScan({ onProgress, onTickersReady } = {}) {
+  const { runScanStream, applyRatingsAndEnhancements, resolveScanExecutionConfig, getTickers } = await import('./scan.js');
   const { from: fromStr, to: toStr } = dateRange(420);
   const scannedAt = new Date().toISOString();
   const fundamentals = await loadFundamentals();
   const industryReturns = await loadIndustryReturnsForScan(fundamentals);
   const industryRanks = rankIndustries(industryReturns);
+  const tickers = await getTickers();
+  if (typeof onTickersReady === 'function') {
+    await Promise.resolve(onTickersReady(tickers.length));
+  }
   const barsByTicker = new Map();
   const snapshotsByTicker = new Map();
   const results = [];
@@ -801,7 +805,7 @@ async function executeManagedScan({ onProgress } = {}) {
     scannedAt,
     from: fromStr,
     to: toStr,
-    totalTickers,
+    totalTickers: tickers.length,
     vcpBullishCount: 0,
   });
 
@@ -820,7 +824,7 @@ async function executeManagedScan({ onProgress } = {}) {
     });
   };
 
-  for await (const { result, index, total, bars, snapshots } of runScanStream()) {
+  for await (const { result, index, total, bars, snapshots } of runScanStream(tickers)) {
     results.push(result);
     pendingBatch.push(result);
     totalTickers = total;
@@ -957,16 +961,27 @@ app.post('/api/scan', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no'); // nginx: disable buffering
   res.flushHeaders?.();
 
+  // If the client aborts the fetch body (e.g. old code called reader.cancel()), writes can throw.
+  // Swallow write errors so the scan keeps running; UI uses GET /api/scan/progress.
   const send = (obj) => {
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    res.flush?.();
+    try {
+      if (res.writableEnded || res.destroyed) return;
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      res.flush?.();
+    } catch {
+      /* client disconnected */
+    }
   };
-  
+
   // Send initial scan ID
   send({ scanId: activeScan.id, started: true, startedAt: activeScan.progress.startedAt });
 
   try {
     const completedScan = await executeManagedScan({
+      onTickersReady: (universeSize) => {
+        activeScan.progress.total = universeSize;
+        send({ universeSize, scanId: activeScan.id });
+      },
       onProgress: async ({ result, index, total, vcpBullishCount }) => {
         activeScan.results.push(result);
         activeScan.progress.index = index;
@@ -995,7 +1010,11 @@ app.post('/api/scan', async (req, res) => {
     activeScan.progress.completedAt = new Date().toISOString();
     send({ error: e.message, scanId: activeScan.id });
   } finally {
-    res.end();
+    try {
+      if (!res.writableEnded) res.end();
+    } catch {
+      /* ignore */
+    }
   }
 });
 

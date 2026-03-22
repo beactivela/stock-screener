@@ -591,10 +591,16 @@ async function runScan() {
  * 
  * IMPROVEMENT: Now uses industry ranks with multiplier
  */
-async function* runScanStream() {
+/**
+ * @param {string[] | null | undefined} preloadedTickers - When set (e.g. from executeManagedScan), skips a second getTickers() call and uses this universe.
+ */
+async function* runScanStream(preloadedTickers = undefined) {
   ensureDataDir();
   const { from, to } = dateRange(420); // 420d ensures 12m RS + 200 MA coverage
-  const tickers = await getTickers();
+  const tickers =
+    preloadedTickers !== undefined && preloadedTickers !== null
+      ? preloadedTickers
+      : await getTickers();
   const { delayMs, scanConcurrency, yahooConcurrency } = resolveScanExecutionConfig();
   const withYahooLimit = createScanRateLimiter(yahooConcurrency, delayMs);
 
@@ -618,7 +624,7 @@ if (isMain) {
   });
 }
 
-export { runScan, runScanStream, dateRange };
+export { runScan, runScanStream, dateRange, getTickers };
 
 /**
  * Measure scan duration for a list of tickers using an injected scan function.
