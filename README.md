@@ -57,7 +57,14 @@ The app is compatible with Vercel: frontend and API run as serverless.
 2. **Data:** All data (scan results, fundamentals, industry data, bars cache) is stored in the database (Supabase). Configure `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in Vercel so the deployed app reads/writes the same DB. No file-based `data/` needed.
 3. **Limits on Vercel:** Serverless can call Supabase; scans and cache writes persist in the DB. For heavy scan jobs, consider pointing **VITE_API_URL** to an external API (e.g. Railway, Render) that runs `npm run server` if you need long-running processes.
 
+## Deploy to a VPS (Docker + GitHub)
+
+The repo includes a `Dockerfile` and `docker-compose.yml`. On the server: clone, add `.env`, then `./scripts/vps-deploy.sh`. Optionally use **GitHub Actions** (workflow **Deploy to VPS**) to SSH in and run `git pull` + `docker compose up -d --build` after you configure repository secrets.
+
+Full checklist (SSH key for Actions, firewall, troubleshooting): **[docs/DEPLOY-VPS.md](./docs/DEPLOY-VPS.md)**.
+
 ## Documentation
 
 - **[ARCHITECTURE.md](./ARCHITECTURE.md)** — System diagram, data flow, runtime (single port), scoring, deployment.
+- **[docs/DEPLOY-VPS.md](./docs/DEPLOY-VPS.md)** — Docker on a VPS, GitHub Actions SSH deploy, secrets, troubleshooting.
 - **[docs/](docs/)** — Implementation notes (PLAN.md, BACKGROUND_SCAN_IMPLEMENTATION.md, backtest/signal notes, etc.).

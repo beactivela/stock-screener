@@ -6,6 +6,10 @@
 #   VPS_SSH_KEY      — private key (full PEM, including BEGIN/END lines)
 #   VPS_DEPLOY_PATH  — absolute path to the clone on the server (e.g. /opt/stock-screener)
 #
+# Optional:
+#   VPS_DOCKER_USE_SUDO — set to "true" if the SSH user must run `sudo docker compose`
+#                         (prefer adding the user to the `docker` group instead)
+#
 # One-time on the server: clone repo, copy .env.example → .env, fill secrets, ensure
 # deploy user can run docker (group docker or sudo).
 #
@@ -21,6 +25,10 @@ on:
         required: true
         default: main
 
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -30,18 +38,31 @@ jobs:
         env:
           DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
           GIT_BRANCH: ${{ github.event.inputs.branch }}
+          DOCKER_USE_SUDO: ${{ secrets.VPS_DOCKER_USE_SUDO }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: DEPLOY_PATH,GIT_BRANCH
+          port: 22
+          timeout: 2m
+          command_timeout: 30m
+          # GitHub-hosted runners don't have your VPS host key pre-registered; accept on first connect.
+          host_key_checking: false
+          envs: DEPLOY_PATH,GIT_BRANCH,DOCKER_USE_SUDO
           script_stop: true
           script: |
             set -euo pipefail
             test -n "${DEPLOY_PATH:-}" || { echo "VPS_DEPLOY_PATH secret is empty"; exit 1; }
             cd "$DEPLOY_PATH"
-            git fetch origin
+            dc() {
+              if [ "${DOCKER_USE_SUDO:-}" = "true" ]; then
+                sudo docker compose "$@"
+              else
+                docker compose "$@"
+              fi
+            }
+            git fetch origin --prune
             git checkout "$GIT_BRANCH"
             git pull --ff-only origin "$GIT_BRANCH"
-            docker compose up -d --build
-            docker compose ps
+            dc up -d --build
+            dc ps
