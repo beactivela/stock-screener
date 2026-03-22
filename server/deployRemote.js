@@ -3,6 +3,8 @@
  * trigger a GitHub Actions workflow to rebuild + push GHCR (Watchtower pulls on the VPS).
  */
 
+import { getCronSecret } from './cronConfig.js';
+
 const REMOTE_SHA_CACHE_MS = 120_000;
 let remoteShaCache = { at: 0, sha: null, branch: null, error: null };
 
@@ -24,7 +26,7 @@ export function normalizeDeployedSha(sha) {
 function getDeployAuthSecret() {
   const d = process.env.DEPLOY_SECRET?.trim();
   if (d) return d;
-  return process.env.CRON_SECRET?.trim() || null;
+  return getCronSecret() || null;
 }
 
 function verifyDeployAuth(req) {

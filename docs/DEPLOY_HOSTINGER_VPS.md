@@ -46,6 +46,8 @@ No public URL required. TLS not used on loopback.
 
 Scheduled endpoints (same auth as scan): **`POST /api/cron/refresh-bars`** (alias **`/api/cron/fetch-prices`**) warms **`bars_cache`** for the scan universe; **`POST /api/cron/run-scan`** runs the full scan.
 
+**`GET /api/cron/status`** (no auth) returns whether **`CRON_SECRET`** is set, resolved **`CRON_BASE_URL`** / **`HOST_PORT`**, and the `.env` file path — it never returns the secret.
+
 ```bash
 chmod +x scripts/trigger-scheduled-scan.sh
 # root-only file, e.g. /opt/stock-screener/.cron-env

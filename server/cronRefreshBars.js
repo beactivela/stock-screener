@@ -6,6 +6,7 @@
 import { loadTickers as loadTickersFromDb } from './db/tickers.js';
 import { getBarsBatch } from './db/bars.js';
 import { dateRange } from './scan.js';
+import { getCronBarsChunk } from './cronConfig.js';
 
 /**
  * @param {object} [deps]
@@ -18,8 +19,7 @@ export async function runUniverseBarsRefresh(deps = {}) {
   const loadTickers = deps.loadTickers ?? loadTickersFromDb;
   const batchGetBars = deps.getBarsBatch ?? getBarsBatch;
   const rangeFn = deps.dateRange ?? dateRange;
-  const chunkSize =
-    deps.chunkSize ?? Math.max(10, Number(process.env.CRON_BARS_CHUNK) || 40);
+  const chunkSize = deps.chunkSize ?? getCronBarsChunk();
 
   const tickers = await loadTickers();
   if (!tickers.length) {

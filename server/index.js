@@ -9,8 +9,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Load .env from project root (parent of server/)
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Load .env from project root (parent of server/) — cron + all other env vars
+const ROOT_ENV = path.join(__dirname, '..', '.env');
+dotenv.config({ path: ROOT_ENV });
 
 import express from 'express';
 import cors from 'cors';
@@ -77,6 +78,7 @@ import { summarizePercentiles } from './utils/percentiles.js';
 import { getScanPersistenceStrategy } from './scanPersistence.js';
 import { maybeClearStaleActiveScan } from './scanStaleLock.js';
 import { registerDeployRoutes } from './deployRemote.js';
+import { getCronSecret, getCronStatusPayload } from './cronConfig.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -986,9 +988,9 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
-// Shared auth for POST /api/cron/* (Bearer CRON_SECRET or x-cron-secret).
+// Shared auth for POST /api/cron/* (Bearer CRON_SECRET or x-cron-secret). Secret from `.env` → process.env.
 function validateCronSecret(req, res) {
-  const secret = process.env.CRON_SECRET?.trim();
+  const secret = getCronSecret();
   const authHeader = req.headers.authorization;
   const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const headerSecret = String(req.headers['x-cron-secret'] || bearer || '').trim() || null;
@@ -1106,6 +1108,16 @@ async function postCronRefreshBarsHandler(req, res) {
 
 app.post('/api/cron/refresh-bars', postCronRefreshBarsHandler);
 app.post('/api/cron/fetch-prices', postCronRefreshBarsHandler);
+
+// Read-only: where cron config comes from (.env path) and whether the secret is set — never exposes CRON_SECRET.
+app.get('/api/cron/status', (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(getCronStatusPayload());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // OHLC bars for a ticker. Query: days (default 180), interval (1d|1wk|1mo, default 1d).
 app.get('/api/bars/:ticker', async (req, res) => {
