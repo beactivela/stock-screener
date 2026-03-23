@@ -49,6 +49,7 @@ const TICKER_TO_LABEL: Record<string, string> = {
   '^GSPC': 'S&P 500',
   '^IXIC': 'NASDAQ',
   '^RUT': 'Russell 2000',
+  '^VIX': 'VIX',
 }
 
 const TIMEFRAMES = [
@@ -56,6 +57,9 @@ const TIMEFRAMES = [
   { label: '1Y', days: 365 },
 ] as const
 const MIN_DAYS_FOR_RSI = 365
+
+/** Empty space to the right of the last bar, in bar widths (daily bars ≈ trading sessions). */
+const INDEX_CHART_RIGHT_OFFSET_BARS = 7
 
 const CHART_OPTIONS = {
   layout: { background: { type: ColorType.Solid, color: '#0f172a' }, textColor: '#94a3b8' },
@@ -503,6 +507,8 @@ function MarketIndexChart({
       borderColor: '#334155',
     })
     chart.timeScale().fitContent()
+    // Breathing room past the last candle so price labels don’t hug the right edge.
+    chart.timeScale().applyOptions({ rightOffset: INDEX_CHART_RIGHT_OFFSET_BARS })
     chartRef.current = chart
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       const unixTime = toUnixTime(param.time)

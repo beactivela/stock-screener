@@ -17,6 +17,7 @@ All application data and cache are stored in Supabase. The app reads from and wr
    **Option B: SQL Editor**
    - Open project → SQL Editor → New query
    - Paste contents of `schema.sql` → Run
+   - If you use learning / agents features, run `learning-schema.sql` and any other `migration-*.sql` files your deployment needs (see table below), **then** run `migration-rls-and-api-hardening.sql`.
 
 3. **Add env vars** to `.env`:
    ```
@@ -25,7 +26,9 @@ All application data and cache are stored in Supabase. The app reads from and wr
    ```
    Get these from Project Settings → API. Use **service_role** for full server-side access (bypasses RLS).
 
-4. **Test connection**:
+4. **Security (RLS)** — After schema is applied, run `migration-rls-and-api-hardening.sql` once (SQL Editor). That enables Row Level Security on all `public` tables and fixes `SECURITY DEFINER` views so the **anon** key cannot read your data. The Node server **must** use `SUPABASE_SERVICE_KEY` (not anon) or queries will return empty / fail.
+
+5. **Test connection**:
    ```bash
    node -e "
    import('./server/supabase.js').then(m => {
@@ -34,6 +37,22 @@ All application data and cache are stored in Supabase. The app reads from and wr
      if (sb) sb.from('tickers').select('count').then(r => console.log('Test:', r));
    });
    ```
+
+## SQL migrations (reference)
+
+| File | Purpose |
+|------|---------|
+| `schema.sql` | Core tables (tickers, scans, bars, regime, trades, …) |
+| `learning-schema.sql` | Learning / failure-analysis tables (run after `schema.sql` if you use that stack) |
+| `migration-rls-and-api-hardening.sql` | **Security:** enable RLS on all `public` tables, `security_invoker` views, fix `update_market_conditions` `search_path`. Run **once** per project after schema is in place. |
+| Other `migration-*.sql` | Feature-specific deltas (Opus scores, WFO, archive, etc.) |
+
+Idempotent patterns (`IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`) are used where possible; the RLS migration is safe to re-run for **new tables only** if you repeat the `DO` block—see comments at the bottom of `migration-rls-and-api-hardening.sql`.
+
+## Security notes & linter
+
+- **[Database Linter](https://supabase.com/docs/guides/database/database-linter)** (Dashboard → Advisors): after hardening, you may see **INFO** [RLS enabled but no policy](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) on each table. That is expected: anon has no access until you add policies.
+- Never expose **`SUPABASE_SERVICE_KEY`** in the browser or in a public repo. The Vite app does not initialize Supabase; only the Node server uses the client in `server/supabase.js`.
 
 ## Schema overview (data in DB)
 

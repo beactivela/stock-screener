@@ -2,7 +2,7 @@ import { describe, it, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import { normalizeChartWindow, getHistoryMetadata, getBars, getBarsBatch, getFundamentalsBatch, __testing } from './yahoo.js';
+import { normalizeChartWindow, getHistoryMetadata, getBars, getBarsBatch, getFundamentals, getFundamentalsBatch, __testing } from './yahoo.js';
 
 describe('normalizeChartWindow', () => {
   it('keeps a valid ascending date range unchanged', () => {
@@ -172,6 +172,47 @@ describe('getBarsBatch', () => {
     assert.equal(results[2].status, 'fulfilled');
     assert.equal(results[2].ticker, 'MSFT');
     assert.equal(results[2].interval, '1wk');
+  });
+});
+
+describe('getFundamentals company stats', () => {
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  it('extracts market cap, revenue, employees, EPS, and business summary from quoteSummary', async () => {
+    mock.method(__testing.yahooFinance, 'quoteSummary', async () => ({
+      majorHoldersBreakdown: { institutionsPercentHeld: 0.5 },
+      defaultKeyStatistics: {
+        earningsQuarterlyGrowth: 0.1,
+        profitMargins: 0.2,
+        marketCap: 12_500_000_000,
+        trailingEps: 4.567,
+      },
+      financialData: {
+        operatingMargins: 0.15,
+        totalRevenue: 3_100_000_000,
+      },
+      earningsTrend: { trend: [] },
+      assetProfile: {
+        industry: 'Engineering & Construction',
+        sector: 'Industrials',
+        fullTimeEmployees: 1350,
+        longBusinessSummary:
+          'Argan, Inc., together with its subsidiaries, provides engineering, procurement, and construction services.',
+      },
+      price: {
+        displayName: 'Argan',
+        marketCap: 12_500_000_000,
+      },
+    }));
+
+    const f = await getFundamentals('AGX');
+    assert.equal(f.marketCap, 12_500_000_000);
+    assert.equal(f.totalRevenue, 3_100_000_000);
+    assert.equal(f.fullTimeEmployees, 1350);
+    assert.equal(f.trailingEps, 4.57);
+    assert.ok(f.businessSummary?.includes('Argan'));
   });
 });
 

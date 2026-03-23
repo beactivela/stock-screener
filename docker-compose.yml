@@ -9,6 +9,9 @@
 # Optional auto-pull when GHCR :latest digest changes (label-scoped):
 #   docker compose --profile watchtower up -d
 #
+# Uptime Kuma (same Compose stack): dashboard on host KUMA_PORT (default 3001). From Kuma’s UI add a monitor
+#   URL: http://stock-screener:3000/api/health  (Docker DNS; bypasses Traefik). For public URL checks use https://your-domain/api/health.
+#
 networks:
   default:
     name: stock-screener-net
@@ -52,5 +55,18 @@ services:
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_POLL_INTERVAL: "300"
 
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "${KUMA_PORT:-3001}:3001"
+    volumes:
+      - uptime-kuma-data:/app/data
+    labels:
+      # Omit from Watchtower unless you opt in (Kuma major upgrades are easier to control manually).
+      - "com.centurylinklabs.watchtower.enable=false"
+
 volumes:
   screener-data:
+  uptime-kuma-data:

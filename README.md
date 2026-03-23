@@ -24,6 +24,7 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
 2. **Environment**
    - Copy `.env.example` to `.env`.
    - No API key required for core data: ticker list and industry from TradingView scanner; OHLC bars from Yahoo. Set Supabase vars for DB persistence (see `.env.example`).
+   - **Supabase security:** The server should use **`SUPABASE_SERVICE_KEY`** (service role). Row Level Security is enabled on all `public` tables so the **anon** API key cannot read app data. New databases: apply `docs/supabase/schema.sql` (and learning migrations if needed), then run **`docs/supabase/migration-rls-and-api-hardening.sql`** once. Details: [docs/supabase/README.md](./docs/supabase/README.md).
 
 3. **Run**
    - **Single server (app + API):** `npm run dev` — one process at **http://localhost:5173**. The app and all `/api/*` routes are served from the same origin (no separate backend URL).
@@ -54,10 +55,11 @@ Full API and data flow: see [ARCHITECTURE.md](./ARCHITECTURE.md).
 The app is compatible with Vercel: frontend and API run as serverless.
 
 1. **Connect the repo** to Vercel; use default build (`npm run build`) and output `dist`.
-2. **Data:** All data (scan results, fundamentals, industry data, bars cache) is stored in the database (Supabase). Configure `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in Vercel so the deployed app reads/writes the same DB. No file-based `data/` needed.
+2. **Data:** All data (scan results, fundamentals, industry data, bars cache) is stored in the database (Supabase). Configure **`SUPABASE_URL`** and **`SUPABASE_SERVICE_KEY`** in Vercel (not the anon key; RLS blocks anon from app tables). No file-based `data/` needed. See [docs/VERCEL.md](./docs/VERCEL.md) and [docs/supabase/README.md](./docs/supabase/README.md).
 3. **Limits on Vercel:** Serverless can call Supabase; scans and cache writes persist in the DB. For heavy scan jobs, consider pointing **VITE_API_URL** to an external API (e.g. Railway, Render) that runs `npm run server` if you need long-running processes.
 
 ## Documentation
 
 - **[ARCHITECTURE.md](./ARCHITECTURE.md)** — System diagram, data flow, runtime (single port), scoring, deployment.
-- **[docs/](docs/)** — Implementation notes (PLAN.md, BACKGROUND_SCAN_IMPLEMENTATION.md, backtest/signal notes, etc.).
+- **[docs/supabase/README.md](./docs/supabase/README.md)** — Schema, migrations, **RLS / API hardening**, scheduled scan (Cron / Edge Function).
+- **[docs/](docs/)** — Implementation notes (PLAN.md, BACKGROUND_SCAN_IMPLEMENTATION.md, backtest/signal notes, Vercel/VPS deploy, etc.).

@@ -26,7 +26,7 @@ export function ClickTooltip({ text, content, children }: { text?: string; conte
       </button>
       {open && (
         <div
-          className="absolute z-50 top-full left-1/2 -translate-x-1/2 mt-1 px-4 py-2.5 text-[10pt] text-slate-200 bg-slate-800 border border-slate-600 rounded-lg shadow-xl min-w-[320px] max-w-[380px] normal-case leading-relaxed"
+          className="absolute z-50 top-full left-1/2 -translate-x-1/2 mt-1 px-4 py-2.5 text-sm text-slate-200 bg-slate-800 border border-slate-600 rounded-lg shadow-xl min-w-[320px] max-w-[380px] normal-case leading-relaxed"
           role="tooltip"
         >
           <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-full w-0 h-0 border-l-8 border-r-8 border-t-8 border-l-transparent border-r-transparent border-t-slate-600" />

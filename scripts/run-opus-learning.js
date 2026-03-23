@@ -25,6 +25,14 @@
  * API base: http://localhost:5173 (dev) or http://localhost:3001 (server)
  */
 
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { listScanSnapshots } from '../server/backtest.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+
 const API_BASE = process.env.API_BASE || 'http://localhost:5173';
 
 async function fetchJson(url, options = {}) {
@@ -74,7 +82,7 @@ async function runRetroLearning(dryRun, lookbackMonths, holdingPeriod, topN) {
 }
 
 async function runProspectiveLearning(dryRun, scanDate, daysForward, topN) {
-  const { snapshots } = await fetchJson(`${API_BASE}/api/backtest/snapshots`);
+  const snapshots = await listScanSnapshots();
   if (!snapshots?.length) {
     throw new Error('No scan snapshots. Run a scan first, or use --retro for historic learning.');
   }

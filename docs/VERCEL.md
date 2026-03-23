@@ -7,9 +7,11 @@ Set these in **Vercel → Project → Settings → Environment Variables** (Prod
 | Variable | Description |
 |----------|-------------|
 | `SUPABASE_URL` | Supabase project URL (e.g. `https://xxxx.supabase.co`) |
-| `SUPABASE_SERVICE_KEY` | Service role key from Supabase → Project Settings → API |
+| `SUPABASE_SERVICE_KEY` | **Service role** key from Supabase → Project Settings → API (required; bypasses RLS) |
 
 Without these, the API cannot read or write data (scan results, tickers, bars, fundamentals, etc.). **Redeploy after adding or changing env vars.**
+
+**Do not use the anon (publishable) key for the server.** The database uses Row Level Security on `public` tables with no policies for anon/authenticated clients, so PostgREST access with anon is denied. The Node API must use the service role. New projects: run `docs/supabase/migration-rls-and-api-hardening.sql` after schema setup ([supabase/README.md](./supabase/README.md)).
 
 ## API and Supabase compatibility
 

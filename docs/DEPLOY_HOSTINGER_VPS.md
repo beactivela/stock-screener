@@ -11,7 +11,7 @@ The browser talks to **same origin** (`/api/...`). Do **not** set `VITE_API_URL`
 
 | Piece | Role |
 |--------|------|
-| **Supabase** | Primary persistence when `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` are set (scan runs, results, bars cache, etc.). |
+| **Supabase** | Primary persistence when `SUPABASE_URL` + **`SUPABASE_SERVICE_KEY`** are set (scan runs, results, bars cache, etc.). RLS is enabled on app tables; the **anon** key cannot access that data via the Supabase API. |
 | **Docker on VPS** | `stock-screener` container: Express + `dist/` SPA on port **3000** → mapped to **`HOST_PORT`** (default **8080**). |
 | **Volume `screener-data`** | `/app/data` for JSON/bar file cache and fallbacks. |
 
@@ -20,8 +20,7 @@ The browser talks to **same origin** (`/api/...`). Do **not** set `VITE_API_URL`
 Set in **`.env`** on the server (never commit):
 
 - **`SUPABASE_URL`** — project URL  
-- **`SUPABASE_SERVICE_KEY`** — service role for server-side writes (recommended for this app as shipped).  
-  If you switch to **anon key**, you must align with **RLS** policies you own; the defaults assume service role.
+- **`SUPABASE_SERVICE_KEY`** — **required** service role key for this app. It bypasses RLS so scans and cache writes work. The **anon** key is not sufficient: all `public` tables use RLS with no anon policies (see `docs/supabase/migration-rls-and-api-hardening.sql`). To use anon from a client you would need to add explicit RLS policies yourself.
 - **`CRON_SECRET`** — long random string; required in **production** for `POST /api/cron/scan` and `POST /api/cron/run-scan` to work at all (unauthenticated cron is disabled when `NODE_ENV=production`).
 - **`TRAEFIK_HOST`** — hostname in Traefik’s `Host(\`name\`)` router rule (TLS via Let’s Encrypt). **DNS must point at the VPS.**
 - **`HOST_PORT`** — host port mapped to container **3000** (default `8080`). Use a **free** port if **3001** / **8080** are already used (e.g. by other stacks on the same VPS).

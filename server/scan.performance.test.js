@@ -132,8 +132,9 @@ describe('scan scheduling helpers', () => {
   it('uses batch-friendly scan defaults', () => {
     const cfg = resolveScanExecutionConfig({});
     assert.equal(cfg.batchSize, 20);
-    assert.equal(cfg.scanConcurrency, 20);
-    assert.equal(cfg.yahooConcurrency, 20);
+    // Concurrency defaults scale with host vCPU (caps at 20); explicit env still overrides.
+    assert.ok(cfg.scanConcurrency >= 4 && cfg.scanConcurrency <= 20);
+    assert.ok(cfg.yahooConcurrency >= 4 && cfg.yahooConcurrency <= 20);
     assert.equal(cfg.delayMs, 40);
   });
 });

@@ -144,7 +144,8 @@ CREATE INDEX IF NOT EXISTS idx_optimized_weights_agent_active
 
 -- ─── 6. Views ─────────────────────────────────────────────────────────────────
 
-CREATE OR REPLACE VIEW v_wfo_run_history AS
+CREATE OR REPLACE VIEW v_wfo_run_history
+WITH (security_invoker = true) AS
 SELECT
   run_number,
   agent_type,
@@ -167,7 +168,8 @@ WHERE strategy_name IS NOT NULL
 ORDER BY created_at DESC;
 
 -- Strategy leaderboard: which hypothesis wins most often per agent
-CREATE OR REPLACE VIEW v_strategy_leaderboard AS
+CREATE OR REPLACE VIEW v_strategy_leaderboard
+WITH (security_invoker = true) AS
 SELECT
   agent_type,
   strategy_name,

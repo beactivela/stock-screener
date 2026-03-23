@@ -18,7 +18,7 @@ function SortHeader({ col, label, sortColumn, sortDir, onSort, alignRight, stick
   const stickyLeftClass = sticky ? `sticky z-[26] shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] ${leftClass}` : ''
   return (
     <th
-      className={`px-4 py-3 text-slate-300 font-medium cursor-pointer hover:text-slate-100 select-none whitespace-nowrap bg-slate-900 ${alignRight ? 'text-right' : ''} ${stickyTopClass} ${stickyLeftClass}`}
+      className={`px-4 py-3 text-sm text-slate-300 font-medium cursor-pointer hover:text-slate-100 select-none whitespace-nowrap bg-slate-900 ${alignRight ? 'text-right' : ''} ${stickyTopClass} ${stickyLeftClass}`}
       onClick={() => onSort(col)}
     >
       <span className={`inline-flex items-center gap-1 ${alignRight ? 'justify-end' : ''}`}>

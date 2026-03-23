@@ -8,7 +8,7 @@ export default function Style() {
   const fontSizes = [
     { class: 'text-[10px]', label: '10px', note: 'Custom' },
     { class: 'text-xs', label: 'xs', note: '0.75rem / 12px' },
-    { class: 'text-sm', label: 'sm', note: '0.875rem / 14px' },
+    { class: 'text-sm', label: 'sm', note: '12px (theme override; default Tailwind is 14px)' },
     { class: 'text-base', label: 'base', note: '1rem / 16px' },
     { class: 'text-lg', label: 'lg', note: '1.125rem / 18px' },
     { class: 'text-xl', label: 'xl', note: '1.25rem / 20px' },

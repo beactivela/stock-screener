@@ -2,7 +2,9 @@
  * Supabase client for stock-screener.
  *
  * Connects to Supabase when SUPABASE_URL and SUPABASE_SERVICE_KEY are set.
- * Use SUPABASE_SERVICE_KEY (not anon key) for server-side writes; it bypasses RLS.
+ * Use SUPABASE_SERVICE_KEY for all server-side access (bypasses RLS). With RLS enabled
+ * and no anon policies, the anon key cannot read/write app tables — do not ship anon
+ * as the only key in production.
  *
  * Usage:
  *   import { getSupabase } from './supabase.js';

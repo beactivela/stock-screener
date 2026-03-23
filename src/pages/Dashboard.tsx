@@ -142,7 +142,7 @@ const DASHBOARD_FUNDAMENTALS_FIELDS = [
   'companyName',
 ] as const
 const LazyTickerChart = lazy(() => import('../components/TickerChart'))
-const LazyMarketIndexRegimeCards = lazy(() => import('../components/MarketIndexRegimeCards'))
+const LazyMarketIndexRegimeCards = lazy(() => import('../features/market-regime/MarketIndexRegimeCards'))
 
 function isCompiledCriterion(value: unknown): value is CompiledCriterion {
   if (!value || typeof value !== 'object') return false
@@ -732,9 +732,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-start gap-4">
+      <div className="flex flex-wrap items-start gap-4 text-[12px] leading-snug">
         <div className="flex flex-wrap gap-2">
-          <span className="text-slate-400 text-sm mr-2">Signal Agents:</span>
+          <span className="text-slate-400 mr-2">Signal Agents:</span>
           {([
             { id: 'all', label: 'All' },
             { id: 'unusual_vol', label: 'Unusual Vol.' },
@@ -754,7 +754,7 @@ export default function Dashboard() {
                     setSortColumn(next.sortColumn)
                     setSortDir(next.sortDir)
                   }}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+                  className={`px-3 py-1.5 rounded-lg font-medium ${
                     filter === f.id
                       ? 'bg-sky-600 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -783,11 +783,11 @@ export default function Dashboard() {
           })}
         </div>
         <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
-          <span className="text-slate-400 text-sm">Watchlist:</span>
+          <span className="text-slate-400">Watchlist:</span>
           <button
             type="button"
             onClick={() => setWatchlistOnly((prev) => !prev)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+            className={`px-3 py-1.5 rounded-lg font-medium ${
               watchlistOnly
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -798,11 +798,11 @@ export default function Dashboard() {
           </button>
         </div>
         <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
-          <span className="text-slate-400 text-sm">IBD-style:</span>
+          <span className="text-slate-400">IBD-style:</span>
           <button
             type="button"
             onClick={() => setTopRsOnly((prev) => !prev)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+            className={`px-3 py-1.5 rounded-lg font-medium ${
               topRsOnly
                 ? 'bg-fuchsia-500/20 text-fuchsia-200 border border-fuchsia-500/40'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -813,10 +813,10 @@ export default function Dashboard() {
           </button>
         </div>
         <div className="flex items-center gap-2 border-l border-slate-700 pl-4">
-          <span className="text-slate-400 text-sm">View:</span>
+          <span className="text-slate-400">View:</span>
           <button
             onClick={() => setViewMode('table')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+            className={`px-3 py-1.5 rounded-lg font-medium ${
               viewMode === 'table'
                 ? 'bg-sky-600 text-white'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -826,7 +826,7 @@ export default function Dashboard() {
           </button>
           <button
             onClick={() => setViewMode('charts')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+            className={`px-3 py-1.5 rounded-lg font-medium ${
               viewMode === 'charts'
                 ? 'bg-sky-600 text-white'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -838,7 +838,7 @@ export default function Dashboard() {
         <button
           onClick={runScan}
           disabled={scanState.running}
-          className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium text-sm ml-auto"
+          className="px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium ml-auto"
         >
           {scanState.running
             ? scanState.progress.total > 0
@@ -968,7 +968,7 @@ export default function Dashboard() {
                     <td className="sticky left-0 z-10 min-w-[10rem] bg-slate-900/95 backdrop-blur-sm shadow-[2px_0_4px_-1px_rgba(0,0,0,0.3)] group-hover:bg-slate-800/40 px-4 py-3">
                       <div className="flex w-full items-center gap-2">
                         <div className="flex items-center gap-1">
-                          <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium" style={{ fontSize: '14pt' }} target="_blank" rel="noopener noreferrer">
+                          <Link to={`/stock/${r.ticker}`} state={{ scanResult: r }} className="text-sky-400 hover:text-sky-300 font-medium text-sm" target="_blank" rel="noopener noreferrer">
                             {r.ticker}
                           </Link>
                           {watchlistTickers.has(r.ticker) && (
@@ -983,12 +983,12 @@ export default function Dashboard() {
                         </div>
                       </div>
                       {(fundamentals[r.ticker]?.companyName ?? fundamentals[r.ticker]?.industry) && (
-                        <div className="text-slate-400 mt-1 truncate" style={{ fontSize: '10pt' }}>
+                        <div className="text-slate-400 mt-1 truncate text-sm">
                           {fundamentals[r.ticker].companyName ?? fundamentals[r.ticker].industry}
                         </div>
                       )}
                       {watchlistMap[r.ticker]?.note && (
-                        <div className="text-amber-300/90 mt-0.5 truncate text-[10pt]" title={watchlistMap[r.ticker].note}>
+                        <div className="text-amber-300/90 mt-0.5 truncate text-sm" title={watchlistMap[r.ticker].note}>
                           Note: {watchlistMap[r.ticker].note}
                         </div>
                       )}
@@ -1009,7 +1009,7 @@ export default function Dashboard() {
                         const parts = [longDate, entry, stop, rr].filter(Boolean)
                         if (parts.length === 0) return null
                         return (
-                          <div className="text-slate-500 mt-0.5 truncate text-[10pt]">
+                          <div className="text-slate-500 mt-0.5 truncate text-sm">
                             {parts.join(' · ')}
                           </div>
                         )
@@ -1049,7 +1049,7 @@ export default function Dashboard() {
                       )}
                     </td>
                     {/* RS Rating (IBD-style 1–99) */}
-                    <td className="px-4 py-3 font-mono tabular-nums text-right" style={{ fontSize: '14pt' }}>
+                    <td className="px-4 py-3 font-mono tabular-nums text-right text-sm">
                       {r.relativeStrength != null ? (
                         <span className={`font-medium ${
                           r.relativeStrength >= 90 ? 'text-emerald-400' :
@@ -1062,7 +1062,7 @@ export default function Dashboard() {
                       ) : '–'}
                     </td>
                     {/* Industry Rank */}
-                    <td className="px-4 py-3 font-mono tabular-nums text-right" style={{ fontSize: '14pt' }}>
+                    <td className="px-4 py-3 font-mono tabular-nums text-right text-sm">
                       {r.industryRank != null ? (
                         <span className={`font-medium ${
                           r.industryRank <= 20 ? 'text-emerald-400' :

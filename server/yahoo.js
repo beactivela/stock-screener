@@ -20,6 +20,14 @@ function toMilliseconds(value) {
   return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
 }
 
+/** Yahoo sometimes returns a bare number, sometimes { raw, fmt }. */
+function numOrNull(v) {
+  if (v == null) return null;
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'object' && Number.isFinite(v?.raw)) return v.raw;
+  return null;
+}
+
 async function runWithConcurrency(items, worker, opts = {}) {
   const safeConcurrency = Math.max(1, Number(opts.concurrency) || DEFAULT_YAHOO_BATCH_CONCURRENCY);
   const inFlight = new Set();
@@ -134,6 +142,11 @@ function buildFundamentalsEntry(ticker, fund, quoteInfo = null, fetchedAt = new 
     operatingMargin: fund?.operatingMargin ?? null,
     industry: fund?.industry ?? null,
     sector: fund?.sector ?? null,
+    marketCap: fund?.marketCap ?? null,
+    totalRevenue: fund?.totalRevenue ?? null,
+    fullTimeEmployees: fund?.fullTimeEmployees ?? null,
+    trailingEps: fund?.trailingEps ?? null,
+    businessSummary: fund?.businessSummary ?? null,
     ...(companyName ? { companyName } : {}),
     fetchedAt,
   };
@@ -204,8 +217,9 @@ async function getHistoryMetadata(ticker, from, to, interval = '1d') {
 }
 
 /**
- * Fundamentals: % held by institutions, quarterly earnings YoY, profit margin, operating margin.
- * Uses quoteSummary with majorHoldersBreakdown, defaultKeyStatistics, earningsTrend, financialData.
+ * Fundamentals: institutions %, quarterly earnings YoY, margins, industry/sector, name,
+ * plus company stats (market cap, total revenue, employees, trailing EPS, business summary).
+ * quoteSummary modules: majorHoldersBreakdown, defaultKeyStatistics, earningsTrend, financialData, assetProfile, price.
  */
 async function getFundamentals(ticker) {
   const result = await yahooFinance.quoteSummary(ticker, {
@@ -258,7 +272,33 @@ async function getFundamentals(ticker) {
   const price = result?.price;
   const companyName = (price?.displayName && String(price.displayName).trim()) || (price?.shortName && String(price.shortName).trim()) || (price?.longName && String(price.longName).trim()) || null;
 
-  return { ticker, pctHeldByInst, qtrEarningsYoY, profitMargin, operatingMargin, industry, sector, companyName };
+  const marketCap = numOrNull(dks?.marketCap ?? price?.marketCap);
+  const totalRevenue = numOrNull(fd?.totalRevenue);
+  let fullTimeEmployees = null;
+  if (ap?.fullTimeEmployees != null) {
+    const rawEmp = ap.fullTimeEmployees;
+    const n = typeof rawEmp === 'number' ? rawEmp : parseInt(String(rawEmp).replace(/,/g, ''), 10);
+    fullTimeEmployees = Number.isFinite(n) ? n : null;
+  }
+  let trailingEps = numOrNull(dks?.trailingEps);
+  if (trailingEps != null) trailingEps = Math.round(trailingEps * 100) / 100;
+  const businessSummary = (ap?.longBusinessSummary && String(ap.longBusinessSummary).trim()) || null;
+
+  return {
+    ticker,
+    pctHeldByInst,
+    qtrEarningsYoY,
+    profitMargin,
+    operatingMargin,
+    industry,
+    sector,
+    companyName,
+    marketCap,
+    totalRevenue,
+    fullTimeEmployees,
+    trailingEps,
+    businessSummary,
+  };
 }
 
 async function getFundamentalsEntry(ticker) {

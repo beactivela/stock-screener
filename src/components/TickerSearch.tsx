@@ -59,7 +59,7 @@ export default function TickerSearch() {
         type="button"
         onClick={evaluateTicker}
         disabled={loading || !tickerInput.trim()}
-        className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium"
+        className="px-3 py-1.5 rounded-lg bg-sky-500 text-white text-sm font-medium hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:bg-sky-500 disabled:hover:bg-sky-500"
       >
         {loading ? '…' : 'Evaluate'}
       </button>

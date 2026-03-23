@@ -148,6 +148,41 @@ const CHART_OPTIONS = {
   rightPriceScale: { borderColor: '#334155' },
 }
 
+/** Cached fundamentals + merged `raw` from API (market cap, revenue, EPS, profile, etc.). */
+interface FundamentalsDetail {
+  profitMargin?: number | null
+  operatingMargin?: number | null
+  industry?: string | null
+  sector?: string | null
+  companyName?: string | null
+  marketCap?: number | null
+  totalRevenue?: number | null
+  fullTimeEmployees?: number | null
+  trailingEps?: number | null
+  businessSummary?: string | null
+}
+
+/** Compact USD for large figures (Yahoo returns raw numbers, typically USD). */
+function formatUsdCompact(value: number | null | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null
+  const abs = Math.abs(value)
+  const sign = value < 0 ? '-' : ''
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`
+  return `${sign}$${abs.toFixed(0)}`
+}
+
+function CompanyStatInline({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-1 shrink-0" title={title}>
+      <span className="text-slate-500">{label}</span>
+      <span className="text-slate-300 font-medium tabular-nums">{value}</span>
+    </span>
+  )
+}
+
 export default function StockDetail() {
   const { ticker } = useParams<{ ticker: string }>()
   const location = useLocation()
@@ -160,7 +195,7 @@ export default function StockDetail() {
   const [scanFallback, setScanFallback] = useState<VCPInfo | null>(null)
   const [companyName, setCompanyName] = useState<string | null>(null)
   const [, setExchange] = useState<string | null>(null)
-  const [fundamentals, setFundamentals] = useState<{ profitMargin?: number | null; operatingMargin?: number | null; industry?: string | null } | null>(null)
+  const [fundamentals, setFundamentals] = useState<FundamentalsDetail | null>(null)
   const [industry3M, setIndustry3M] = useState<number | null>(null)
   const [industry1Y, setIndustry1Y] = useState<number | null>(null)
   const [industryYtd, setIndustryYtd] = useState<number | null>(null)
@@ -418,8 +453,20 @@ export default function StockDetail() {
     fetch(`${API_BASE}/api/fundamentals/${encodeURIComponent(ticker)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (data?.ticker) setFundamentals({ profitMargin: data.profitMargin ?? null, operatingMargin: data.operatingMargin ?? null, industry: data.industry ?? null })
-        else setFundamentals(null)
+        if (data?.ticker) {
+          setFundamentals({
+            profitMargin: data.profitMargin ?? null,
+            operatingMargin: data.operatingMargin ?? null,
+            industry: data.industry ?? null,
+            sector: data.sector ?? null,
+            companyName: data.companyName ?? null,
+            marketCap: data.marketCap ?? null,
+            totalRevenue: data.totalRevenue ?? null,
+            fullTimeEmployees: data.fullTimeEmployees ?? null,
+            trailingEps: data.trailingEps ?? null,
+            businessSummary: data.businessSummary ?? null,
+          })
+        } else setFundamentals(null)
       })
       .catch(() => setFundamentals(null))
   }, [ticker])
@@ -1064,6 +1111,43 @@ export default function StockDetail() {
     ? new Date(watchlistItem.noteUpdatedAt).toLocaleString()
     : null
 
+  /** Quote name first; fundamentals cache may still have a name if quote failed. */
+  const displayCompanyName = companyName ?? fundamentals?.companyName ?? null
+  const companyStatsFormatted = useMemo(() => {
+    if (!fundamentals) {
+      return {
+        mktCap: null as string | null,
+        revenue: null as string | null,
+        employees: null as string | null,
+        eps: null as string | null,
+        profileShort: '',
+        profileFull: '',
+      }
+    }
+    const mktCap = formatUsdCompact(fundamentals.marketCap)
+    const revenue = formatUsdCompact(fundamentals.totalRevenue)
+    const employees =
+      fundamentals.fullTimeEmployees != null && Number.isFinite(fundamentals.fullTimeEmployees)
+        ? new Intl.NumberFormat('en-US').format(fundamentals.fullTimeEmployees)
+        : null
+    const eps =
+      fundamentals.trailingEps != null && Number.isFinite(fundamentals.trailingEps)
+        ? `$${fundamentals.trailingEps.toFixed(2)}`
+        : null
+    const profileFull = (fundamentals.businessSummary || '').trim()
+    const profileShort = profileFull.length > 120 ? `${profileFull.slice(0, 117)}…` : profileFull
+    return { mktCap, revenue, employees, eps, profileShort, profileFull }
+  }, [fundamentals])
+
+  const showCompanyStatsRow = Boolean(
+    displayCompanyName ||
+      companyStatsFormatted.mktCap ||
+      companyStatsFormatted.revenue ||
+      companyStatsFormatted.employees ||
+      companyStatsFormatted.eps ||
+      companyStatsFormatted.profileShort,
+  )
+
   if (loading || !ticker) {
     return (
       <div className="w-[90%] max-w-full mx-auto py-12 text-slate-400">
@@ -1191,7 +1275,38 @@ export default function StockDetail() {
               {watchlistItem ? '★ Starred' : '☆ Star'}
             </button>
           </div>
-          {companyName && <p className="text-slate-400 text-sm mt-0.5">{companyName}</p>}
+          {showCompanyStatsRow && (
+            <div className="mt-0.5 flex flex-wrap items-baseline gap-x-3 gap-y-1.5 text-sm">
+              {displayCompanyName && (
+                <span className="text-slate-400 font-medium shrink-0">{displayCompanyName}</span>
+              )}
+              {companyStatsFormatted.mktCap && (
+                <CompanyStatInline label="Mkt cap" value={companyStatsFormatted.mktCap} />
+              )}
+              {companyStatsFormatted.revenue && (
+                <CompanyStatInline label="Revenue" value={companyStatsFormatted.revenue} title="Total revenue (annual, as reported)" />
+              )}
+              {companyStatsFormatted.employees && (
+                <CompanyStatInline label="Employees" value={companyStatsFormatted.employees} />
+              )}
+              {companyStatsFormatted.eps && (
+                <CompanyStatInline label="EPS (ttm)" value={companyStatsFormatted.eps} title="Trailing twelve months EPS" />
+              )}
+              {companyStatsFormatted.profileShort && (
+                <span
+                  className="min-w-0 max-w-xl truncate text-slate-400"
+                  title={
+                    companyStatsFormatted.profileFull.length > companyStatsFormatted.profileShort.length
+                      ? companyStatsFormatted.profileFull
+                      : undefined
+                  }
+                >
+                  <span className="text-slate-500">Profile </span>
+                  {companyStatsFormatted.profileShort}
+                </span>
+              )}
+            </div>
+          )}
           {watchlistItem && (
             <>
               {/* Reveal note entry only after starring for a simpler default view. */}

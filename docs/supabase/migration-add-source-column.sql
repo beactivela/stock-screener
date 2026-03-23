@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS optimized_weights (
 CREATE INDEX IF NOT EXISTS idx_optimized_weights_active ON optimized_weights(is_active);
 
 -- View for active weights
-CREATE OR REPLACE VIEW v_active_weights AS
+CREATE OR REPLACE VIEW v_active_weights
+WITH (security_invoker = true) AS
 SELECT * FROM optimized_weights WHERE is_active = true ORDER BY created_at DESC LIMIT 1;
 
 SELECT 'Migration complete! All columns and tables have been added.' as status;

@@ -22,6 +22,12 @@ The metadata endpoint returns a normalized shape so UI and server consumers do n
 
 If Yahoo returns no chart metadata or the symbol is invalid, the API responds with `502` and a human-readable `error` message.
 
+### Supabase & database
+
+- **[supabase/README.md](./supabase/README.md)** — Schema quick start, env vars, **RLS hardening** (`migration-rls-and-api-hardening.sql`), Supabase Cron / Edge Function for scans.
+- **[VERCEL.md](./VERCEL.md)** — Required `SUPABASE_*` env vars for serverless.
+- **[DEPLOY_HOSTINGER_VPS.md](./DEPLOY_HOSTINGER_VPS.md)** — Docker VPS; same **`SUPABASE_SERVICE_KEY`** requirement.
+
 - **PLAN.md** — VCP criteria, data sources, task breakdown
 - **BACKGROUND_SCAN_IMPLEMENTATION.md** — Background scan and progress polling
 - **IMPROVEMENT_PLAN.md** — Future work (e.g. wiring `server/enhancedVcpScore.js`)

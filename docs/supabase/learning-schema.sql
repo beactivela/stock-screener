@@ -477,18 +477,22 @@ CREATE INDEX IF NOT EXISTS idx_setup_win_rates_lookup ON setup_win_rates(
 -- Call this daily to keep market condition tracking current
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION update_market_conditions()
-RETURNS void AS $$
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
 BEGIN
   -- This function would be called by the Node.js backend
   -- The actual logic is in server/learning/distributionDays.js
   RAISE NOTICE 'Market conditions should be updated via Node.js backend';
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- -----------------------------------------------------------------------------
 -- View: Recent failures for learning
 -- -----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW v_recent_failures AS
+CREATE OR REPLACE VIEW v_recent_failures
+WITH (security_invoker = true) AS
 SELECT 
   fc.id,
   fc.trade_id,
@@ -512,7 +516,8 @@ ORDER BY t.exit_date DESC;
 -- -----------------------------------------------------------------------------
 -- View: Setup performance summary
 -- -----------------------------------------------------------------------------
-CREATE OR REPLACE VIEW v_setup_performance AS
+CREATE OR REPLACE VIEW v_setup_performance
+WITH (security_invoker = true) AS
 SELECT 
   tcs.market_regime,
   CASE 
@@ -575,7 +580,8 @@ CREATE INDEX IF NOT EXISTS idx_optimized_weights_created ON optimized_weights(cr
 CREATE INDEX IF NOT EXISTS idx_optimized_weights_agent ON optimized_weights(agent_type);
 
 -- View: Active optimized weights (default agent, backward compatible)
-CREATE OR REPLACE VIEW v_active_weights AS
+CREATE OR REPLACE VIEW v_active_weights
+WITH (security_invoker = true) AS
 SELECT 
   id,
   agent_type,
@@ -658,7 +664,8 @@ CREATE INDEX IF NOT EXISTS idx_learning_runs_system ON learning_runs(system_name
 CREATE INDEX IF NOT EXISTS idx_learning_runs_agent ON learning_runs(agent_type);
 
 -- View: Latest promoted run (current active baseline for next A/B comparison)
-CREATE OR REPLACE VIEW v_latest_promoted_run AS
+CREATE OR REPLACE VIEW v_latest_promoted_run
+WITH (security_invoker = true) AS
 SELECT *
 FROM learning_runs
 WHERE promoted = true
@@ -666,7 +673,8 @@ ORDER BY created_at DESC
 LIMIT 1;
 
 -- View: Recent A/B history (last 20 runs, all agents)
-CREATE OR REPLACE VIEW v_learning_run_history AS
+CREATE OR REPLACE VIEW v_learning_run_history
+WITH (security_invoker = true) AS
 SELECT 
   id,
   run_number,

@@ -272,18 +272,11 @@ CREATE TABLE IF NOT EXISTS adaptive_strategy_params (
 );
 
 -- -----------------------------------------------------------------------------
--- RLS (Row Level Security) - Optional, enable when ready
--- For server-side only, you may use service_role key and skip RLS
--- -----------------------------------------------------------------------------
--- ALTER TABLE tickers ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE fundamentals ENABLE ROW LEVEL SECURITY;
--- etc.
--- Create policies for anon/authenticated roles if needed
-
--- -----------------------------------------------------------------------------
--- Helpful views
+-- RLS: run migration-rls-and-api-hardening.sql on existing projects (enables RLS on
+-- all public tables; no policies for anon — use SUPABASE_SERVICE_KEY on the server).
 -- -----------------------------------------------------------------------------
 
 -- Latest scan run (join to scan_results for full data)
-CREATE OR REPLACE VIEW v_latest_scan_run AS
+CREATE OR REPLACE VIEW v_latest_scan_run
+WITH (security_invoker = true) AS
 SELECT * FROM scan_runs ORDER BY scanned_at DESC LIMIT 1;

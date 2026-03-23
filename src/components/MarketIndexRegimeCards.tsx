@@ -5,6 +5,7 @@ import { API_BASE } from '../utils/api'
 import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
 import { BREADTH_TREND_SEGMENTS, getBreadthTrendRatingFromRecentMa50 } from '../utils/breadthTrendRating.js'
+import { getVixSentimentBand, vixSentimentTone } from '../utils/vixSentiment'
 
 interface Bar {
   t: number
@@ -17,12 +18,15 @@ interface Bar {
 interface IndexConfig {
   label: string
   ticker: string
+  /** Equity index cards show MA regime + breadth; VIX shows fear badge only (no breadth strip). */
+  variant?: 'equity' | 'vix'
 }
 
 const INDEXES: IndexConfig[] = [
   { label: 'S&P 500', ticker: '^GSPC' },
   { label: 'NASDAQ', ticker: '^IXIC' },
   { label: 'RUSSEL 2000', ticker: '^RUT' },
+  { label: 'VIX', ticker: '^VIX', variant: 'vix' },
 ]
 
 const CHART_OPTIONS = {
@@ -31,6 +35,9 @@ const CHART_OPTIONS = {
   timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#334155' },
   rightPriceScale: { borderColor: '#334155' },
 }
+
+/** Empty space past the last daily bar on dashboard mini charts (bar widths ≈ sessions). */
+const DASHBOARD_INDEX_RIGHT_OFFSET_BARS = 5
 
 function getRegimeTone(regime: MarketRegimeLabel): string {
   if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
@@ -44,6 +51,7 @@ function formatChange(value: number): string {
 }
 
 function MarketIndexCard({ config }: { config: IndexConfig }) {
+  const isVix = config.variant === 'vix'
   const [bars, setBars] = useState<Bar[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -188,6 +196,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     ma50Series.setData(ma50Data as any)
 
     chart.timeScale().fitContent()
+    chart.timeScale().applyOptions({ rightOffset: DASHBOARD_INDEX_RIGHT_OFFSET_BARS })
     chartRef.current = chart
 
     const resizeObserver = new ResizeObserver(() => {
@@ -210,57 +219,41 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     ? ((latestClose - prevClose) / prevClose) * 100
     : null
 
+  const vixSentiment = isVix ? getVixSentimentBand(latestClose) : null
+
   return (
     <Link
       to={`/market-index/${encodeURIComponent(config.ticker)}`}
-      className="block rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden hover:border-slate-600 hover:bg-slate-900/70 transition-colors cursor-pointer"
+      className="block min-w-0 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden hover:border-slate-600 hover:bg-slate-900/70 transition-colors cursor-pointer"
     >
-      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 flex-nowrap" style={{ fontSize: '10pt' }}>
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 flex-nowrap text-sm">
         <div className="flex items-center gap-2 flex-nowrap min-w-0">
           <span className="text-slate-400 uppercase tracking-wide shrink-0">{config.label}</span>
           <span className="text-slate-500 shrink-0">{latestDate ?? ''}</span>
-          <span className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${getRegimeTone(regime)}`}>
-            {regime}
-          </span>
+          {isVix ? (
+            vixSentiment ? (
+              <span
+                className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${vixSentimentTone(vixSentiment.band)}`}
+                title="Based on latest VIX close vs 20 / 30 thresholds"
+              >
+                {vixSentiment.label}
+              </span>
+            ) : (
+              <span className="inline-flex shrink-0 px-2 py-0.5 rounded border border-slate-700 text-slate-500 font-medium">
+                —
+              </span>
+            )
+          ) : (
+            <span className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${getRegimeTone(regime)}`}>
+              {regime}
+            </span>
+          )}
         </div>
         {change != null && changePct != null && (
           <div className={`font-medium shrink-0 ${change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
             {formatChange(change)} ({formatChange(changePct)}%)
           </div>
         )}
-      </div>
-
-      <div className="px-3 py-2 border-b border-slate-800">
-        <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
-          <span className="text-slate-400">Breadth trend rating</span>
-          <div className="text-right leading-tight">
-            <div className="font-medium text-slate-200">
-              {breadthRating.label} ({breadthRating.score}/7)
-            </div>
-            <div className="text-slate-400">
-              Market exposure: {breadthRating.exposureLabel} {breadthRating.exposurePercentage}%
-            </div>
-          </div>
-        </div>
-        <div
-          className="grid grid-cols-7 overflow-hidden rounded-sm border-2 border-slate-500"
-          aria-label={`Breadth trend rating ${breadthRating.score} of 7 (${breadthRating.label}), market exposure ${breadthRating.exposurePercentage}%`}
-        >
-          {BREADTH_TREND_SEGMENTS.map((segment) => {
-            const isActive = segment.score === breadthRating.score
-            return (
-              <div
-                key={segment.score}
-                className={`${segment.className} ${
-                  isActive ? 'border-2 border-slate-100 opacity-100' : 'border border-slate-900/40 opacity-40'
-                } flex min-h-[28px] items-center justify-center px-1 text-center text-[9px] font-semibold leading-none`}
-                title={`${segment.score}/7 ${segment.label} - ${segment.exposureLabel} ${segment.exposurePercentage}%`}
-              >
-                {segment.exposurePercentage}%
-              </div>
-            )
-          })}
-        </div>
       </div>
 
       {loading ? (
@@ -271,7 +264,42 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
         <div ref={containerRef} className="h-[170px]" />
       )}
 
-      <div className="px-3 py-2 border-t border-slate-800 space-y-1.5">
+      {!isVix && (
+        <div className="px-3 py-2 border-t border-b border-slate-800">
+          <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
+            <span className="text-slate-400">Portfolio allocation in market</span>
+            <div className="text-right leading-tight">
+              <div className="font-medium text-slate-200">
+                {breadthRating.label} ({breadthRating.score}/7)
+              </div>
+              <div className="text-slate-400">
+                Market exposure: {breadthRating.exposureLabel} {breadthRating.exposurePercentage}%
+              </div>
+            </div>
+          </div>
+          <div
+            className="grid grid-cols-7 overflow-hidden rounded-sm border-2 border-slate-500"
+            aria-label={`Portfolio allocation in market ${breadthRating.score} of 7 (${breadthRating.label}), market exposure ${breadthRating.exposurePercentage}%`}
+          >
+            {BREADTH_TREND_SEGMENTS.map((segment) => {
+              const isActive = segment.score === breadthRating.score
+              return (
+                <div
+                  key={segment.score}
+                  className={`${segment.className} ${
+                    isActive ? 'border-2 border-slate-100 opacity-100' : 'border border-slate-900/40 opacity-40'
+                  } flex min-h-[28px] items-center justify-center px-1 text-center text-[9px] font-semibold leading-none`}
+                  title={`${segment.score}/7 ${segment.label} - ${segment.exposureLabel} ${segment.exposurePercentage}%`}
+                >
+                  {segment.exposurePercentage}%
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className={`px-3 py-2 space-y-1.5 ${isVix ? 'border-t border-slate-800' : ''}`}>
         <div className="text-[11px] text-slate-300">Default range: last 12 months</div>
         <div className="text-[11px] text-slate-500">
           10 MA {ma10Last != null ? ma10Last.toFixed(1) : '—'} · 20 MA {ma20Last != null ? ma20Last.toFixed(1) : '—'} · 50 MA{' '}
@@ -285,7 +313,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
 export default function MarketIndexRegimeCards() {
   return (
     <section className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {INDEXES.map((cfg) => (
           <MarketIndexCard key={cfg.ticker} config={cfg} />
         ))}

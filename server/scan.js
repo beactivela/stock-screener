@@ -7,6 +7,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -43,9 +44,24 @@ const BARS_CACHE_DIR = path.join(DATA_DIR, 'bars');
 const TICKER_LIMIT = Number(process.env.SCAN_LIMIT) || 0;
 const CACHE_TTL_MS = (Number(process.env.CACHE_TTL_HOURS) || 24) * 60 * 60 * 1000;
 const DEFAULT_SCAN_BATCH_SIZE = 20;
-const DEFAULT_SCAN_CONCURRENCY = 20;
-const DEFAULT_SCAN_YAHOO_CONCURRENCY = 20;
+/** Upper bound when env does not set SCAN_* concurrency (legacy default was 20 everywhere). */
+const MAX_DEFAULT_SCAN_PARALLELISM = 20;
 const DEFAULT_SCAN_DELAY_MS = 40;
+
+/**
+ * Host-aware default fan-out for Yahoo + per-ticker VCP work.
+ * Small VPS (1–2 vCPU) at concurrency 20 often sits at 100% CPU for the whole scan; env vars still override.
+ */
+function defaultScanParallelismFromHost() {
+  let cpus = 1;
+  try {
+    cpus = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+  } catch {
+    /* ignore */
+  }
+  if (!Number.isFinite(cpus) || cpus < 1) cpus = 1;
+  return Math.min(MAX_DEFAULT_SCAN_PARALLELISM, Math.max(4, Math.floor(cpus * 3)));
+}
 
 /** Same floor as vcp.calculateRelativeStrength (>252 bars). */
 const MIN_CACHED_DAILY_BARS_FOR_SCAN = MIN_DAILY_BARS_FOR_IBD_RS;
@@ -160,9 +176,10 @@ export function resolveScanExecutionConfig(env = process.env) {
     return Number.isFinite(num) && num >= 0 ? Math.floor(num) : fallback;
   };
 
+  const hostParallel = defaultScanParallelismFromHost();
   const batchSize = parsePositive(env.SCAN_BATCH_SIZE, DEFAULT_SCAN_BATCH_SIZE);
-  const scanConcurrency = parsePositive(env.SCAN_CONCURRENCY, DEFAULT_SCAN_CONCURRENCY);
-  const yahooConcurrency = parsePositive(env.SCAN_YAHOO_CONCURRENCY, DEFAULT_SCAN_YAHOO_CONCURRENCY);
+  const scanConcurrency = parsePositive(env.SCAN_CONCURRENCY, hostParallel);
+  const yahooConcurrency = parsePositive(env.SCAN_YAHOO_CONCURRENCY, hostParallel);
   const delayMs = parseNonNegative(env.SCAN_DELAY_MS, DEFAULT_SCAN_DELAY_MS);
 
   return { batchSize, scanConcurrency, yahooConcurrency, delayMs };

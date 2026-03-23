@@ -3,6 +3,10 @@ export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
+      // Match body (index.css): utilities like text-sm were ~14px via 0.875rem; use 12px for UI “body” text.
+      fontSize: {
+        sm: ['12px', { lineHeight: '1.25rem' }],
+      },
       fontFamily: {
         sans: ['DM Sans', 'system-ui', 'sans-serif'],
         mono: ['ui-monospace', 'monospace'],

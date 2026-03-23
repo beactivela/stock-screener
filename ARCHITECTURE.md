@@ -534,6 +534,7 @@ SCAN COMPLETED
 
 ### Data Storage
 - **Backend:** Supabase (PostgreSQL). All data is read from and written to the database.
+- **Security:** Row Level Security (RLS) is enabled on `public` tables; there are no policies granting `anon` / `authenticated` access to app data, so the **Supabase Data API** cannot be used with the publishable key to read scans, trades, etc. The Express server uses **`SUPABASE_SERVICE_KEY`** (service role), which bypasses RLS. Apply `docs/supabase/migration-rls-and-api-hardening.sql` on new databases after schema migrations. See [docs/supabase/README.md](./docs/supabase/README.md).
 - **Tables (summary):**
   ```
   bars_cache              # OHLC cache per ticker
@@ -548,7 +549,7 @@ SCAN COMPLETED
 ### Deployment
 - **Development:** `npm run dev` — single process on **http://localhost:5173** (Express API + Vite HMR; app and `/api` on same origin).
 - **Production:** Build `npm run build`, then serve with `npm run serve` (static + API from same server).
-- **Vercel:** Both frontend and API deploy together. The `api/[[...path]].js` serverless handler forwards `/api/*` to the same Express app (with `VERCEL=1`, so no listen). All data and cache live in Supabase; set **SUPABASE_URL** and **SUPABASE_SERVICE_KEY** in Vercel. Writes (POST scan, POST fundamentals/fetch) persist in the DB. For long-running full scans, consider **VITE_API_URL** to an external API (e.g. Railway) that runs `npm run server`.
+- **Vercel:** Both frontend and API deploy together. The `api/[[...path]].js` serverless handler forwards `/api/*` to the same Express app (with `VERCEL=1`, so no listen). All data and cache live in Supabase; set **SUPABASE_URL** and **SUPABASE_SERVICE_KEY** (service role, not anon; see [docs/supabase/README.md](./docs/supabase/README.md)). Writes (POST scan, POST fundamentals/fetch) persist in the DB. For long-running full scans, consider **VITE_API_URL** to an external API (e.g. Railway) that runs `npm run server`.
 
 ---
 
