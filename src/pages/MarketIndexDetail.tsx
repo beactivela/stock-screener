@@ -316,7 +316,7 @@ function MarketIndexChart({
           try {
             payload = JSON.parse(text)
           } catch {
-            // Keep readable diagnostics when a non-JSON response (e.g. Vercel 404 page) is returned.
+            // Keep readable diagnostics when a non-JSON response (e.g. HTML error page) is returned.
             if (!r.ok) throw new Error(text.trim() || `HTTP ${r.status}`)
             throw new Error('Unexpected response format from API')
           }

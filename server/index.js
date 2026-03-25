@@ -16,7 +16,6 @@ dotenv.config({ path: ROOT_ENV });
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
-import { isSupabaseConfigured } from './supabase.js';
 import { registerDeployRoutes } from './deployRemote.js';
 import {
   registerHealthRoute,
@@ -45,28 +44,7 @@ registerHealthRoute(app);
 
 registerDeployRoutes(app);
 
-// On Vercel without Supabase, writes cannot persist (read-only filesystem). With Supabase, POSTs write to DB.
-app.use((req, res, next) => {
-  const nonWriteApiPosts = new Set([
-    '/api/agents/criteria/translate',
-  ]);
-
-  if (
-    process.env.VERCEL &&
-    !isSupabaseConfigured() &&
-    req.method === 'POST' &&
-    req.path.startsWith('/api') &&
-    !nonWriteApiPosts.has(req.path)
-  ) {
-    return res.status(503).json({
-      error: 'Writes are disabled on Vercel (read-only filesystem). Set SUPABASE_URL and SUPABASE_SERVICE_KEY in Vercel env vars, or run the API locally / set VITE_API_URL to an external API.',
-    });
-  }
-  next();
-});
-
 function ensureDirs() {
-  if (process.env.VERCEL) return; // Vercel serverless: read-only filesystem (no data/ writes)
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
 }
@@ -232,8 +210,8 @@ async function attachFrontend() {
   });
 }
 
-// On Vercel, the app is used as serverless handler (api/[[...path]].js); do not start a server.
-if (!process.env.VERCEL) {
+// Tests set SKIP_EXPRESS_LISTEN=1 so they can mount `app` on an ephemeral port without double listen / static attach.
+if (process.env.SKIP_EXPRESS_LISTEN !== '1') {
   attachFrontend();
 }
 

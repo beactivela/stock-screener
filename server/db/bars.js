@@ -130,17 +130,52 @@ function barsSatisfyIbdrsForRequest(bars, from, to) {
   return bars.length >= MIN_DAILY_BARS_FOR_IBD_RS;
 }
 
+/** Drop bars with non-finite OHLCV so PostgREST / jsonb never sees NaN/Infinity (invalid JSON). */
+function sanitizeResultsForDb(results) {
+  if (!Array.isArray(results)) return [];
+  const out = [];
+  for (const b of results) {
+    if (!b || typeof b !== 'object') continue;
+    const t = Number(b.t);
+    const o = Number(b.o);
+    const h = Number(b.h);
+    const l = Number(b.l);
+    const c = Number(b.c);
+    const v = Number(b.v);
+    if (![t, o, h, l, c, v].every(Number.isFinite)) continue;
+    out.push({ t, o, h, l, c, v });
+  }
+  return out;
+}
+
+/** Smaller batches avoid huge request bodies and intermittent PostgREST timeouts on VPS cron. */
+const BARS_CACHE_UPSERT_CHUNK = Math.max(5, Math.min(50, Number(process.env.BARS_UPSERT_CHUNK) || 25));
+
 function buildBarsCacheRows(entries, fetchedAt = new Date().toISOString()) {
   return (entries || [])
     .filter((entry) => entry?.ticker && entry?.from && entry?.to && Array.isArray(entry?.results))
-    .map((entry) => ({
-      ticker: String(entry.ticker).trim().toUpperCase(),
-      interval: entry.interval ?? '1d',
-      date_from: entry.from,
-      date_to: entry.to,
-      fetched_at: fetchedAt,
-      results: entry.results,
-    }));
+    .map((entry) => {
+      const results = sanitizeResultsForDb(entry.results);
+      if (results.length === 0) return null;
+      return {
+        ticker: String(entry.ticker).trim().toUpperCase(),
+        interval: entry.interval ?? '1d',
+        date_from: entry.from,
+        date_to: entry.to,
+        fetched_at: fetchedAt,
+        results,
+      };
+    })
+    .filter(Boolean);
+}
+
+/** Last row wins if the same ticker+interval appears twice in one batch. */
+function dedupeBarsCacheRows(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    map.set(`${row.ticker}\t${row.interval}`, row);
+  }
+  return [...map.values()];
 }
 
 /**
@@ -196,7 +231,11 @@ export async function getCachedBars(ticker, from, to, interval = '1d') {
       .select('*')
       .eq('ticker', ticker)
       .eq('interval', interval)
-      .single();
+      .maybeSingle();
+
+    if (error) {
+      console.warn(`bars_cache read ${ticker} ${interval}: ${error.message}`);
+    }
 
     if (!error && data) {
       const age = Date.now() - new Date(data.fetched_at).getTime();
@@ -422,7 +461,10 @@ export async function getBarsBatch(requests, opts = {}) {
       try {
         await saveBarsBatch(toSave);
       } catch (e) {
-        console.warn(`Failed to batch cache bars: ${e.message}`);
+        const tickers = [...new Set(toSave.map((e) => e.ticker))].slice(0, 12).join(',');
+        console.error(
+          `Failed to batch cache bars (${toSave.length} rows, sample tickers: ${tickers}): ${e.message}`,
+        );
       }
     }
   }
@@ -443,7 +485,8 @@ export async function saveBars(ticker, from, to, results, interval = '1d') {
 
 export async function saveBarsBatch(entries, opts = {}) {
   const fetchedAt = opts.fetchedAt ?? new Date().toISOString();
-  const rows = buildBarsCacheRows(entries, fetchedAt);
+  let rows = buildBarsCacheRows(entries, fetchedAt);
+  rows = dedupeBarsCacheRows(rows);
 
   for (const row of rows) {
     barsMemoryCache.set(`${row.ticker}:${row.interval}:${row.date_from}:${row.date_to}`, {
@@ -455,14 +498,103 @@ export async function saveBarsBatch(entries, opts = {}) {
   if (rows.length === 0) return;
   if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env');
   const supabase = getSupabase();
-  const { error } = await supabase.from('bars_cache').upsert(rows, { onConflict: 'ticker,interval' });
-  if (error) throw new Error(error.message);
+
+  for (let i = 0; i < rows.length; i += BARS_CACHE_UPSERT_CHUNK) {
+    const chunk = rows.slice(i, i + BARS_CACHE_UPSERT_CHUNK);
+    const { error } = await supabase.from('bars_cache').upsert(chunk, { onConflict: 'ticker,interval' });
+    if (error) {
+      const detail = [error.message, error.code, error.details, error.hint].filter(Boolean).join(' | ');
+      console.error(
+        `bars_cache upsert failed rows [${i}, ${i + chunk.length}): ${detail}`,
+      );
+      throw new Error(error.message || 'bars_cache upsert failed');
+    }
+  }
 }
 
 /** Minimum calendar-day span to consider "5 years" of OHLC (used for count display). */
 const FIVE_YEAR_DAYS = 5 * 365;
 /** Minimum span for historical signal scan (e.g. 250 trading days ~= 12 months). */
 const MIN_SCAN_SPAN_DAYS = 250;
+
+/**
+ * Latest `fetched_at` among daily (`1d`) rows in `bars_cache` — proxy for most recent Yahoo→DB bar write
+ * (scheduled refresh, scan, or on-demand chart loads). Not identical to “full universe refresh finished.”
+ *
+ * @returns {Promise<{ ok: boolean, lastFetchedAt: string | null, dailyTickerCount: number, error?: string }>}
+ */
+export async function getLatestDailyBarsFetchedAt() {
+  if (!isSupabaseConfigured()) {
+    return {
+      ok: false,
+      lastFetchedAt: null,
+      dailyTickerCount: 0,
+      error: 'Database not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.',
+    };
+  }
+  try {
+    const supabase = getSupabase();
+    const { count: dailyTickerCount, error: countErr } = await supabase
+      .from('bars_cache')
+      .select('*', { count: 'exact', head: true })
+      .eq('interval', '1d');
+
+    if (countErr) {
+      return {
+        ok: false,
+        lastFetchedAt: null,
+        dailyTickerCount: 0,
+        error: countErr.message || 'Failed to read bars cache',
+      };
+    }
+
+    const safeCount = typeof dailyTickerCount === 'number' ? dailyTickerCount : 0;
+    if (safeCount === 0) {
+      return {
+        ok: false,
+        lastFetchedAt: null,
+        dailyTickerCount: 0,
+        error: 'No daily bars in cache yet. Run a scan or POST /api/cron/refresh-bars.',
+      };
+    }
+
+    const { data, error } = await supabase
+      .from('bars_cache')
+      .select('fetched_at')
+      .eq('interval', '1d')
+      .order('fetched_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      return {
+        ok: false,
+        lastFetchedAt: null,
+        dailyTickerCount: safeCount,
+        error: error.message || 'Failed to read latest fetch time',
+      };
+    }
+
+    const row = data?.[0];
+    const lastFetchedAt = row?.fetched_at ? String(row.fetched_at) : null;
+    if (!lastFetchedAt) {
+      return {
+        ok: false,
+        lastFetchedAt: null,
+        dailyTickerCount: safeCount,
+        error: 'Could not determine last Yahoo fetch time.',
+      };
+    }
+
+    return { ok: true, lastFetchedAt, dailyTickerCount: safeCount };
+  } catch (e) {
+    return {
+      ok: false,
+      lastFetchedAt: null,
+      dailyTickerCount: 0,
+      error: e?.message || String(e),
+    };
+  }
+}
 
 /**
  * Count distinct tickers that have at least 5 years of OHLC data in bars_cache.
@@ -561,6 +693,8 @@ export async function getTickersFromBarsCache(opts = {}) {
 const __testing = {
   buildBarsCacheRows,
   runWithConcurrency,
+  sanitizeResultsForDb,
+  dedupeBarsCacheRows,
 };
 
 export { __testing };

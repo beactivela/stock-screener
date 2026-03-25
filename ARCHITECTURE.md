@@ -549,7 +549,7 @@ SCAN COMPLETED
 ### Deployment
 - **Development:** `npm run dev` — single process on **http://localhost:5173** (Express API + Vite HMR; app and `/api` on same origin).
 - **Production:** Build `npm run build`, then serve with `npm run serve` (static + API from same server).
-- **Vercel:** Both frontend and API deploy together. The `api/[[...path]].js` serverless handler forwards `/api/*` to the same Express app (with `VERCEL=1`, so no listen). All data and cache live in Supabase; set **SUPABASE_URL** and **SUPABASE_SERVICE_KEY** (service role, not anon; see [docs/supabase/README.md](./docs/supabase/README.md)). Writes (POST scan, POST fundamentals/fetch) persist in the DB. For long-running full scans, consider **VITE_API_URL** to an external API (e.g. Railway) that runs `npm run server`.
+- **Docker / VPS:** Build the image (`docker compose up -d --build`). Express serves `dist/` and `/api/*` on one port (see [docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)). Persistence is Supabase plus optional `/app/data` volume. Optional **VITE_API_URL** only if the UI must call a different API host (normally leave unset for same-origin). **Host cron** on the VPS should call **`POST /api/cron/refresh-bars`** (Yahoo → **`bars_cache`**) before **`POST /api/cron/run-scan`**; verify over SSH with **`/api/cron/status`** and **`/var/log/stock-screener-cron.log`** (see deploy doc).
 
 ---
 

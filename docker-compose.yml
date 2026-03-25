@@ -29,7 +29,6 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-      VERCEL: ""
     volumes:
       - screener-data:/app/data
     labels:

@@ -272,7 +272,7 @@ describe('GET /api/history-metadata/:ticker', () => {
   let baseUrl;
 
   before(async () => {
-    process.env.VERCEL = '1';
+    process.env.SKIP_EXPRESS_LISTEN = '1';
     process.env.NODE_ENV = 'test';
     const { app } = await import('./index.js');
     server = http.createServer(app);
@@ -287,7 +287,7 @@ describe('GET /api/history-metadata/:ticker', () => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
     }
-    delete process.env.VERCEL;
+    delete process.env.SKIP_EXPRESS_LISTEN;
     delete process.env.NODE_ENV;
   });
 

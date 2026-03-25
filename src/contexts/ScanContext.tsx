@@ -15,7 +15,7 @@ interface ScanState {
   scanId: string | null;
   running: boolean;
   progress: ScanProgress;
-  /** From GET /api/scan/progress — database means counts come from Supabase (reliable on multi-instance Vercel). */
+  /** From GET /api/scan/progress — database means counts come from Supabase (reliable after restarts / multiple workers). */
   progressSource: ProgressSource | null;
 }
 

@@ -96,11 +96,9 @@ export async function fetchAndSaveRegimeData(asOfDate = new Date()) {
       { onConflict: 'ticker' }
     );
   }
-  if (!process.env.VERCEL) {
-    ensureRegimeDir();
-    fs.writeFileSync(path.join(REGIME_DIR, 'spy_5y.json'), JSON.stringify(payload('SPY', spyBars), null, 2), 'utf8');
-    fs.writeFileSync(path.join(REGIME_DIR, 'qqq_5y.json'), JSON.stringify(payload('QQQ', qqqBars), null, 2), 'utf8');
-  }
+  ensureRegimeDir();
+  fs.writeFileSync(path.join(REGIME_DIR, 'spy_5y.json'), JSON.stringify(payload('SPY', spyBars), null, 2), 'utf8');
+  fs.writeFileSync(path.join(REGIME_DIR, 'qqq_5y.json'), JSON.stringify(payload('QQQ', qqqBars), null, 2), 'utf8');
   return { spy: spyBars, qqq: qqqBars };
 }
 

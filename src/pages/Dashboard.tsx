@@ -706,7 +706,7 @@ export default function Dashboard() {
               </p>
               {scanState.progressSource === 'database' && (
                 <p className="text-sky-300/90 text-xs mt-2">
-                  Progress is read from Supabase (works across Vercel instances). To double-check: Vercel → your project → Logs (filter <code className="bg-slate-800 px-1 rounded">/api/scan</code>), or Supabase → Table Editor → <code className="bg-slate-800 px-1 rounded">scan_results</code> row count for the latest run.
+                  Progress is read from Supabase (accurate if the server restarted mid-scan). To double-check: server logs for <code className="bg-slate-800 px-1 rounded">/api/scan</code>, or Supabase → Table Editor → <code className="bg-slate-800 px-1 rounded">scan_results</code> row count for the latest run.
                 </p>
               )}
             </div>

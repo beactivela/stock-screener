@@ -47,19 +47,35 @@ Served from the same origin in dev (`http://localhost:5173/api/...`). Key routes
 - `GET /api/bars/:ticker?days=180` — daily OHLC for chart.
 - `GET /api/vcp/:ticker` — VCP analysis for one ticker.
 - **Regime (HMM):** `GET /api/regime` — current market regime (bull/bear) from a 5-year SPY+QQQ Hidden Markov Model. Run `npm run fetch-regime-data` then `npm run regime:train` to populate; the Deepseek engine uses this for sector/regime scoring.
+- **`GET /api/bars-cache/last-yahoo-at`** — latest `fetched_at` among daily rows in Supabase `bars_cache` (proxy for most recent Yahoo→DB bar write; shown in the app header).
 
 Full API and data flow: see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-## Deploy to Vercel
+## Deploy (production)
 
-The app is compatible with Vercel: frontend and API run as serverless.
+**Docker on a VPS (e.g. Hostinger)** is the supported setup: one container serves the Vite build and Express `/api/*` on the same origin. Full steps: **[docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)** (`SUPABASE_*`, `CRON_SECRET`, Traefik, `HOST_PORT`).
 
-1. **Connect the repo** to Vercel; use default build (`npm run build`) and output `dist`.
-2. **Data:** All data (scan results, fundamentals, industry data, bars cache) is stored in the database (Supabase). Configure **`SUPABASE_URL`** and **`SUPABASE_SERVICE_KEY`** in Vercel (not the anon key; RLS blocks anon from app tables). No file-based `data/` needed. See [docs/VERCEL.md](./docs/VERCEL.md) and [docs/supabase/README.md](./docs/supabase/README.md).
-3. **Limits on Vercel:** Serverless can call Supabase; scans and cache writes persist in the DB. For heavy scan jobs, consider pointing **VITE_API_URL** to an external API (e.g. Railway, Render) that runs `npm run server` if you need long-running processes.
+### Scheduled Yahoo bars + daily scan (host cron)
+
+So **daily prices** hit Yahoo and land in Supabase **`bars_cache`** before the VCP scan, install **root cron on the VPS** (not inside the container) that calls:
+
+| When (example) | Endpoint | Purpose |
+|------------------|----------|---------|
+| Weekdays ~30+ min before scan | `POST /api/cron/refresh-bars` (alias `fetch-prices`) | Universe OHLC → DB cache |
+| Weekdays after bars job | `POST /api/cron/run-scan` | Full scan |
+
+Copy **`deploy/host-cron.example`** → `/etc/cron.d/stock-screener`, set **`CRON_SECRET`** and **`CRON_BASE_URL`** (`http://127.0.0.1:<HOST_PORT>`). Scripts: **`scripts/trigger-scheduled-refresh-bars.sh`**, **`scripts/trigger-scheduled-scan.sh`**.
+
+**Check from your laptop over SSH** (add a `Host` alias in `~/.ssh/config` if you like):
+
+```bash
+ssh user@YOUR_VPS 'sudo grep -R trigger-scheduled /etc/cron.d /var/spool/cron 2>/dev/null; curl -sS http://127.0.0.1:8080/api/cron/status'
+```
+
+Use your real **`HOST_PORT`** if not `8080`. **`GET /api/cron/status`** should show `"secretConfigured":true` and the loopback base URL. After cron runs, **`tail /var/log/stock-screener-cron.log`** on the server should show JSON with `"Universe bars refresh started"` and scan `started` responses.
 
 ## Documentation
 
 - **[ARCHITECTURE.md](./ARCHITECTURE.md)** — System diagram, data flow, runtime (single port), scoring, deployment.
 - **[docs/supabase/README.md](./docs/supabase/README.md)** — Schema, migrations, **RLS / API hardening**, scheduled scan (Cron / Edge Function).
-- **[docs/](docs/)** — Implementation notes (PLAN.md, BACKGROUND_SCAN_IMPLEMENTATION.md, backtest/signal notes, Vercel/VPS deploy, etc.).
+- **[docs/](docs/)** — Implementation notes (PLAN.md, BACKGROUND_SCAN_IMPLEMENTATION.md, backtest/signal notes, VPS deploy, etc.).

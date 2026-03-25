@@ -80,7 +80,7 @@ All caches (bars, fundamentals, industry, opus45 signals, etc.) are persisted in
 
 To run the full VCP scan **every 24 hours after 5 PM CST**, use Supabase’s Cron to call your API.
 
-1. **Deploy your API** somewhere that can run the scan (e.g. Railway, Render, or a Vercel serverless that forwards to an external API). Note the base URL (e.g. `https://your-app.railway.app`).
+1. **Deploy your API** somewhere that can run the scan (e.g. Docker on a VPS per [DEPLOY_HOSTINGER_VPS.md](../DEPLOY_HOSTINGER_VPS.md), Railway, or Render). Note the public base URL (e.g. `https://screener.yourdomain.com`).
 
 2. **Set a cron secret** in your app’s env (and in Supabase if you store it there):
    ```bash

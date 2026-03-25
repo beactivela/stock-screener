@@ -27,7 +27,6 @@ const LEARNING_RUNS_FILE = path.join(DATA_DIR, 'learning_runs.json');
 const LEARNING_RUNS_ARCHIVE_FILE = path.join(DATA_DIR, 'learning_runs_archive.json');
 
 function ensureDataDir() {
-  if (process.env.VERCEL) return;
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -47,7 +46,6 @@ function loadLearningRunsFromFile() {
 
 function storeLearningRunToFile(record) {
   try {
-    if (process.env.VERCEL) return { stored: false, reason: 'vercel_read_only' };
     ensureDataDir();
     const existing = loadLearningRunsFromFile();
     const next = [record, ...existing].slice(0, 200);
@@ -72,7 +70,6 @@ function loadArchivedLearningRunsFromFile() {
 
 function storeArchivedLearningRunsToFile(records) {
   try {
-    if (process.env.VERCEL) return { stored: false, reason: 'vercel_read_only' };
     ensureDataDir();
     fs.writeFileSync(LEARNING_RUNS_ARCHIVE_FILE, JSON.stringify(records, null, 2), 'utf8');
     return { stored: true, storage: 'file' };

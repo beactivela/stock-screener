@@ -242,6 +242,23 @@ describe('Cache layer: Supabase miss → Yahoo fetch → save', () => {
     }
   });
 
+  it('sanitizeResultsForDb drops non-finite OHLCV (would break jsonb upsert)', () => {
+    const bars = generateBars(3);
+    bars[1].c = NaN;
+    const cleaned = __testing.sanitizeResultsForDb(bars);
+    assert.equal(cleaned.length, 2, 'NaN close bar should be removed');
+    assert.ok(cleaned.every((b) => [b.t, b.o, b.h, b.l, b.c, b.v].every(Number.isFinite)));
+  });
+
+  it('dedupeBarsCacheRows keeps last row per ticker+interval', () => {
+    const rows = __testing.dedupeBarsCacheRows([
+      { ticker: 'A', interval: '1d', x: 1 },
+      { ticker: 'A', interval: '1d', x: 2 },
+    ]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].x, 2);
+  });
+
   it('buildBarsCacheRows creates batch-upsert rows for multiple tickers', () => {
     const rows = __testing.buildBarsCacheRows([
       {

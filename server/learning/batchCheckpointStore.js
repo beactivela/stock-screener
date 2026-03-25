@@ -8,7 +8,6 @@ const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const BATCH_RUNS_FILE = path.join(DATA_DIR, 'batch_learning_runs.json');
 
 function ensureDataDir() {
-  if (process.env.VERCEL) return;
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
@@ -25,7 +24,6 @@ function loadRunsFromFile() {
 }
 
 function saveRunsToFile(store) {
-  if (process.env.VERCEL) return { stored: false, reason: 'vercel_read_only' };
   try {
     ensureDataDir();
     fs.writeFileSync(BATCH_RUNS_FILE, JSON.stringify(store, null, 2), 'utf8');

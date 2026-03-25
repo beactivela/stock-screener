@@ -30,7 +30,6 @@ const DEFAULT_SIGNAL_FAMILIES = ['opus45'];
 const ALLOWED_SIGNAL_FAMILIES = new Set(['opus45', 'turtle']);
 
 function ensureDataDir(dir) {
-  if (process.env.VERCEL) return;
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -74,7 +73,6 @@ export function formatDiagnosticsSummary(diagnostics) {
 
 export function storeSignalsToFile(signals = [], opts = {}) {
   try {
-    if (process.env.VERCEL) return { stored: false, reason: 'vercel_read_only' };
     const dataDir = opts.dataDir || DATA_DIR;
     const filePath = resolveSignalsFile(opts);
     ensureDataDir(dataDir);

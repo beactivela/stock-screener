@@ -24,7 +24,12 @@ import {
   updateScanResultsBatch,
   getSupabaseScanProgressIfRunning,
 } from '../db/scanResults.js';
-import { getBars as getBarsFromDb, getBarsBatch as getBarsBatchFromDb, saveBars as saveBarsToDb } from '../db/bars.js';
+import {
+  getBars as getBarsFromDb,
+  getBarsBatch as getBarsBatchFromDb,
+  saveBars as saveBarsToDb,
+  getLatestDailyBarsFetchedAt,
+} from '../db/bars.js';
 import { loadIndustryCache, saveIndustryCache } from '../db/industry.js';
 import {
   loadOpus45Signals as loadOpus45SignalsFromDb,
@@ -747,7 +752,7 @@ async function executeManagedScan({ onProgress, onTickersReady } = {}) {
   };
 }
 
-// Get current scan progress (memory on single instance; Supabase when idle memory so Vercel polls stay accurate)
+// Get current scan progress (memory on single instance; Supabase when idle so polls stay accurate after restarts)
 app.get('/api/scan/progress', async (req, res) => {
   maybeClearStaleActiveScan(activeScan);
   const idlePayload = {
@@ -1002,6 +1007,22 @@ app.get('/api/cron/status', (req, res) => {
     res.json(getCronStatusPayload());
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Latest Yahoo→DB write time for daily bars (max fetched_at in bars_cache for interval 1d). Public; short CDN cache.
+app.get('/api/bars-cache/last-yahoo-at', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
+    const result = await getLatestDailyBarsFetchedAt();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      lastFetchedAt: null,
+      dailyTickerCount: 0,
+      error: e?.message || String(e),
+    });
   }
 });
 
@@ -2005,10 +2026,6 @@ app.post('/api/industry-data/collect', async (req, res) => {
     res.flush?.();
   };
 
-  // Vercel: no persistent filesystem; skip industry file writes
-  if (process.env.VERCEL) {
-    return res.status(503).json({ error: 'Industry data collection writes to disk. Run locally or use VITE_API_URL to an external API.' });
-  }
   if (!fs.existsSync(INDUSTRY_DATA_DIR)) {
     fs.mkdirSync(INDUSTRY_DATA_DIR, { recursive: true });
   }

@@ -47,6 +47,35 @@ Scheduled endpoints (same auth as scan): **`POST /api/cron/refresh-bars`** (alia
 
 **`GET /api/cron/status`** (no auth) returns whether **`CRON_SECRET`** is set, resolved **`CRON_BASE_URL`** / **`HOST_PORT`**, and the `.env` file path — it never returns the secret.
 
+### Verify over SSH (bars refresh → Yahoo → `bars_cache`)
+
+From your laptop, SSH to the VPS (optional: a **`Host`** alias in **`~/.ssh/config`** with **`HostName`** + **`User`** so you can run e.g. `ssh my-vps '…'`).
+
+On the server, use the same **`HOST_PORT`** as in **`docker-compose`** (published map to container **3000**; default **8080**, or another free port such as **8090**):
+
+```bash
+# 1) Cron entries calling the trigger scripts (paths vary: /opt/... or /root/.../stock-screener)
+sudo grep -R "refresh-bars\|fetch-prices\|trigger-scheduled" /etc/cron.d /etc/crontab /var/spool/cron 2>/dev/null
+sudo cat /etc/cron.d/stock-screener 2>/dev/null
+
+# 2) App hints — secret set, loopback URL the scripts should use
+curl -sS "http://127.0.0.1:${HOST_PORT:-8080}/api/cron/status"
+
+# 3) After a weekday cron run, this log should show JSON from curl (e.g. "Universe bars refresh started", scan "started")
+sudo tail -50 /var/log/stock-screener-cron.log
+
+# 4) Optional: when the background job finishes, stdout may include "Cron bars refresh finished"
+docker logs stock-screener 2>&1 | grep -i "Cron bars refresh" | tail -30
+
+# 5) One-shot manual test (CRON_SECRET must match container .env)
+# curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" \
+#   "http://127.0.0.1:${HOST_PORT:-8080}/api/cron/fetch-prices"
+```
+
+**Working production shape:** `/etc/cron.d/stock-screener` with **`CRON_TZ=America/Chicago`**, weekdays **16:38** → **`trigger-scheduled-refresh-bars.sh`**, **17:12** → **`trigger-scheduled-scan.sh`**, each line loading **`CRON_SECRET`** + **`CRON_BASE_URL`** via **`.cron-env`** *or* **`bash -lc 'set -a; source /path/to/stock-screener/.env; set +a; exec …/trigger-….sh'`**.
+
+If (1) shows no lines, install from **`deploy/host-cron.example`**, **`chmod +x`** both trigger scripts, and align **`CRON_BASE_URL`** with **`HOST_PORT`**.
+
 ```bash
 chmod +x scripts/trigger-scheduled-scan.sh
 # root-only file, e.g. /opt/stock-screener/.cron-env
@@ -102,8 +131,6 @@ cd stock-screener
 cp .env.example .env
 nano .env   # SUPABASE_*, CRON_SECRET (for any scheduled trigger), etc.
 ```
-
-**Do not** set `VERCEL` on the VPS. Compose clears it so `/app/data` is writable.
 
 ```bash
 docker compose up -d --build

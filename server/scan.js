@@ -67,9 +67,6 @@ function defaultScanParallelismFromHost() {
 const MIN_CACHED_DAILY_BARS_FOR_SCAN = MIN_DAILY_BARS_FOR_IBD_RS;
 
 function ensureDataDir() {
-  // Vercel serverless runtime uses a read-only filesystem for /var/task.
-  // Scan persistence is DB-backed there, so local data dirs should be skipped.
-  if (process.env.VERCEL) return;
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(BARS_CACHE_DIR)) fs.mkdirSync(BARS_CACHE_DIR, { recursive: true });
 }

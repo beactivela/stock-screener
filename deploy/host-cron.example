@@ -18,6 +18,10 @@ CRON_TZ=America/Chicago
 #
 # 5:12 PM Mon–Fri — full VCP scan (same as UI "Run scan").
 12 17 * * 1-5 root . /opt/stock-screener/.cron-env && /opt/stock-screener/scripts/trigger-scheduled-scan.sh >> /var/log/stock-screener-cron.log 2>&1
+#
+# Alternate (one live Hostinger install): source the repo .env instead of .cron-env — still set CRON_BASE_URL + CRON_SECRET there.
+# 38 16 * * 1-5 root /bin/bash -lc 'set -a; source /opt/stock-screener/.env; set +a; exec /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh' >> /var/log/stock-screener-cron.log 2>&1
+# 12 17 * * 1-5 root /bin/bash -lc 'set -a; source /opt/stock-screener/.env; set +a; exec /opt/stock-screener/scripts/trigger-scheduled-scan.sh' >> /var/log/stock-screener-cron.log 2>&1
 
 # Do not enable this AND SCHEDULE_SCAN=1 in the container, or Supabase pg_cron hitting the same
 # endpoint, unless you accept possible double-runs; the app skips if a scan is already running / cooldown.

@@ -18,7 +18,6 @@ regime_trading
 .vscode
 *.log
 .DS_Store
-.vercel
 
 # Tests & docs (not needed to run the app)
 **/*.test.js

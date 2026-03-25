@@ -1,7 +1,6 @@
 /**
  * API base URL for fetch calls.
- * - Local dev: empty → single server (Express + Vite) on same origin, /api on same port
- * - Vercel (no env): empty → /api must be provided by Vercel serverless or external URL
- * - Vercel + VITE_API_URL: e.g. "https://your-api.railway.app" → API runs separately
+ * - Default: empty → same origin `/api` (local dev and Docker VPS both use one host).
+ * - Optional VITE_API_URL: separate API origin when the UI is hosted apart from the API.
  */
 export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');

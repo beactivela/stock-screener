@@ -124,10 +124,6 @@ export function registerDeployRoutes(app) {
   });
 
   app.post('/api/deploy/trigger', async (req, res) => {
-    if (process.env.VERCEL) {
-      return res.status(501).json({ error: 'Deploy trigger is not available on Vercel.' });
-    }
-
     if (process.env.NODE_ENV === 'production' && !getDeployAuthSecret()) {
       return res.status(503).json({
         error: 'Set DEPLOY_SECRET or CRON_SECRET on the server before using deploy trigger.',

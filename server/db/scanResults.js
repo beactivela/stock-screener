@@ -236,7 +236,7 @@ export function inferSupabaseScanRunLooksInProgress(run, resultCount, nowMs = Da
 }
 
 /**
- * Serverless-safe scan progress: any Vercel instance can read Supabase row counts.
+ * Scan progress from Supabase row counts (works when in-memory progress is empty, e.g. after restart).
  * Returns null when no scan looks in progress or Supabase is not configured.
  */
 export async function getSupabaseScanProgressIfRunning() {
