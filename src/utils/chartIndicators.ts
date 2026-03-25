@@ -86,6 +86,25 @@ export function sma(closes: number[], period: number): (number | null)[] {
 }
 
 /**
+ * Exponential moving average of closes. First (period - 1) entries are null; value at index period-1
+ * is the SMA seed; thereafter standard EMA with α = 2/(period+1).
+ */
+export function ema(closes: number[], period: number): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null)
+  if (closes.length < period || period < 1) return out
+  const k = 2 / (period + 1)
+  let sum = 0
+  for (let i = 0; i < period; i++) sum += closes[i]
+  out[period - 1] = sum / period
+  for (let i = period; i < closes.length; i++) {
+    const prev = out[i - 1]
+    if (prev == null) continue
+    out[i] = closes[i] * k + prev * (1 - k)
+  }
+  return out
+}
+
+/**
  * VCP Contraction indicator: counts consecutive pullbacks where each is smaller than the previous.
  * Output: 0–6 scale per bar (higher = more contracting). Used to show when price is forming a VCP.
  */

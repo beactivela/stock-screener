@@ -6,6 +6,7 @@ import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
 import { BREADTH_TREND_SEGMENTS, getBreadthTrendRatingFromRecentMa50 } from '../utils/breadthTrendRating.js'
 import { getVixSentimentBand, vixSentimentTone } from '../utils/vixSentiment'
+import MarketStructureIndicatorsStrip from './MarketStructureIndicatorsStrip'
 
 interface Bar {
   t: number
@@ -38,6 +39,9 @@ const CHART_OPTIONS = {
 
 /** Empty space past the last daily bar on dashboard mini charts (bar widths ≈ sessions). */
 const DASHBOARD_INDEX_RIGHT_OFFSET_BARS = 5
+
+/** Mini chart height in px — keep dashboard index row visually light. */
+const DASHBOARD_INDEX_CHART_HEIGHT = 132
 
 function getRegimeTone(regime: MarketRegimeLabel): string {
   if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
@@ -175,7 +179,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     const chart = createChart(containerRef.current, {
       ...CHART_OPTIONS,
       width,
-      height: 170,
+      height: DASHBOARD_INDEX_CHART_HEIGHT,
       rightPriceScale: { borderColor: '#334155', scaleMargins: { top: 0.1, bottom: 0.15 } },
     })
 
@@ -257,11 +261,21 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       </div>
 
       {loading ? (
-        <div className="h-[170px] flex items-center justify-center text-slate-500 text-sm">Loading…</div>
+        <div
+          className="flex items-center justify-center text-slate-500 text-sm"
+          style={{ height: DASHBOARD_INDEX_CHART_HEIGHT }}
+        >
+          Loading…
+        </div>
       ) : error ? (
-        <div className="h-[170px] flex items-center justify-center text-red-400 text-sm px-3 text-center">{error}</div>
+        <div
+          className="flex items-center justify-center text-red-400 text-sm px-3 text-center"
+          style={{ height: DASHBOARD_INDEX_CHART_HEIGHT }}
+        >
+          {error}
+        </div>
       ) : (
-        <div ref={containerRef} className="h-[170px]" />
+        <div ref={containerRef} style={{ height: DASHBOARD_INDEX_CHART_HEIGHT }} />
       )}
 
       {!isVix && (
@@ -318,6 +332,7 @@ export default function MarketIndexRegimeCards() {
           <MarketIndexCard key={cfg.ticker} config={cfg} />
         ))}
       </div>
+      <MarketStructureIndicatorsStrip />
     </section>
   )
 }
