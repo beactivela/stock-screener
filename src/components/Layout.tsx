@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import TickerSearch from './TickerSearch'
 import DeployUpdateControl from './DeployUpdateControl'
 import { API_BASE } from '../utils/api'
+import { TRADING_AGENTS_REPO_URL } from '../constants/tradingAgents.js'
 
 const LazyMinerviniChat = lazy(() => import('./MinerviniChat'))
 
@@ -117,6 +118,19 @@ export default function Layout({ children }: LayoutProps) {
             >
               Agents
             </Link>
+            <Link
+              to="/tradingagents"
+              className={`text-sm ${location.pathname === '/tradingagents' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              TradingAgents
+            </Link>
+            <a
+              href={TRADING_AGENTS_REPO_URL}
+              className="text-sm text-slate-400 hover:text-slate-200"
+              title="Upstream TradingAgents repository on GitHub"
+            >
+              TradingAgents Repo
+            </a>
           </nav>
           </div>
         </div>

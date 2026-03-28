@@ -31,6 +31,7 @@ import {
   registerAgentsRoutesAfterHeartbeat,
 } from './http/registerAgentsRoutes.js';
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
+import { registerTradingAgentsRoutes } from './http/registerTradingAgentsRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -72,6 +73,7 @@ registerOpus45Routes(app);
 registerRegimeRoutes(app);
 registerTradesRoutes(app);
 registerExitLearningRoutes(app);
+registerTradingAgentsRoutes(app);
 registerAgentsRoutesBeforeHeartbeat(app);
 registerMarcusNewsRoutes(app);
 

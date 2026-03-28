@@ -8,7 +8,16 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 // Flat config: spread plugin configs (no "extends" with objects).
 // react-hooks: use recommended-latest for flat config; plugin has no .flat.recommended.
 export default defineConfig([
-  globalIgnores(['node_modules', 'dist', 'data', 'test-background-scan.js', 'verify-industry-accuracy.js']),
+  globalIgnores([
+    'node_modules',
+    'dist',
+    'data',
+    'test-background-scan.js',
+    'verify-industry-accuracy.js',
+    '.venv-tradingagents/**',
+    'regime_trading/.venv/**',
+    'vendor/**',
+  ]),
   js.configs.recommended,
   // TypeScript + React: src only (server/scripts use node globals only, no TS rules)
   ...tseslint.configs.recommended.map((c) => ({ ...c, files: ['src/**/*.{ts,tsx}'] })),
