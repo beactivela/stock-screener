@@ -1,4 +1,14 @@
-/** @typedef {{ ticker: string, asOf: string, provider: string }} TradingAgentsRunInput */
+/**
+ * @typedef {{ ticker: string, asOf: string, provider: string, analysts: string[] }} TradingAgentsRunInput
+ */
+
+/** Canonical order for defaults and CLI. */
+export const TRADING_AGENTS_ANALYST_IDS = ['market', 'social', 'news', 'fundamentals']
+
+/** @type {Set<string>} */
+const ANALYST_SET = new Set(TRADING_AGENTS_ANALYST_IDS)
+
+export const TRADING_AGENTS_PROFILES = /** @type {const} */ (['full', 'fast'])
 
 export const TRADING_AGENTS_PROVIDERS = [
   'openai',
@@ -11,6 +21,75 @@ export const TRADING_AGENTS_PROVIDERS = [
 
 const TICKER_RE = /^[A-Z0-9.-]{1,12}$/
 const AS_OF_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * @param {unknown} raw
+ * @returns {{ ok: true, value: string[] } | { ok: false, error: string }}
+ */
+export function normalizeTradingAgentsAnalysts(raw) {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: [...TRADING_AGENTS_ANALYST_IDS] }
+  }
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: 'analysts must be an array of analyst ids' }
+  }
+  /** @type {string[]} */
+  const out = []
+  const seen = new Set()
+  for (const item of raw) {
+    if (typeof item !== 'string' || !item.trim()) {
+      return { ok: false, error: 'each analyst must be a non-empty string' }
+    }
+    const id = item.trim().toLowerCase()
+    if (!ANALYST_SET.has(id)) {
+      return {
+        ok: false,
+        error: `unknown analyst "${id}"; use: ${TRADING_AGENTS_ANALYST_IDS.join(', ')}`,
+      }
+    }
+    if (!seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+  if (out.length === 0) {
+    return { ok: false, error: 'analysts must include at least one analyst' }
+  }
+  return { ok: true, value: out }
+}
+
+/**
+ * Expand `profile` when `analysts` is omitted. Explicit `analysts` wins over `profile`.
+ * @param {unknown} body
+ * @returns {{ ok: true, value: string[] } | { ok: false, error: string }}
+ */
+export function resolveAnalystsFromBody(body) {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'invalid body' }
+  }
+  const rec = /** @type {Record<string, unknown>} */ (body)
+  const rawAnalysts = rec.analysts
+  const rawProfile = rec.profile
+
+  if (rawAnalysts !== undefined && rawAnalysts !== null) {
+    return normalizeTradingAgentsAnalysts(rawAnalysts)
+  }
+
+  if (rawProfile === undefined || rawProfile === null) {
+    return { ok: true, value: [...TRADING_AGENTS_ANALYST_IDS] }
+  }
+  if (typeof rawProfile !== 'string' || !rawProfile.trim()) {
+    return { ok: false, error: 'profile must be "full" or "fast"' }
+  }
+  const p = rawProfile.trim().toLowerCase()
+  if (p === 'full') {
+    return { ok: true, value: [...TRADING_AGENTS_ANALYST_IDS] }
+  }
+  if (p === 'fast') {
+    return { ok: true, value: ['market', 'fundamentals'] }
+  }
+  return { ok: false, error: 'profile must be "full" or "fast"' }
+}
 
 /**
  * @param {unknown} body
@@ -61,7 +140,12 @@ export function validateTradingAgentsRunRequest(body) {
     }
   }
 
-  return { ok: true, value: { ticker, asOf, provider } }
+  const analystsRes = resolveAnalystsFromBody(body)
+  if (!analystsRes.ok) {
+    return { ok: false, error: analystsRes.error }
+  }
+
+  return { ok: true, value: { ticker, asOf, provider, analysts: analystsRes.value } }
 }
 
 /**

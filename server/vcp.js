@@ -252,6 +252,12 @@ function checkVCP(bars, options = {}) {
       ma10Above20: false,
       pctFromHigh: null,
       breakoutVolumeRatio: null,
+      breakoutVolumeRatio50: null,
+      minClose20d: null,
+      sma100: null,
+      aboveSma20: null,
+      aboveSma50: null,
+      aboveSma100: null,
       turtleBreakout20: false,
       turtleBreakout55: false,
       priceAboveAllMAs: false,
@@ -263,6 +269,7 @@ function checkVCP(bars, options = {}) {
   const sma10 = sma(closes, 10);
   const sma20 = sma(closes, 20);
   const sma50 = sma(closes, 50);
+  const sma100 = sma(closes, 100);
   const sma150 = sma(closes, 150);
   const sma200 = sma(closes, 200);
 
@@ -271,8 +278,35 @@ function checkVCP(bars, options = {}) {
   const last10 = sma10[lastIdx];
   const last20 = sma20[lastIdx];
   const last50 = sma50[lastIdx];
+  const last100 = sma100[lastIdx];
   const last150 = sma150[lastIdx];
   const last200 = sma200[lastIdx];
+
+  /** Lowest close in prior 20 sessions (excludes today) — Top-100 study $10 floor */
+  const minClose20d = (() => {
+    if (lastIdx < 20) return null;
+    let minC = Infinity;
+    for (let i = lastIdx - 20; i <= lastIdx - 1; i++) {
+      const c = closes[i];
+      if (Number.isFinite(c) && c < minC) minC = c;
+    }
+    return Number.isFinite(minC) ? Math.round(minC * 100) / 100 : null;
+  })();
+
+  const volumes = bars.map((b) => b.v ?? b.volume ?? 0);
+  /** Last bar volume / 50-day average of prior 50 sessions — aligns with Top-100 study volume rule */
+  const breakoutVolumeRatio50 = (() => {
+    if (lastIdx < 50) return null;
+    const slice = volumes.slice(lastIdx - 50, lastIdx);
+    const avg = slice.reduce((a, b) => a + b, 0) / 50;
+    const lastVol = volumes[lastIdx];
+    if (!(avg > 0) || lastVol == null) return null;
+    return Math.round((lastVol / avg) * 100) / 100;
+  })();
+
+  const aboveSma20 = last20 != null && lastClose > last20;
+  const aboveSma50 = last50 != null && lastClose > last50;
+  const aboveSma100 = last100 != null && lastClose > last100;
   
   // Calculate IBD RS raw (pre-percentile)
   const rsData = calculateRelativeStrength(bars);
@@ -287,6 +321,7 @@ function checkVCP(bars, options = {}) {
       sma10: last10, 
       sma20: last20, 
       sma50: last50, 
+      sma100: last100,
       contractions: 0, 
       atMa10: false, 
       atMa20: false, 
@@ -308,6 +343,11 @@ function checkVCP(bars, options = {}) {
       ma10Above20: last10 != null && last20 != null ? last10 > last20 : false,
       pctFromHigh: null,
       breakoutVolumeRatio: null,
+      breakoutVolumeRatio50: breakoutVolumeRatio50 ?? null,
+      minClose20d: minClose20d ?? null,
+      aboveSma20: !!aboveSma20,
+      aboveSma50: !!aboveSma50,
+      aboveSma100: last100 == null ? null : !!aboveSma100,
       turtleBreakout20: false,
       turtleBreakout55: false,
       priceAboveAllMAs: false,
@@ -329,8 +369,7 @@ function checkVCP(bars, options = {}) {
   const atMa50 = last50 != null && nearMA(lastClose, last50);
   const atAnyMA = atMa10 || atMa20 || atMa50;
 
-  // Volume analysis: 20-day avg, drying up on pullbacks (bullish)
-  const volumes = bars.map((b) => b.v ?? b.volume ?? 0);
+  // Volume analysis: 20-day avg, drying up on pullbacks (bullish) — reuses `volumes` from above
   const volSma20 = volumeSma(volumes, 20);
   const avgVol20 = volSma20[lastIdx];
   const lastPullback = pullbacks[pullbacks.length - 1];
@@ -448,6 +487,11 @@ function checkVCP(bars, options = {}) {
     sma10: last10,
     sma20: last20,
     sma50: last50,
+    sma100: last100,
+    minClose20d,
+    aboveSma20,
+    aboveSma50,
+    aboveSma100: last100 == null ? null : aboveSma100,
     pullbackPcts: pullbacks.slice(-5).map((p) => p.pct.toFixed(2)),
     volumeDryUp,
     volumeRatio: volumeRatio != null ? Math.round(volumeRatio * 100) / 100 : null,
@@ -467,6 +511,7 @@ function checkVCP(bars, options = {}) {
     ma10Above20,
     pctFromHigh,
     breakoutVolumeRatio,
+    breakoutVolumeRatio50,
     turtleBreakout20,
     turtleBreakout55,
     priceAboveAllMAs,

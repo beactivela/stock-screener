@@ -53,7 +53,7 @@ Full API and data flow: see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Deploy (production)
 
-**Docker on a VPS (e.g. Hostinger)** is the supported setup: one container serves the Vite build and Express `/api/*` on the same origin. Full steps: **[docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)** (`SUPABASE_*`, `CRON_SECRET`, Traefik, `HOST_PORT`).
+**Docker on a VPS** is the supported setup: one container serves the Vite build and Express `/api/*` on the same origin. Full steps: **[docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)** (`SUPABASE_*`, `CRON_SECRET`, Traefik, `HOST_PORT`). **Public app:** [https://stocks.scaleagent.org](https://stocks.scaleagent.org) (set **`TRAEFIK_HOST=stocks.scaleagent.org`** in server `.env`; Traefik routes via Docker labels in **`docker-compose.yml`**).
 
 ### Scheduled Yahoo bars + daily scan (host cron)
 
@@ -66,13 +66,17 @@ So **daily prices** hit Yahoo and land in Supabase **`bars_cache`** before the V
 
 Copy **`deploy/host-cron.example`** → `/etc/cron.d/stock-screener`, set **`CRON_SECRET`** and **`CRON_BASE_URL`** (`http://127.0.0.1:<HOST_PORT>`). Scripts: **`scripts/trigger-scheduled-refresh-bars.sh`**, **`scripts/trigger-scheduled-scan.sh`**.
 
-**Check from your laptop over SSH** (add a `Host` alias in `~/.ssh/config` if you like):
+**Check from your laptop over SSH** — optional **`Host` alias:** append **[`deploy/ssh-config.example`](deploy/ssh-config.example)** to `~/.ssh/config`, then edit that file if needed (`User`, `IdentityFile`). *Only run the commands below in the shell — don’t paste the prose around them (zsh will try to run words like `or` as commands).*
 
 ```bash
-ssh user@YOUR_VPS 'sudo grep -R trigger-scheduled /etc/cron.d /var/spool/cron 2>/dev/null; curl -sS http://127.0.0.1:8080/api/cron/status'
+cat deploy/ssh-config.example >> ~/.ssh/config
+# now edit ~/.ssh/config if needed, then:
+ssh scaleagent-stocks 'sudo grep -R trigger-scheduled /etc/cron.d /var/spool/cron 2>/dev/null; curl -sS http://127.0.0.1:8090/api/cron/status'
 ```
 
-Use your real **`HOST_PORT`** if not `8080`. **`GET /api/cron/status`** should show `"secretConfigured":true` and the loopback base URL. After cron runs, **`tail /var/log/stock-screener-cron.log`** on the server should show JSON with `"Universe bars refresh started"` and scan `started` responses.
+First-time connect may ask to trust the host; if DNS points to the same VPS you already use under another name, answer **`yes`**.
+
+Use your server’s **`HOST_PORT`** from `.env` (production example **8090**, not necessarily **8080**). **`GET /api/cron/status`** should show `"secretConfigured":true` and the loopback base URL. After cron runs, **`tail /var/log/stock-screener-cron.log`** on the server should show JSON with `"Universe bars refresh started"` and scan `started` responses.
 
 ## Documentation
 

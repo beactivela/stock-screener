@@ -70,6 +70,13 @@ async function main() {
       sector: v?.sector ?? null,
       company_name: v?.companyName ?? null,
       fetched_at: v?.fetchedAt ?? null,
+      ibd_composite_rating: v?.ibdCompositeRating ?? null,
+      ibd_eps_rating: v?.ibdEpsRating ?? null,
+      ibd_rs_rating: v?.ibdRsRating ?? null,
+      ibd_smr_rating: v?.ibdSmrRating ?? null,
+      ibd_acc_dis_rating: v?.ibdAccDisRating ?? null,
+      ibd_group_rel_str_rating: v?.ibdGroupRelStrRating ?? null,
+      ibd_imported_at: v?.ibdImportedAt ?? null,
       raw: v ?? null,
     }));
     if (rows.length > 0) {

@@ -99,8 +99,10 @@ export const SIGNAL_AGENT_CRITERIA = {
     label: 'Breakout Tracker',
     criteria: [
       'Relative Strength ≥ 80',
-      'Within 8% of 52-week high',
-      'Breakout volume ratio ≥ 1.2×',
+      'Within 10% of 52-week high',
+      'Lowest close in prior 20 sessions ≥ $10 (or last close ≥ $10 if min not computed)',
+      'Volume: ≥ 1.5× prior 50-day average when available; else ≥ 1.2× last bar vs 20-day avg volume',
+      'Price above SMA20, SMA50, and SMA100 when those fields are present',
       'Signal family: opus45',
     ],
   },

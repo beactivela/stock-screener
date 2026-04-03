@@ -2,6 +2,7 @@
 # ─────────────────────────────────────────────────────
 # Traefik (Hostinger template): host network + Docker provider, exposedbydefault=false.
 # Set TRAEFIK_HOST in .env to a DNS name that points at this VPS (for HTTPS + routing).
+# Production: stocks.scaleagent.org → set TRAEFIK_HOST=stocks.scaleagent.org in .env on the server.
 # Published HOST_PORT is optional (localhost/cron); Traefik reaches the container on port 3000.
 #
 #   docker compose up -d --build
@@ -10,7 +11,7 @@
 #   docker compose --profile watchtower up -d
 #
 # Uptime Kuma (same Compose stack): dashboard on host KUMA_PORT (default 3001). From Kuma’s UI add a monitor
-#   URL: http://stock-screener:3000/api/health  (Docker DNS; bypasses Traefik). For public URL checks use https://your-domain/api/health.
+#   URL: http://stock-screener:3000/api/health  (Docker DNS; bypasses Traefik). Public: https://stocks.scaleagent.org/api/health
 #
 networks:
   default:
@@ -34,7 +35,7 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "traefik.enable=true"
-      # Set TRAEFIK_HOST in .env (DNS must point at this VPS for Let’s Encrypt)
+      # Host rule + TLS: TRAEFIK_HOST in .env (e.g. stocks.scaleagent.org). DNS A/AAAA → this VPS for Let’s Encrypt.
       - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST}`)"
       - "traefik.http.routers.stock-screener.entrypoints=websecure"
       - "traefik.http.routers.stock-screener.tls.certresolver=letsencrypt"

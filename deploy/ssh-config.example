@@ -1,0 +1,20 @@
+# Merge into ~/.ssh/config (do not paste this whole file into zsh as commands — use: cat deploy/ssh-config.example >> ~/.ssh/config)
+#
+# Merge into ~/.ssh/config on your laptop (one Host block per machine).
+#
+# After saving:  ssh scaleagent-stocks
+# Requires DNS: stocks.scaleagent.org → VPS. If DNS isn’t ready, set HostName to the server IP instead.
+
+Host scaleagent-stocks
+  HostName stocks.scaleagent.org
+  User root
+  # IdentityFile ~/.ssh/id_ed25519
+
+# Optional: jump host
+#   ProxyJump bastion.example.com
+
+# On the server (loopback = HOST_PORT from .env, often 8090):
+#   curl -sS http://127.0.0.1:8090/api/cron/status
+#
+# From laptop (HTTPS):
+#   curl -sS https://stocks.scaleagent.org/api/health

@@ -13,6 +13,7 @@ const IndustryTickers = lazy(() => import('./pages/IndustryTickers'))
 const Regime = lazy(() => import('./pages/Regime'))
 const Agents = lazy(() => import('./pages/Agents'))
 const TradingAgentsPage = lazy(() => import('./pages/TradingAgents'))
+const Atlas = lazy(() => import('./pages/Atlas'))
 const Style = lazy(() => import('./pages/Style'))
 const MarketIndexDetail = lazy(() => import('./pages/MarketIndexDetail'))
 
@@ -38,6 +39,7 @@ export default function App() {
                 <Route path="/regime" element={<Regime />} />
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/tradingagents" element={<TradingAgentsPage />} />
+                <Route path="/atlas" element={<Atlas />} />
                 <Route path="/stock/:ticker" element={<StockDetail />} />
                 <Route path="/market-index/:ticker" element={<MarketIndexDetail />} />
                 <Route path="/style" element={<Style />} />

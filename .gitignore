@@ -5,3 +5,6 @@ dist
 .DS_Store
 data/
 .venv-tradingagents/
+
+# Local clone of karpathy/autoresearch (optional; not tracked)
+vendor/autoresearch/

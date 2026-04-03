@@ -1,3 +1,5 @@
 # TradingAgents (https://github.com/TauricResearch/TradingAgents)
 # Requires submodule: git submodule update --init --recursive
 -e ./vendor/TradingAgents
+# Pin above pyproject minimum: OpenAI + tools + Chat Completions compatibility
+langchain-openai>=0.3.30

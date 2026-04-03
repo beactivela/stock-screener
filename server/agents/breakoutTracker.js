@@ -23,7 +23,8 @@
  */
 
 import { createStrategyAgent } from './strategyAgentBase.js';
-import { VCP, EXIT_RULES, CANSLIM } from './northstar.js';
+import { VCP } from './northstar.js';
+import { evaluateBreakoutTrackerStudy } from '../breakoutTrackerCriteria.js';
 
 const breakoutTracker = createStrategyAgent({
   name: 'Breakout Tracker',
@@ -42,7 +43,8 @@ const breakoutTracker = createStrategyAgent({
   mandatoryOverrides: {
     maxDistanceFromHigh: 10,             // 10% — relaxed from Northstar's 5% ideal for CORRECTION pools
     minRelativeStrength: 80,             // Slightly below CANSLIM.minRsRating (85) to catch pre-breakout bases
-    minBreakoutVolumeRatio: VCP.breakoutVolumeMinX,  // 1.40 — Northstar: ≥40% above 50d avg
+    /** Documented target; hard enforcement is in evaluateBreakoutTrackerStudy (1.5× on 50d vol when available). */
+    minBreakoutVolumeRatio: VCP.breakoutVolumeMinX,
   },
 
   // Boost entry quality and proximity-to-high weights
@@ -53,10 +55,11 @@ const breakoutTracker = createStrategyAgent({
     entryAt10MA: 15,            // +3 from default 12
   },
 
-  // Train on signals within 10% of high with light volume confirmation
+  // Align with Top-100 breakout study: $10 min (20d), RS, proximity to high, 50d volume ratio, MAs
   trainingFilter: (signal) => {
     const ctx = signal.context || {};
-    return (ctx.pctFromHigh || 100) <= 10 && (ctx.breakoutVolumeRatio || 0) >= 1.2;
+    const row = { ...ctx, ...signal };
+    return evaluateBreakoutTrackerStudy(row).passes;
   },
 
   minSignals: 5,   // Need at least 5 (not 10) since tight breakout pools are smaller

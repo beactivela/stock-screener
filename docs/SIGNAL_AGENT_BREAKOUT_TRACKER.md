@@ -20,31 +20,25 @@
 
 ## Hard filters (actually enforced)
 
-Configured in `mandatoryOverrides` in `server/agents/breakoutTracker.js`.
-
-Enforced by `strategyAgentBase.filterSignals()`:
+`strategyAgentBase.filterSignals()` applies `mandatoryOverrides` from `server/agents/breakoutTracker.js`:
 
 - **Distance from 52w high**: \(pctFromHigh \le 10\%\)
 - **RS minimum**: \(RS \ge 80\)
 
-### Important implementation note (declared but NOT enforced)
+**Training pool filter** (stricter, aligned with `docs/research` Top-100 breakout study) is implemented in `server/breakoutTrackerCriteria.js` and used by:
 
-`mandatoryOverrides` also declares:
+- `trainingFilter` in `server/agents/breakoutTracker.js` (learning / optimization)
+- `matchesBreakoutTracker` in `server/learning/signalSetupClassifier.js` (Dashboard / “Breakout” tag)
 
-- `minBreakoutVolumeRatio: VCP.breakoutVolumeMinX` (Northstar target \( \ge 1.40 \))
+That filter requires:
 
-But `strategyAgentBase.filterSignals()` currently only checks a small, explicit set of keys and does **not** enforce `minBreakoutVolumeRatio`. So, today, this “mandatory” volume rule is **documentation-only** unless enforced elsewhere.
+- **Pre-move price floor**: lowest close in the prior **20** sessions **≥ $10** (`minClose20d`), or if missing, **last close ≥ $10**
+- **Proximity**: \(pctFromHigh \le 10\%\)
+- **RS**: **≥ 80**
+- **Volume** (study-aligned): **≥ 1.5×** prior **50**-day average volume on the last bar when `breakoutVolumeRatio50` is present (`server/vcp.js`); if not (short history), fall back to legacy **≥ 1.2×** last bar vs **20**-day avg volume (`breakoutVolumeRatio`)
+- **Trend**: price **above SMA20, SMA50, and SMA100** when those booleans are present (null = do not block older scans)
 
-## Training filter (real volume enforcement today)
-
-Breakout Tracker’s actual volume gating currently happens here:
-
-- `context.pctFromHigh <= 10`
-- `context.breakoutVolumeRatio >= 1.2`
-
-So in practice:
-
-- The “volume confirmation” bar is **1.2x**, not Northstar’s **1.40x**.
+`mandatoryOverrides.minBreakoutVolumeRatio` remains a **documentation / Northstar** reference; numeric volume enforcement is in `evaluateBreakoutTrackerStudy()`.
 
 ## Default weight biases (starting point)
 

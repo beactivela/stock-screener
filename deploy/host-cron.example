@@ -2,8 +2,8 @@
 # 1. Copy to /etc/cron.d/stock-screener (or use root crontab).
 # 2. Create a root-only env file, e.g. /opt/stock-screener/.cron-env:
 #      export CRON_SECRET='your-long-random-secret'
-#      export CRON_BASE_URL='http://127.0.0.1:8080'
-#    (8080 = HOST_PORT from docker-compose; use 80 if you map that.)
+#      export CRON_BASE_URL='http://127.0.0.1:8090'
+#    (must match HOST_PORT in server .env / docker-compose; 8080 and 8090 are common.)
 # 3. chmod 600 /opt/stock-screener/.cron-env
 # 4. chmod +x /opt/stock-screener/scripts/trigger-scheduled-scan.sh
 #    chmod +x /opt/stock-screener/scripts/trigger-scheduled-refresh-bars.sh

@@ -1,3 +1,5 @@
+import { matchesBreakoutTrackerStudy } from '../breakoutTrackerCriteria.js';
+
 const DEFAULT_SIGNAL_FAMILY = {
   momentum_scout: 'opus45',
   base_hunter: 'opus45',
@@ -30,10 +32,7 @@ function matchesBaseHunter(signal) {
 function matchesBreakoutTracker(signal) {
   const signalFamily = signal.signalFamily ?? DEFAULT_SIGNAL_FAMILY.breakout_tracker;
   if (signalFamily !== 'opus45') return false;
-  const rs = isNumber(signal.relativeStrength) ? signal.relativeStrength : 0;
-  const pctFromHigh = isNumber(signal.pctFromHigh) ? signal.pctFromHigh : 100;
-  const volumeRatio = isNumber(signal.breakoutVolumeRatio) ? signal.breakoutVolumeRatio : 0;
-  return rs >= 80 && pctFromHigh <= 8 && volumeRatio >= 1.2;
+  return matchesBreakoutTrackerStudy(signal);
 }
 
 function matchesTurtleTrader(signal) {

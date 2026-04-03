@@ -4,5 +4,7 @@ export type RsRatingBadge = {
   title: string;
 };
 
-export function getRsRatingBadge(rating: number | null): RsRatingBadge;
-export function getIndustryRankBadge(rank: number | null): RsRatingBadge;
+export function getScanRsRatingBadge(rating: number | null | undefined): RsRatingBadge;
+export function getIbdRsRatingBadge(rating: number | null | undefined): RsRatingBadge;
+export function getIndustryRankBadge(rank: number | null | undefined): RsRatingBadge;
+export function getIbdGroupRelStrBadge(grade: string | null | undefined): RsRatingBadge;

@@ -14,6 +14,13 @@ export const FUNDAMENTALS_FIELD_TO_COLUMN = {
   sector: 'sector',
   companyName: 'company_name',
   fetchedAt: 'fetched_at',
+  ibdCompositeRating: 'ibd_composite_rating',
+  ibdEpsRating: 'ibd_eps_rating',
+  ibdRsRating: 'ibd_rs_rating',
+  ibdSmrRating: 'ibd_smr_rating',
+  ibdAccDisRating: 'ibd_acc_dis_rating',
+  ibdGroupRelStrRating: 'ibd_group_rel_str_rating',
+  ibdImportedAt: 'ibd_imported_at',
 };
 
 const FUNDAMENTALS_FIELDS = Object.keys(FUNDAMENTALS_FIELD_TO_COLUMN);
@@ -64,6 +71,18 @@ export function projectFundamentalsEntry(entry, fields = null) {
   return projected;
 }
 
+function rowToEntryDbFromRow(r) {
+  return {
+    ibdCompositeRating: r.ibd_composite_rating ?? null,
+    ibdEpsRating: r.ibd_eps_rating ?? null,
+    ibdRsRating: r.ibd_rs_rating ?? null,
+    ibdSmrRating: r.ibd_smr_rating ?? null,
+    ibdAccDisRating: r.ibd_acc_dis_rating ?? null,
+    ibdGroupRelStrRating: r.ibd_group_rel_str_rating ?? null,
+    ibdImportedAt: r.ibd_imported_at ?? null,
+  };
+}
+
 function rowToEntry(r, options = {}) {
   if (!r) return null;
   const { fields = null, includeRaw = true } = options;
@@ -77,7 +96,9 @@ function rowToEntry(r, options = {}) {
     companyName: r.company_name ?? null,
     fetchedAt: r.fetched_at ?? null,
   };
-  const merged = includeRaw ? { ...entry, ...(r.raw || {}) } : entry;
+  let merged = includeRaw ? { ...entry, ...(r.raw || {}) } : entry;
+  // Column-backed IBD wins over anything in `raw` JSONB (Yahoo cache does not include IBD).
+  merged = { ...merged, ...rowToEntryDbFromRow(r) };
   return projectFundamentalsEntry(merged, fields);
 }
 
@@ -108,22 +129,45 @@ export async function loadFundamentals(options = {}) {
   return out;
 }
 
+function mergeIbdForSave(v, prev) {
+  const p = prev || {};
+  return {
+    ibd_composite_rating:
+      v.ibdCompositeRating !== undefined ? v.ibdCompositeRating : (p.ibdCompositeRating ?? null),
+    ibd_eps_rating: v.ibdEpsRating !== undefined ? v.ibdEpsRating : (p.ibdEpsRating ?? null),
+    ibd_rs_rating: v.ibdRsRating !== undefined ? v.ibdRsRating : (p.ibdRsRating ?? null),
+    ibd_smr_rating: v.ibdSmrRating !== undefined ? v.ibdSmrRating : (p.ibdSmrRating ?? null),
+    ibd_acc_dis_rating: v.ibdAccDisRating !== undefined ? v.ibdAccDisRating : (p.ibdAccDisRating ?? null),
+    ibd_group_rel_str_rating:
+      v.ibdGroupRelStrRating !== undefined ? v.ibdGroupRelStrRating : (p.ibdGroupRelStrRating ?? null),
+    ibd_imported_at:
+      v.ibdImportedAt !== undefined ? v.ibdImportedAt : (p.ibdImportedAt ?? null),
+  };
+}
+
 /** @param {Record<string, object>} data */
 export async function saveFundamentals(data) {
   if (!isSupabaseConfigured()) throw new Error('Supabase required. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.');
   const supabase = getSupabase();
-  const rows = Object.entries(data).map(([ticker, v]) => ({
-    ticker,
-    pct_held_by_inst: v?.pctHeldByInst ?? null,
-    qtr_earnings_yoy: v?.qtrEarningsYoY ?? null,
-    profit_margin: v?.profitMargin ?? null,
-    operating_margin: v?.operatingMargin ?? null,
-    industry: v?.industry ?? null,
-    sector: v?.sector ?? null,
-    company_name: v?.companyName ?? null,
-    fetched_at: v?.fetchedAt ?? null,
-    raw: v ?? null,
-  }));
+  const tickers = Object.keys(data);
+  const existing = tickers.length > 0 ? await loadFundamentals({ tickers }) : {};
+  const rows = Object.entries(data).map(([ticker, v]) => {
+    const prev = existing[ticker] || {};
+    const ibd = mergeIbdForSave(v, prev);
+    return {
+      ticker,
+      pct_held_by_inst: v?.pctHeldByInst ?? null,
+      qtr_earnings_yoy: v?.qtrEarningsYoY ?? null,
+      profit_margin: v?.profitMargin ?? null,
+      operating_margin: v?.operatingMargin ?? null,
+      industry: v?.industry ?? null,
+      sector: v?.sector ?? null,
+      company_name: v?.companyName ?? null,
+      fetched_at: v?.fetchedAt ?? null,
+      ...ibd,
+      raw: v ?? null,
+    };
+  });
   const { error } = await supabase.from('fundamentals').upsert(rows, { onConflict: 'ticker' });
   if (error) throw new Error(error.message);
 }

@@ -32,6 +32,7 @@ import {
 } from './http/registerAgentsRoutes.js';
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
 import { registerTradingAgentsRoutes } from './http/registerTradingAgentsRoutes.js';
+import { registerAtlasRoutes } from './http/registerAtlasRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -74,6 +75,7 @@ registerRegimeRoutes(app);
 registerTradesRoutes(app);
 registerExitLearningRoutes(app);
 registerTradingAgentsRoutes(app);
+registerAtlasRoutes(app);
 registerAgentsRoutesBeforeHeartbeat(app);
 registerMarcusNewsRoutes(app);
 

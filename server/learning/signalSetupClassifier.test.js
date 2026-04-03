@@ -36,7 +36,12 @@ describe('classifySignalSetups', () => {
       ...baseSignal,
       pctFromHigh: 6,
       relativeStrength: 85,
+      lastClose: 120,
+      minClose20d: 100,
       breakoutVolumeRatio: 1.3,
+      aboveSma20: true,
+      aboveSma50: true,
+      aboveSma100: true,
       signalFamily: 'opus45',
     });
     assert.ok(byId(setups).has('breakout_tracker'));

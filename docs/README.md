@@ -25,7 +25,7 @@ If Yahoo returns no chart metadata or the symbol is invalid, the API responds wi
 ### Supabase & database
 
 - **[supabase/README.md](./supabase/README.md)** — Schema quick start, env vars, **RLS hardening** (`migration-rls-and-api-hardening.sql`), Supabase Cron / Edge Function for scans.
-- **[DEPLOY_HOSTINGER_VPS.md](./DEPLOY_HOSTINGER_VPS.md)** — Docker on VPS; **`SUPABASE_SERVICE_KEY`**, host cron (Yahoo bars + scan), SSH / log verification.
+- **[DEPLOY_HOSTINGER_VPS.md](./DEPLOY_HOSTINGER_VPS.md)** — Docker on VPS; **`SUPABASE_SERVICE_KEY`**, host cron (Yahoo bars + scan), SSH / log verification. **`deploy/ssh-config.example`** — `~/.ssh/config` alias **`scaleagent-stocks`**.
 
 - **PLAN.md** — VCP criteria, data sources, task breakdown
 - **BACKGROUND_SCAN_IMPLEMENTATION.md** — Background scan and progress polling

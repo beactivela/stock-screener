@@ -47,7 +47,7 @@ function StanceIcon({
   active: boolean
   compact?: boolean
 }) {
-  const box = compact ? 'w-6 h-6 rounded border' : 'w-9 h-9 rounded-md border-2'
+  const box = compact ? 'w-[1.8rem] h-[1.8rem] rounded border' : 'w-9 h-9 rounded-md border-2'
   const base = `${box} flex items-center justify-center transition-opacity`
   const inactive = `${base} border-slate-600 text-slate-600 opacity-35`
   const activeProtect = `${base} border-red-500 bg-red-500/25 text-red-400 opacity-100`
@@ -66,8 +66,8 @@ function StanceIcon({
           ? activeGrow
           : inactive
 
-  const sw = compact ? 1.6 : 2.2
-  const dim = compact ? 14 : 22
+  const sw = compact ? 1.92 : 2.2
+  const dim = compact ? 16.8 : 22
 
   return (
     <div className={cls} aria-hidden>
@@ -163,39 +163,56 @@ export default function MarketStructureIndicatorsStrip() {
             return (
               <div
                 key={row.key}
-                className="relative rounded-lg border border-slate-800/90 bg-slate-950/40 px-2 py-1.5 flex flex-col min-w-0"
+                className="rounded-lg border border-slate-800/90 bg-slate-950/40 px-2 py-1.5 flex flex-col min-w-0"
               >
-                {row.weakeningVsWeek && (
-                  <div
-                    className="absolute top-1 right-1 text-red-500 pointer-events-none"
-                    title="Stance weakened vs ~1 week ago"
-                    aria-hidden
-                  >
-                    <svg width="11" height="9" viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                      <path d="M8 1 L3 5 L8 9" />
-                    </svg>
+                {/* Title + Protect/Neutral/Grow on one row so each chart cell reads left→right like a single headline. */}
+                <div className="flex flex-row items-center justify-between gap-2 min-w-0">
+                  <div className="min-w-0 flex-1 flex items-center gap-1">
+                    <div className="text-[10px] font-semibold text-slate-200 uppercase tracking-wide leading-tight truncate">
+                      {row.title}
+                    </div>
+                    {row.weakeningVsWeek && (
+                      <span
+                        className="shrink-0 text-red-500"
+                        title="Stance weakened vs ~1 week ago"
+                        aria-hidden
+                      >
+                        <svg width="11" height="9" viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                          <path d="M8 1 L3 5 L8 9" />
+                        </svg>
+                      </span>
+                    )}
                   </div>
-                )}
-                <div className="text-[10px] font-semibold text-slate-200 uppercase tracking-wide leading-tight pr-4">
-                  {row.title}
+                  <div
+                    className="flex shrink-0 items-end gap-1"
+                    role="group"
+                    aria-label={`${row.title}: ${row.stance}`}
+                  >
+                    <div className="flex flex-col items-center gap-0.5 min-w-0">
+                      <span className="text-[7px] font-semibold uppercase tracking-wide text-red-400/90 leading-none text-center w-full truncate">
+                        Protect
+                      </span>
+                      <StanceIcon stance="protect" active={col === 0} compact />
+                    </div>
+                    <div className="flex flex-col items-center gap-0.5 min-w-0">
+                      <span className="text-[7px] font-semibold uppercase tracking-wide text-amber-300/90 leading-none text-center w-full truncate">
+                        Neutral
+                      </span>
+                      <StanceIcon stance="neutral" active={col === 1} compact />
+                    </div>
+                    <div className="flex flex-col items-center gap-0.5 min-w-0">
+                      <span className="text-[7px] font-semibold uppercase tracking-wide text-emerald-400/90 leading-none text-center w-full truncate">
+                        Grow
+                      </span>
+                      <StanceIcon stance="grow" active={col === 2} compact />
+                    </div>
+                  </div>
                 </div>
                 <div
                   className={`text-[9px] leading-tight mt-1 line-clamp-2 ${subtitleClass(row.subtitleTone)}`}
                   title={row.subtitle}
                 >
                   {row.subtitle}
-                </div>
-                <div className="mt-1.5 pt-1.5 border-t border-slate-800/80">
-                  <div className="flex justify-between gap-0.5 text-[7px] font-semibold uppercase tracking-wide mb-1 px-0.5">
-                    <span className="text-red-400/90 truncate text-center flex-1">Protect</span>
-                    <span className="text-amber-300/90 truncate text-center flex-1">Neutral</span>
-                    <span className="text-emerald-400/90 truncate text-center flex-1">Grow</span>
-                  </div>
-                  <div className="flex gap-1 justify-between" role="group" aria-label={`${row.title}: ${row.stance}`}>
-                    <StanceIcon stance="protect" active={col === 0} compact />
-                    <StanceIcon stance="neutral" active={col === 1} compact />
-                    <StanceIcon stance="grow" active={col === 2} compact />
-                  </div>
                 </div>
               </div>
             )

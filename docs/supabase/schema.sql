@@ -30,7 +30,15 @@ CREATE TABLE IF NOT EXISTS fundamentals (
   company_name TEXT,
   fetched_at TIMESTAMPTZ,
   raw JSONB,  -- for any extra fields from Yahoo
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  -- IBD list import (see docs/supabase/migration-ibd-ratings.sql on existing DBs)
+  ibd_composite_rating SMALLINT,
+  ibd_eps_rating SMALLINT,
+  ibd_rs_rating SMALLINT,
+  ibd_smr_rating TEXT,
+  ibd_acc_dis_rating TEXT,
+  ibd_group_rel_str_rating TEXT,
+  ibd_imported_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_fundamentals_industry ON fundamentals(industry);

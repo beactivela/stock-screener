@@ -180,6 +180,13 @@ app.get('/api/fundamentals/:ticker', async (req, res) => {
             fullTimeEmployees: null,
             trailingEps: null,
             businessSummary: null,
+            ibdCompositeRating: null,
+            ibdEpsRating: null,
+            ibdRsRating: null,
+            ibdSmrRating: null,
+            ibdAccDisRating: null,
+            ibdGroupRelStrRating: null,
+            ibdImportedAt: null,
           },
     );
   } catch (e) {

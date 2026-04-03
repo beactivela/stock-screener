@@ -8,7 +8,7 @@ import { API_BASE } from '../utils/api'
 import TradingViewWidget from '../components/TradingViewWidget'
 import ChartContextMenu from '../components/ChartContextMenu'
 import { buildNewsPrompt } from '../utils/newsPrompt.js'
-import { getIndustryRankBadge, getRsRatingBadge } from '../utils/rsRatingDisplay.js'
+import { getIbdGroupRelStrBadge, getIbdRsRatingBadge, getIndustryRankBadge, getScanRsRatingBadge } from '../utils/rsRatingDisplay.js'
 import { getWatchlistItem, removeWatchlistItem, upsertWatchlistItem, type WatchlistItem } from '../utils/watchlistStorage.js'
 // Trade Journal panel for logging entries and exits
 import TradePanel from '../components/TradePanel'
@@ -160,6 +160,14 @@ interface FundamentalsDetail {
   fullTimeEmployees?: number | null
   trailingEps?: number | null
   businessSummary?: string | null
+  /** IBD Composite Rating 1–99 (from your IBD list import). */
+  ibdCompositeRating?: number | null
+  ibdEpsRating?: number | null
+  ibdRsRating?: number | null
+  ibdSmrRating?: string | null
+  ibdAccDisRating?: string | null
+  ibdGroupRelStrRating?: string | null
+  ibdImportedAt?: string | null
 }
 
 /** Compact USD for large figures (Yahoo returns raw numbers, typically USD). */
@@ -465,6 +473,13 @@ export default function StockDetail() {
             fullTimeEmployees: data.fullTimeEmployees ?? null,
             trailingEps: data.trailingEps ?? null,
             businessSummary: data.businessSummary ?? null,
+            ibdCompositeRating: data.ibdCompositeRating ?? null,
+            ibdEpsRating: data.ibdEpsRating ?? null,
+            ibdRsRating: data.ibdRsRating ?? null,
+            ibdSmrRating: data.ibdSmrRating ?? null,
+            ibdAccDisRating: data.ibdAccDisRating ?? null,
+            ibdGroupRelStrRating: data.ibdGroupRelStrRating ?? null,
+            ibdImportedAt: data.ibdImportedAt ?? null,
           })
         } else setFundamentals(null)
       })
@@ -1094,19 +1109,66 @@ export default function StockDetail() {
     ? (scanResult && !scanResult.error ? scanResult : scanFallback)
     : (vcp ?? (scanResult && !scanResult.error ? scanResult : scanFallback ?? null))
   const visibleAgentLegend = AGENT_CHART_LIST.filter((agent) => agentVisibility[agent.agentType])
-  // Resolve RS badge for the header using scan results when available.
-  const rsBadge = useMemo(() => {
-    if (!ticker) return getRsRatingBadge(null)
-    const rsValue = scanRsByTicker[ticker.toUpperCase()] ?? null
-    return getRsRatingBadge(rsValue)
+  // Scan RS: this app’s latest scan only. IBD RS: list import only — never merged.
+  const scanRsBadge = useMemo(() => {
+    if (!ticker) return getScanRsRatingBadge(null)
+    const scanRs = scanRsByTicker[ticker.toUpperCase()] ?? null
+    return getScanRsRatingBadge(scanRs)
   }, [ticker, scanRsByTicker])
-  const industryRank = useMemo(() => {
-    if (!ticker) return null
-    return scanIndustryRankByTicker[ticker.toUpperCase()] ?? null
-  }, [ticker, scanIndustryRankByTicker])
+
+  const ibdRsBadge = useMemo(() => {
+    if (!ticker) return getIbdRsRatingBadge(null)
+    return getIbdRsRatingBadge(fundamentals?.ibdRsRating ?? null)
+  }, [ticker, fundamentals?.ibdRsRating])
+
+  // Ind: scan industry rank (#) when present; otherwise IBD Group Rel Str letter grade from list import.
   const industryBadge = useMemo(() => {
-    return getIndustryRankBadge(industryRank)
-  }, [industryRank])
+    if (!ticker) return getIndustryRankBadge(null)
+    const key = ticker.toUpperCase()
+    const rank = scanIndustryRankByTicker[key] ?? null
+    if (rank != null && Number.isFinite(rank)) {
+      return getIndustryRankBadge(rank)
+    }
+    const grp = fundamentals?.ibdGroupRelStrRating ?? null
+    if (grp != null && String(grp).trim() !== '') {
+      return getIbdGroupRelStrBadge(grp)
+    }
+    return getIndustryRankBadge(null)
+  }, [ticker, scanIndustryRankByTicker, fundamentals?.ibdGroupRelStrRating])
+
+  /** Hover shows full IBD line (EPS, RS, SMR, A/D, group); composite is the headline number in IBD. */
+  const ibdTooltip = useMemo(() => {
+    const f = fundamentals
+    if (!f || f.ibdCompositeRating == null) return null
+    const parts = [
+      `Composite ${f.ibdCompositeRating}`,
+      f.ibdEpsRating != null ? `EPS ${f.ibdEpsRating}` : null,
+      f.ibdRsRating != null ? `IBD RS ${f.ibdRsRating}` : null,
+      f.ibdSmrRating ? `SMR ${f.ibdSmrRating}` : null,
+      f.ibdAccDisRating ? `Acc/Dis ${f.ibdAccDisRating}` : null,
+      f.ibdGroupRelStrRating ? `Grp RS ${f.ibdGroupRelStrRating}` : null,
+    ].filter(Boolean) as string[]
+    const imported =
+      f.ibdImportedAt && !Number.isNaN(new Date(f.ibdImportedAt).getTime())
+        ? new Date(f.ibdImportedAt).toLocaleString()
+        : null
+    return `${parts.join(' · ')}${imported ? `\nList import: ${imported}` : ''}`
+  }, [fundamentals])
+
+  /** Any column from your IBD list import — drives the summary strip above the chart. */
+  const hasIbdListImport = useMemo(() => {
+    const f = fundamentals
+    if (!f) return false
+    return (
+      f.ibdCompositeRating != null ||
+      f.ibdEpsRating != null ||
+      f.ibdRsRating != null ||
+      (f.ibdSmrRating != null && String(f.ibdSmrRating).trim() !== '') ||
+      (f.ibdAccDisRating != null && String(f.ibdAccDisRating).trim() !== '') ||
+      (f.ibdGroupRelStrRating != null && String(f.ibdGroupRelStrRating).trim() !== '')
+    )
+  }, [fundamentals])
+
   const watchlistNoteSavedAt = watchlistItem?.noteUpdatedAt
     ? new Date(watchlistItem.noteUpdatedAt).toLocaleString()
     : null
@@ -1205,17 +1267,36 @@ export default function StockDetail() {
           <div className="mt-6 flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-bold text-slate-100">{ticker}</h1>
             <span
-              className={`rounded bg-slate-800/80 px-2 py-0.5 text-[18px] font-medium ${rsBadge.className}`}
-              title={rsBadge.title}
+              className={`rounded bg-slate-800/80 px-2 py-0.5 text-[18px] font-medium ${scanRsBadge.className}`}
+              title={scanRsBadge.title}
             >
-              {rsBadge.label}
+              {scanRsBadge.label}
             </span>
+            {hasIbdListImport && (
+              <span
+                className={`rounded bg-amber-950/60 px-2 py-0.5 text-[18px] font-medium tabular-nums ring-1 ring-amber-700/45 ${ibdRsBadge.className}`}
+                title={ibdRsBadge.title}
+              >
+                {ibdRsBadge.label}
+              </span>
+            )}
             <span
               className={`rounded bg-slate-800/80 px-2 py-0.5 text-[18px] font-medium ${industryBadge.className}`}
               title={industryBadge.title}
             >
               {industryBadge.label}
             </span>
+            {fundamentals?.ibdCompositeRating != null && (
+              <span
+                className="rounded bg-amber-950/70 px-2 py-0.5 text-[18px] font-medium text-amber-200 tabular-nums ring-1 ring-amber-700/50"
+                title={
+                  ibdTooltip ??
+                  `IBD Composite ${fundamentals.ibdCompositeRating} (Investor's Business Daily)`
+                }
+              >
+                IBD {fundamentals.ibdCompositeRating}
+              </span>
+            )}
             {/* Scan score = VCP + industry rank. Signal strength = Opus4.5 entry quality (shown in Opus4.5 panel when in position). */}
             {(displayVcp && typeof (displayVcp.enhancedScore ?? displayVcp.score) === 'number') && (
               <span className="flex items-center gap-2 flex-wrap">
@@ -1390,6 +1471,54 @@ export default function StockDetail() {
             )}
         </div>
       </div>
+
+      {/* Full IBD column set from list import — above chart so it matches the IBD table (not buried below the fold in the VCP stats grid). */}
+      {hasIbdListImport && fundamentals && (
+        <div className="rounded-xl border border-amber-800/45 bg-gradient-to-br from-amber-950/40 to-slate-900/60 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-200/95">
+              IBD ratings (list import)
+            </h3>
+            {fundamentals.ibdImportedAt && !Number.isNaN(new Date(fundamentals.ibdImportedAt).getTime()) && (
+              <span className="text-[11px] text-slate-500 tabular-nums">
+                Imported {new Date(fundamentals.ibdImportedAt).toLocaleString()}
+              </span>
+            )}
+          </div>
+          <dl className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-x-4 gap-y-2 text-sm">
+            <div className="border-b border-slate-800/60 pb-1.5 md:border-0 md:pb-0">
+              <dt className="text-slate-500 text-xs">Composite</dt>
+              <dd className="font-mono font-semibold text-amber-100 tabular-nums">
+                {fundamentals.ibdCompositeRating != null ? fundamentals.ibdCompositeRating : '–'}
+              </dd>
+            </div>
+            <div className="border-b border-slate-800/60 pb-1.5 md:border-0 md:pb-0">
+              <dt className="text-slate-500 text-xs">EPS</dt>
+              <dd className="font-mono text-slate-200 tabular-nums">
+                {fundamentals.ibdEpsRating != null ? fundamentals.ibdEpsRating : '–'}
+              </dd>
+            </div>
+            <div className="border-b border-slate-800/60 pb-1.5 md:border-0 md:pb-0">
+              <dt className="text-slate-500 text-xs">IBD RS</dt>
+              <dd className="font-mono text-slate-200 tabular-nums">
+                {fundamentals.ibdRsRating != null ? fundamentals.ibdRsRating : '–'}
+              </dd>
+            </div>
+            <div className="border-b border-slate-800/60 pb-1.5 md:border-0 md:pb-0">
+              <dt className="text-slate-500 text-xs">SMR</dt>
+              <dd className="font-mono text-slate-200">{fundamentals.ibdSmrRating ?? '–'}</dd>
+            </div>
+            <div className="border-b border-slate-800/60 pb-1.5 md:border-0 md:pb-0">
+              <dt className="text-slate-500 text-xs">Acc/Dis</dt>
+              <dd className="font-mono text-slate-200">{fundamentals.ibdAccDisRating ?? '–'}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500 text-xs">Group rel str</dt>
+              <dd className="font-mono text-slate-200">{fundamentals.ibdGroupRelStrRating ?? '–'}</dd>
+            </div>
+          </dl>
+        </div>
+      )}
 
       {/* Main content area: Chart + Trade Panel side by side — placed just below ticker row, above Opus 4.5 Signal */}
       <div className="flex gap-4">

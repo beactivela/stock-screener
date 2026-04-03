@@ -1,28 +1,38 @@
 import assert from 'assert';
 import { describe, it } from 'node:test';
-import { getIndustryRankBadge, getRsRatingBadge } from './rsRatingDisplay.js';
+import {
+  getIbdGroupRelStrBadge,
+  getIbdRsRatingBadge,
+  getIndustryRankBadge,
+  getScanRsRatingBadge,
+} from './rsRatingDisplay.js';
 
 describe('rsRatingDisplay helpers', () => {
-  it('returns muted dash when rating is null', () => {
-    assert.deepEqual(getRsRatingBadge(null), {
-      label: 'RS: –',
+  it('Scan RS: muted when null', () => {
+    assert.deepEqual(getScanRsRatingBadge(null), {
+      label: 'Scan RS: –',
       className: 'text-slate-500',
-      title: 'RS Rating not available',
+      title:
+        'Relative strength (1–99) from this app’s latest scan (same idea as the dashboard RS column). Ticker may be missing from that snapshot.',
     });
   });
 
-  it('formats high ratings as strongest tone', () => {
-    assert.deepEqual(getRsRatingBadge(95), {
-      label: 'RS: 95',
-      className: 'text-emerald-400',
-      title: 'IBD-style RS Rating (1–99)',
-    });
+  it('Scan RS: formats value', () => {
+    const b = getScanRsRatingBadge(95);
+    assert.equal(b.label, 'Scan RS: 95');
+    assert.equal(b.className, 'text-emerald-400');
+    assert.ok(b.title.includes('latest scan'));
   });
 
-  it('formats mid ratings with tiered tones', () => {
-    assert.equal(getRsRatingBadge(85).className, 'text-green-400');
-    assert.equal(getRsRatingBadge(75).className, 'text-slate-300');
-    assert.equal(getRsRatingBadge(60).className, 'text-red-400');
+  it('IBD RS: muted when null', () => {
+    assert.equal(getIbdRsRatingBadge(null).label, 'IBD RS: –');
+    assert.ok(getIbdRsRatingBadge(88).title.includes('list import'));
+  });
+
+  it('tier colors match for both RS sources', () => {
+    assert.equal(getScanRsRatingBadge(85).className, 'text-green-400');
+    assert.equal(getIbdRsRatingBadge(85).className, 'text-green-400');
+    assert.equal(getScanRsRatingBadge(60).className, 'text-red-400');
   });
 
   it('returns muted dash when industry rank is null', () => {
@@ -38,5 +48,12 @@ describe('rsRatingDisplay helpers', () => {
     assert.equal(getIndustryRankBadge(35).className, 'text-green-400');
     assert.equal(getIndustryRankBadge(70).className, 'text-slate-300');
     assert.equal(getIndustryRankBadge(95).className, 'text-red-400');
+  });
+
+  it('formats IBD Group Rel Str letter grade', () => {
+    const b = getIbdGroupRelStrBadge('A-');
+    assert.equal(b.label, 'Ind: A-');
+    assert.equal(b.className, 'text-emerald-400');
+    assert.equal(getIbdGroupRelStrBadge(null).label, 'Ind: –');
   });
 });

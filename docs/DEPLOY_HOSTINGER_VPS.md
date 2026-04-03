@@ -22,7 +22,7 @@ Set in **`.env`** on the server (never commit):
 - **`SUPABASE_URL`** — project URL  
 - **`SUPABASE_SERVICE_KEY`** — **required** service role key for this app. It bypasses RLS so scans and cache writes work. The **anon** key is not sufficient: all `public` tables use RLS with no anon policies (see `docs/supabase/migration-rls-and-api-hardening.sql`). To use anon from a client you would need to add explicit RLS policies yourself.
 - **`CRON_SECRET`** — long random string; required in **production** for `POST /api/cron/scan` and `POST /api/cron/run-scan` to work at all (unauthenticated cron is disabled when `NODE_ENV=production`).
-- **`TRAEFIK_HOST`** — hostname in Traefik’s `Host(\`name\`)` router rule (TLS via Let’s Encrypt). **DNS must point at the VPS.**
+- **`TRAEFIK_HOST`** — hostname in Traefik’s `Host(\`name\`)` router rule on the `stock-screener` service (TLS via Let’s Encrypt). **Production:** `stocks.scaleagent.org`. **DNS** (A/AAAA) for that name must point at the VPS. There is no Traefik static file in this repo—only these Compose labels; your central Traefik must use the Docker provider and the same network as this stack (or host routing) so it can reach the container on port **3000**.
 - **`HOST_PORT`** — host port mapped to container **3000** (default `8080`). Use a **free** port if **3001** / **8080** are already used (e.g. by other stacks on the same VPS).
 
 Optional:
@@ -47,9 +47,19 @@ Scheduled endpoints (same auth as scan): **`POST /api/cron/refresh-bars`** (alia
 
 **`GET /api/cron/status`** (no auth) returns whether **`CRON_SECRET`** is set, resolved **`CRON_BASE_URL`** / **`HOST_PORT`**, and the `.env` file path — it never returns the secret.
 
+### SSH from your laptop (`~/.ssh/config`)
+
+Use a short alias so deploy and cron checks don’t need the raw IP each time. See **[`deploy/ssh-config.example`](../deploy/ssh-config.example)** — typical pattern: **`HostName stocks.scaleagent.org`**, **`User root`** (or `ubuntu`), **`IdentityFile`** to your key. Then:
+
+```bash
+ssh scaleagent-stocks
+```
+
+Ensure **`stocks.scaleagent.org`** DNS points at the VPS before relying on `HostName` (otherwise set **`HostName`** to the server IP in that file).
+
 ### Verify over SSH (bars refresh → Yahoo → `bars_cache`)
 
-From your laptop, SSH to the VPS (optional: a **`Host`** alias in **`~/.ssh/config`** with **`HostName`** + **`User`** so you can run e.g. `ssh my-vps '…'`).
+From your laptop, **`ssh scaleagent-stocks`** (or `ssh user@YOUR_VPS`).
 
 On the server, use the same **`HOST_PORT`** as in **`docker-compose`** (published map to container **3000**; default **8080**, or another free port such as **8090**):
 
@@ -87,7 +97,7 @@ chmod +x scripts/trigger-scheduled-scan.sh
 
 Single dashboard for “when did this fire.” Use **HTTPS** and the **same** `CRON_SECRET`.
 
-- **URL:** `POST https://your-domain.com/api/cron/run-scan`  
+- **URL:** `POST https://stocks.scaleagent.org/api/cron/run-scan` (or your `TRAEFIK_HOST`)  
   (alias: `/api/cron/scan`)
 - **Header:** `Authorization: Bearer <CRON_SECRET>`  
   or **`x-cron-secret: <CRON_SECRET>`**
@@ -158,15 +168,16 @@ sudo ufw enable
 
 When Traefik already handles **80/443** with **`letsencrypt`** and **`exposedbydefault=false`**:
 
-1. Set **`TRAEFIK_HOST`** in `.env` (DNS **A** record → this VPS).
-2. `docker compose` applies **labels** on `stock-screener` (`websecure`, `certresolver=letsencrypt`).
+1. Set **`TRAEFIK_HOST=stocks.scaleagent.org`** in **`.env`** on the server (DNS **A** (or AAAA) for `stocks.scaleagent.org` → this VPS).
+2. Recreate the app so labels apply: **`docker compose up -d`** (rebuild only if the compose file changed).
 3. Smoke test on the server:
 
    ```bash
-   curl -sk https://127.0.0.1/api/health -H "Host: $TRAEFIK_HOST"
+   curl -sk https://127.0.0.1/api/health -H "Host: stocks.scaleagent.org"
+   # or: curl -sk https://127.0.0.1/api/health -H "Host: $TRAEFIK_HOST"
    ```
 
-   Expect `{"ok":true,...}`.
+   Expect `{"ok":true,...}`. From the internet: **`curl -sS https://stocks.scaleagent.org/api/health`**.
 
 Keep **`HOST_PORT`** (e.g. **8090**) for **localhost** and **`CRON_BASE_URL`** in `scripts/trigger-scheduled-scan.sh`.
 
