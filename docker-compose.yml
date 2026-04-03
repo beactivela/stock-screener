@@ -18,6 +18,38 @@ networks:
     name: stock-screener-net
 
 services:
+  # Reverse proxy + Let’s Encrypt. Without this, TRAEFIK_* labels on stock-screener do nothing and nothing binds :80/:443.
+  traefik:
+    image: traefik:v3.3
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TZ: UTC
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/letsencrypt
+    command:
+      - --log.level=INFO
+      - --api.dashboard=false
+      - --ping=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=stock-screener-net
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in .env for Let’s Encrypt}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+    networks:
+      - default
+
   stock-screener:
     build: .
     image: stock-screener:latest
@@ -70,3 +102,4 @@ services:
 volumes:
   screener-data:
   uptime-kuma-data:
+  traefik-acme:

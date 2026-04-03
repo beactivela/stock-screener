@@ -164,22 +164,26 @@ sudo ufw enable
 
 ## 4. HTTPS + domain (for users and Supabase HTTP triggers)
 
-### Hostinger VPS with Traefik (Docker provider)
+### Traefik + HTTPS
 
-When Traefik already handles **80/443** with **`letsencrypt`** and **`exposedbydefault=false`**:
+**This repo ships a `traefik` service** in `docker-compose.yml` (Docker provider, `exposedbydefault=false`, TLS-ALPN Let’s Encrypt). You need **nothing else** for a working reverse proxy unless you prefer your own.
 
-1. Set **`TRAEFIK_HOST=stocks.scaleagent.org`** in **`.env`** on the server (DNS **A** (or AAAA) for `stocks.scaleagent.org` → this VPS).
-2. Recreate the app so labels apply: **`docker compose up -d`** (rebuild only if the compose file changed).
-3. Smoke test on the server:
+1. Set **`TRAEFIK_HOST=stocks.scaleagent.org`** and **`ACME_EMAIL=…`** (Let’s Encrypt contact) in **`.env`** on the server. DNS **A** (or AAAA) for `stocks.scaleagent.org` → this VPS.
+2. **`docker compose up -d`** (with GHCR override if you use it) so **Traefik** and **stock-screener** start on **`stock-screener-net`**. Traefik binds **80** and **443** on the host.
+3. Smoke test:
 
    ```bash
-   curl -sk https://127.0.0.1/api/health -H "Host: stocks.scaleagent.org"
-   # or: curl -sk https://127.0.0.1/api/health -H "Host: $TRAEFIK_HOST"
+   curl -sS "https://stocks.scaleagent.org/api/health"
+   curl -sk "https://127.0.0.1/api/health" -H "Host: stocks.scaleagent.org"
    ```
 
-   Expect `{"ok":true,...}`. From the internet: **`curl -sS https://stocks.scaleagent.org/api/health`**.
+   Expect `{"ok":true,...}`.
 
-Keep **`HOST_PORT`** (e.g. **8090**) for **localhost** and **`CRON_BASE_URL`** in `scripts/trigger-scheduled-scan.sh`.
+Keep **`HOST_PORT`** (e.g. **8090**) for **localhost** / cron and **`CRON_BASE_URL`** in `scripts/trigger-scheduled-scan.sh`.
+
+### External Traefik (already on the host)
+
+If another stack already owns **80/443**, either **disable** the bundled `traefik` service in Compose or avoid duplicate port bindings. The stock-screener app still needs **`TRAEFIK_HOST`** + labels so the **external** Traefik can route to container port **3000** on a shared Docker network.
 
 ### Without Traefik: Caddy or Nginx
 
