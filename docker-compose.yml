@@ -20,7 +20,8 @@ networks:
 services:
   # Reverse proxy + Let’s Encrypt. Without this, TRAEFIK_* labels on stock-screener do nothing and nothing binds :80/:443.
   traefik:
-    image: traefik:v3.3
+    # v3.6+ negotiates Docker API with the daemon (Docker 29+ requires API 1.44+; v3.3 pinned 1.24 and broke the provider).
+    image: traefik:v3.6
     container_name: traefik
     restart: unless-stopped
     security_opt:
@@ -30,8 +31,6 @@ services:
       - "443:443"
     environment:
       TZ: UTC
-      # Docker Engine 29+ requires API ≥1.44; Traefik’s embedded client defaults too low without this.
-      DOCKER_API_VERSION: "1.53"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-acme:/letsencrypt
