@@ -1,0 +1,21 @@
+# StockCircle expert holdings sync (~every two weeks)
+#
+# Default sync job (CLI + cron) uses an "overlap" profile: ~40 top performers × ~30 portfolio pages
+# so the same ticker can show Firms buying/selling > 1. For a full scrape of every investor and
+# every page (very slow), set in .env: STOCKCIRCLE_FULL_SYNC=1 and use npm run stockcircle:sync:full
+#
+#
+# Cron cannot express "every 14 days" portably. Options:
+# - Twice monthly (1st and 15th) at 09:00 UTC:
+#     0 9 1,15 * * ...
+# - Weekly on Sunday (less exact):
+#     0 9 * * 0 ...
+#
+# Prefer a single job: POST /api/cron/experts-sync (StockCircle + WhaleWisdom) — see deploy/experts-cron.example
+#
+# Requires the same CRON_SECRET and CRON_BASE_URL as other stock-screener cron jobs.
+# Example (host cron, loopback to app port):
+#
+# CRON_TZ=America/Chicago
+# 0 9 1,15 * * root . /opt/stock-screener/.cron-env && curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" "${CRON_BASE_URL}/api/cron/stockcircle-sync" >> /var/log/stock-screener-stockcircle.log 2>&1
+#

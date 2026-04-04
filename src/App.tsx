@@ -16,6 +16,9 @@ const TradingAgentsPage = lazy(() => import('./pages/TradingAgents'))
 const Atlas = lazy(() => import('./pages/Atlas'))
 const Style = lazy(() => import('./pages/Style'))
 const MarketIndexDetail = lazy(() => import('./pages/MarketIndexDetail'))
+const StockcircleExperts = lazy(() => import('./pages/StockcircleExperts'))
+const StockcircleExpertDetail = lazy(() => import('./pages/StockcircleExpertDetail'))
+const WhalewisdomFilerDetail = lazy(() => import('./pages/WhalewisdomFilerDetail'))
 
 function PageFallback() {
   return (
@@ -43,6 +46,9 @@ export default function App() {
                 <Route path="/stock/:ticker" element={<StockDetail />} />
                 <Route path="/market-index/:ticker" element={<MarketIndexDetail />} />
                 <Route path="/style" element={<Style />} />
+                <Route path="/experts" element={<StockcircleExperts />} />
+                <Route path="/experts/:slug" element={<StockcircleExpertDetail />} />
+                <Route path="/whalewisdom-filers/:slug" element={<WhalewisdomFilerDetail />} />
               </Routes>
             </Suspense>
           </ErrorBoundary>

@@ -43,7 +43,8 @@ import { chatWithMinervini } from '../minerviniAgent.js';
 import { translateCriteriaToSearchCriteria } from '../agents/criteriaTranslator.js';
 import { getScanPersistenceStrategy } from '../scanPersistence.js';
 import { maybeClearStaleActiveScan } from '../scanStaleLock.js';
-import { getCronSecret, getCronStatusPayload } from '../cronConfig.js';
+import { getCronStatusPayload } from '../cronConfig.js';
+import { validateCronSecret } from './cronSecretAuth.js';
 import { parseBooleanQuery, parseCsvQuery } from './query.js';
 import { readThroughMemoryCache } from './memoryCache.js';
 import {
@@ -886,28 +887,7 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
-// Shared auth for POST /api/cron/* (Bearer CRON_SECRET or x-cron-secret). Secret from `.env` → process.env.
-function validateCronSecret(req, res) {
-  const secret = getCronSecret();
-  const authHeader = req.headers.authorization;
-  const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  const headerSecret = String(req.headers['x-cron-secret'] || bearer || '').trim() || null;
-
-  if (process.env.NODE_ENV === 'production') {
-    if (!secret) {
-      res.status(503).json({ error: 'CRON_SECRET is not set; configure it for scheduled scan triggers.' });
-      return false;
-    }
-    if (headerSecret !== secret) {
-      res.status(401).json({ error: 'Invalid or missing cron secret' });
-      return false;
-    }
-  } else if (secret && headerSecret !== secret) {
-    res.status(401).json({ error: 'Invalid or missing cron secret' });
-    return false;
-  }
-  return true;
-}
+// Shared auth: ./cronSecretAuth.js validateCronSecret
 
 // Cron-only: trigger full scan (VPS cron → localhost, Supabase pg_cron + pg_net → https, etc.). Returns 202; scan runs in background.
 // POST /api/cron/scan and POST /api/cron/run-scan are aliases.

@@ -33,6 +33,9 @@ import {
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
 import { registerTradingAgentsRoutes } from './http/registerTradingAgentsRoutes.js';
 import { registerAtlasRoutes } from './http/registerAtlasRoutes.js';
+import { registerStockcircleRoutes } from './http/registerStockcircleRoutes.js';
+import { registerWhalewisdomRoutes } from './http/registerWhalewisdomRoutes.js';
+import { registerExpertsSyncRoutes } from './http/registerExpertsSyncRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -54,6 +57,9 @@ function ensureDirs() {
 ensureDirs();
 
 registerCoreScanCronBarsMarketRoutes(app);
+registerStockcircleRoutes(app);
+registerWhalewisdomRoutes(app);
+registerExpertsSyncRoutes(app);
 registerLearningRoutes(app);
 
 // Optional: run full scan every 24 hours

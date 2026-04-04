@@ -1,0 +1,11 @@
+# WhaleWisdom-only filer sync (13F top-holdings snapshot — see server/whalewisdom/)
+# For StockCircle + WhaleWisdom together use POST /api/cron/experts-sync or npm run experts:sync — deploy/experts-cron.example
+#
+# Apply docs/supabase/migration-whalewisdom.sql first. Configure filers in server/whalewisdom/filerSlugs.js
+# or set WHALEWISDOM_FILER_SLUGS=slug-one,slug-two in .env
+#
+# Example (1st and 15th, after StockCircle or on its own):
+#
+# CRON_TZ=America/Chicago
+# 30 9 1,15 * * root . /opt/stock-screener/.cron-env && curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" "${CRON_BASE_URL}/api/cron/whalewisdom-sync" >> /var/log/stock-screener-whalewisdom.log 2>&1
+#

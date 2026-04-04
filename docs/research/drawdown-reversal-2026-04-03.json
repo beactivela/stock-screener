@@ -1,0 +1,187 @@
+{
+  "generatedAt": "2026-04-03T04:52:41.569Z",
+  "meta": {
+    "dateGenerated": "2026-04-03",
+    "universeCount": 2,
+    "barsLoadedDaily": 2,
+    "barsRange": {
+      "from": "2021-04-03",
+      "to": "2026-04-03"
+    },
+    "methodology": {
+      "rollingHighDays": 252,
+      "drawdownThreshold": 0.2,
+      "forwardHorizons": [
+        21,
+        63,
+        126
+      ],
+      "pivotK": 5,
+      "volumeSpikeRatio": 1.5
+    }
+  },
+  "aggregates": {
+    "totalEpisodes": 3,
+    "tickersWithEpisodes": 2,
+    "baselineByHorizon": {
+      "h21": {
+        "n": 3,
+        "median": -2.1162473547377414,
+        "p25": -4.803912418488782,
+        "p75": -0.6701231890876207
+      },
+      "h63": {
+        "n": 3,
+        "median": 4.826668294270833,
+        "p25": 4.076800465756411,
+        "p75": 12.773887265404305
+      },
+      "h126": {
+        "n": 3,
+        "median": 6.386669921875001,
+        "p25": 4.704978350529413,
+        "p75": 16.685629343894874
+      }
+    },
+    "firstCloseAboveSma20": {
+      "h21": {
+        "n": 3,
+        "median": -1.5835803502003853,
+        "p25": -4.270139448212226,
+        "p75": 2.354821768767358
+      },
+      "h63": {
+        "n": 3,
+        "median": 4.4770225464636075,
+        "p25": 0.7089097159636633,
+        "p75": 6.161261053053106
+      },
+      "h126": {
+        "n": 3,
+        "median": -2.4704968232658824,
+        "p25": -3.04626090530188,
+        "p75": 11.924576734283885
+      }
+    },
+    "firstCloseAboveSma10": {
+      "h21": {
+        "n": 3,
+        "median": 4.6315425801988495,
+        "p25": 0.1110152768438688,
+        "p75": 4.73775365027058
+      },
+      "h63": {
+        "n": 3,
+        "median": 3.772466535883507,
+        "p25": 1.3783778531017474,
+        "p75": 8.785661737246839
+      },
+      "h126": {
+        "n": 3,
+        "median": 3.011546715688366,
+        "p25": 2.5862914608561454,
+        "p75": 12.677509246986958
+      }
+    },
+    "medianHigherLowCount": 6
+  },
+  "rows": [
+    {
+      "ticker": "SPY",
+      "episode": {
+        "start": 301,
+        "end": 703,
+        "peakRef": 479.9800109863281,
+        "startDate": "2022-06-13"
+      },
+      "signals": {
+        "troughIndex": 385,
+        "higherLowCount": 8,
+        "firstCloseAboveSma10": 308,
+        "firstCloseAboveSma20": 317,
+        "firstCloseAboveSma50": 325,
+        "sma10CrossAboveSma20": 317,
+        "volumeSpikeIndex": 301,
+        "firstWeeklyCloseAboveSma10": 324
+      },
+      "forwardsFromSma20Reclaim": {
+        "fwd_21d_pct": 6.293223887735102,
+        "fwd_63d_pct": -3.059203114536281,
+        "fwd_126d_pct": -2.4704968232658824
+      },
+      "forwardsFromEpisodeStart": {
+        "fwd_21d_pct": 0.7760009765625,
+        "fwd_63d_pct": 4.826668294270833,
+        "fwd_126d_pct": 6.386669921875001
+      }
+    },
+    {
+      "ticker": "AAPL",
+      "episode": {
+        "start": 280,
+        "end": 551,
+        "peakRef": 182.94000244140625,
+        "startDate": "2022-05-12"
+      },
+      "signals": {
+        "troughIndex": 443,
+        "higherLowCount": 5,
+        "firstCloseAboveSma10": 290,
+        "firstCloseAboveSma20": 291,
+        "firstCloseAboveSma50": 317,
+        "sma10CrossAboveSma20": 296,
+        "volumeSpikeIndex": 280,
+        "firstWeeklyCloseAboveSma10": 315
+      },
+      "forwardsFromSma20Reclaim": {
+        "fwd_21d_pct": -6.956698546224066,
+        "fwd_63d_pct": 7.845499559642604,
+        "fwd_126d_pct": -3.622024987337877
+      },
+      "forwardsFromEpisodeStart": {
+        "fwd_21d_pct": -7.491577482239823,
+        "fwd_63d_pct": 20.72110623653778,
+        "fwd_126d_pct": 3.023286779183826
+      }
+    },
+    {
+      "ticker": "AAPL",
+      "episode": {
+        "start": 1005,
+        "end": 1142,
+        "peakRef": 260.1000061035156,
+        "startDate": "2025-04-03"
+      },
+      "signals": {
+        "troughIndex": 1008,
+        "higherLowCount": 6,
+        "firstCloseAboveSma10": 1012,
+        "firstCloseAboveSma20": 1018,
+        "firstCloseAboveSma50": 1031,
+        "sma10CrossAboveSma20": 1021,
+        "volumeSpikeIndex": 1005,
+        "firstWeeklyCloseAboveSma10": 1031
+      },
+      "forwardsFromSma20Reclaim": {
+        "fwd_21d_pct": -1.5835803502003853,
+        "fwd_63d_pct": 4.4770225464636075,
+        "fwd_126d_pct": 26.319650291833653
+      },
+      "forwardsFromEpisodeStart": {
+        "fwd_21d_pct": -2.1162473547377414,
+        "fwd_63d_pct": 3.3269326372419883,
+        "fwd_126d_pct": 26.98458876591475
+      }
+    }
+  ],
+  "perTickerSummary": [
+    {
+      "ticker": "SPY",
+      "episodeCount": 1
+    },
+    {
+      "ticker": "AAPL",
+      "episodeCount": 2
+    }
+  ]
+}

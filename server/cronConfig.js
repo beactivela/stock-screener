@@ -49,6 +49,9 @@ export function getCronStatusPayload() {
       refreshBars: '/api/cron/refresh-bars',
       fetchPrices: '/api/cron/fetch-prices',
       runScan: '/api/cron/run-scan',
+      stockcircleSync: '/api/cron/stockcircle-sync',
+      whalewisdomSync: '/api/cron/whalewisdom-sync',
+      expertsSync: '/api/cron/experts-sync',
     },
   };
 }

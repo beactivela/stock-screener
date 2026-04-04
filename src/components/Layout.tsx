@@ -123,6 +123,16 @@ export default function Layout({ children }: LayoutProps) {
             >
               ATLAS
             </Link>
+            <Link
+              to="/experts"
+              className={`text-sm ${
+                location.pathname === '/experts' || location.pathname.startsWith('/experts/')
+                  ? 'text-sky-400'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Experts
+            </Link>
           </nav>
           </div>
         </div>

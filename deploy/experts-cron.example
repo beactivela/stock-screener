@@ -1,0 +1,9 @@
+# Combined experts sync — StockCircle then WhaleWisdom (same as npm run experts:sync)
+#
+# Replaces separate stockcircle-sync + whalewisdom-sync crons if you always want both refreshed together.
+#
+# Example (1st and 15th, 09:30 after bars/scan jobs):
+#
+# CRON_TZ=America/Chicago
+# 30 9 1,15 * * root . /opt/stock-screener/.cron-env && curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" "${CRON_BASE_URL}/api/cron/experts-sync" >> /var/log/stock-screener-experts.log 2>&1
+#

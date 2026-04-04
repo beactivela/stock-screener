@@ -25,3 +25,7 @@ CRON_TZ=America/Chicago
 
 # Do not enable this AND SCHEDULE_SCAN=1 in the container, or Supabase pg_cron hitting the same
 # endpoint, unless you accept possible double-runs; the app skips if a scan is already running / cooldown.
+#
+# Experts sync (StockCircle + WhaleWisdom in one request): POST ${CRON_BASE_URL}/api/cron/experts-sync
+#   (same Authorization: Bearer ${CRON_SECRET} as other cron routes)
+# Or run separately: deploy/stockcircle-cron.example, deploy/whalewisdom-cron.example
