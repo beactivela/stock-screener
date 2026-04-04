@@ -1,7 +1,7 @@
 # Stock screener on Hostinger VPS (or any Docker host)
 # ─────────────────────────────────────────────────────
-# Traefik (Hostinger template): host network + Docker provider, exposedbydefault=false.
-# Set TRAEFIK_HOST in .env to a DNS name that points at this VPS (for HTTPS + routing).
+# Traefik: bridge network + published 80/443, Docker provider, exposedbydefault=false.
+# Set TRAEFIK_HOST in the project .env (Compose interpolates labels at parse time — same file as ACME_EMAIL).
 # Production: stocks.scaleagent.org → set TRAEFIK_HOST=stocks.scaleagent.org in .env on the server.
 # Published HOST_PORT is optional (localhost/cron); Traefik reaches the container on port 3000.
 #
@@ -16,9 +16,14 @@
 networks:
   default:
     name: stock-screener-net
+  # Dokploy’s Swarm overlay (attachable). Traefik joins this so file-based routes can use http://dokploy:3000.
+  # On a host without Dokploy: `docker network create dokploy-network` and `mkdir -p /etc/dokploy/traefik/dynamic`.
+  dokploy-network:
+    external: true
 
 services:
   # Reverse proxy + Let’s Encrypt. Without this, TRAEFIK_* labels on stock-screener do nothing and nothing binds :80/:443.
+  # Also loads /etc/dokploy/traefik/dynamic/*.yml (Dokploy UI) and must share dokploy-network with the dokploy service.
   traefik:
     # v3.6+ negotiates Docker API with the daemon (Docker 29+ requires API 1.44+; v3.3 pinned 1.24 and broke the provider).
     image: traefik:v3.6
@@ -34,6 +39,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-acme:/letsencrypt
+      # Dokploy writes router rules here; without this mount + file provider, https://dokploy.* is never registered.
+      - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
     command:
       - --log.level=INFO
       - --api.dashboard=false
@@ -41,6 +48,8 @@ services:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=stock-screener-net
+      - --providers.file.directory=/etc/dokploy/traefik/dynamic
+      - --providers.file.watch=true
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
@@ -50,6 +59,7 @@ services:
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
     networks:
       - default
+      - dokploy-network
 
   stock-screener:
     build: .
@@ -68,8 +78,10 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "traefik.enable=true"
-      # Host rule + TLS: TRAEFIK_HOST in .env (e.g. stocks.scaleagent.org). DNS A/AAAA → this VPS for Let’s Encrypt.
-      - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST}`)"
+      # Pin backend attachment so Traefik does not pick the wrong IP when multiple networks exist.
+      - "traefik.docker.network=stock-screener-net"
+      # Host rule + TLS: must be set in project .env for Compose interpolation (not only inside the container).
+      - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST:?Set TRAEFIK_HOST in .env}`)"
       - "traefik.http.routers.stock-screener.entrypoints=websecure"
       - "traefik.http.routers.stock-screener.tls.certresolver=letsencrypt"
       - "traefik.http.services.stock-screener.loadbalancer.server.port=3000"
