@@ -186,7 +186,8 @@ export default function StockcircleExpertDetail() {
                     <th className="px-3 py-2 text-right">% of portfolio</th>
                     <th className="px-3 py-2 text-right">Value</th>
                     <th className="px-3 py-2 text-right">Shares</th>
-                    <th className="px-3 py-2">Last action</th>
+                    {/* min width + wrap — avoid truncate/max-w-xs which ellipsized long “Last action” strings */}
+                    <th className="px-3 py-2 pr-4 min-w-[14rem]">Last action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -205,7 +206,10 @@ export default function StockcircleExpertDetail() {
                       <td className="px-3 py-2 text-right text-slate-500">
                         {formatShares(p.shares_held, p.shares_raw)}
                       </td>
-                      <td className="px-3 py-2 text-slate-500 max-w-xs truncate" title={p.raw_last_transaction || ''}>
+                      <td
+                        className="px-3 py-2 pr-4 align-top text-slate-500 min-w-[14rem] max-w-md break-words whitespace-normal"
+                        title={p.raw_last_transaction || ''}
+                      >
                         {p.raw_last_transaction || p.action_type}
                       </td>
                     </tr>
