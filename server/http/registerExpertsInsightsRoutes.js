@@ -71,7 +71,7 @@ export function registerExpertsInsightsRoutes(app) {
         return res.status(503).json({ ok: false, error: summary.error || 'Experts summary unavailable' });
       }
 
-      const { popular, expertWeightsByTicker } = summary;
+      const { popular, expertWeightsByTicker, crossSourceTickers } = summary;
       if (!popular?.length) {
         return res.json({
           ok: true,
@@ -80,7 +80,11 @@ export function registerExpertsInsightsRoutes(app) {
         });
       }
 
-      const digest = buildConsensusBuysDigest({ popular, expertWeightsByTicker });
+      const digest = buildConsensusBuysDigest({
+        popular,
+        expertWeightsByTicker,
+        crossSourceByTicker: crossSourceTickers,
+      });
       const hasConsensus =
         digest.consensusMultiBuys.length > 0 ||
         (digest.singleExpertNetBuys?.length ?? 0) > 0 ||

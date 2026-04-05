@@ -47,6 +47,8 @@ describe('buildConsensusBuysDigest', () => {
     assert.equal(d.consensusMultiBuys.length, 1);
     assert.equal(d.consensusMultiBuys[0].ticker, 'AAA');
     assert.equal(d.consensusMultiBuys[0].buyVotes, 2);
+    assert.equal(typeof d.consensusMultiBuys[0].convictionScore, 'number');
+    assert.equal(d.meta.topKExperts, 15);
     assert.ok(d.consensusMultiBuys[0].buyers.some((b) => b.largePosition && b.positionValueUsd >= CONSENSUS_LARGE_POSITION_USD));
 
     assert.equal(d.consensusSells.length, 1);

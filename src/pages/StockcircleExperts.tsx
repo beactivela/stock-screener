@@ -19,6 +19,9 @@ import {
   isConsensusLargeBuyChip,
   sumConsensusBuyerPositionUsd,
   sumConsensusSellerPositionUsd,
+  convictionScoreBucket,
+  syncFreshnessLabel,
+  DEFAULT_CONSENSUS_TOP_K_CAP,
 } from '../utils/expertConsensus'
 import {
   defaultBlendedSortDir,
@@ -127,14 +130,17 @@ interface SummaryPayload {
     runId?: string
     members?: QuiverCongressMemberPayload[]
   } | null
+  /** Per-ticker overlap with WhaleWisdom 13F + Congress (conviction multipliers). */
+  crossSourceTickers?: Record<string, { whalewisdom: boolean; congress: boolean }>
   error?: string
 }
 
-/** Top N experts by 1Y % included in consensus tallies (UI controls removed). */
-const CONSENSUS_TOP_K = 10
+/** Max experts in the consensus voting panel (effective = min(this, universe size)). */
+const CONSENSUS_TOP_K_CAP = DEFAULT_CONSENSUS_TOP_K_CAP
 /** Cap overlap-matrix columns so the table stays usable when the API returns hundreds of tickers. */
 const MATRIX_MAX_TICKERS = 500
-const WEIGHT_VOTES_BY_PERFORMANCE = false
+/** Weight votes by blended trailing performance; matches conviction scoring defaults. */
+const WEIGHT_VOTES_BY_PERFORMANCE = true
 
 function fmtStockcirclePct(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '—'
@@ -250,18 +256,26 @@ function ExpertChips({
     <div className="flex min-w-0 w-full flex-wrap gap-1">
       {shown.map((e) => {
         const largeBuy = isConsensusLargeBuyChip(variant, e.positionValueUsd)
+        const topHolding = Boolean(e.isTopHolding)
         return (
         <Link
           key={e.investorSlug}
           to={`/experts/${e.investorSlug}`}
-          title={
+          title={`${topHolding ? "Largest position in this expert's book (by % of portfolio). " : ''}${
             largeBuy
               ? 'Large buy (≥$50M position) · % of portfolio (guru data)'
               : 'Position value (USD) · % of portfolio (guru data)'
-          }
+          }`}
           className={`inline-flex max-w-[22rem] min-w-0 flex-nowrap items-baseline gap-1.5 rounded border px-1.5 py-0.5 text-left text-[14px] leading-none hover:bg-slate-800/80 ${border}`}
         >
-          <span className="min-w-0 flex-1 truncate">{abbreviateExpertFirmDisplayName(e.firmName)}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {abbreviateExpertFirmDisplayName(e.firmName)}
+            {topHolding ? (
+              <span className="text-amber-400/90 ml-0.5" aria-hidden="true">
+                ★
+              </span>
+            ) : null}
+          </span>
           <span
             className={`shrink-0 whitespace-nowrap text-[12px] font-normal tabular-nums ${
               largeBuy ? 'text-emerald-300/95' : 'text-slate-400/95'
@@ -280,7 +294,9 @@ function ExpertChips({
 }
 
 function consensusDefaultSortDir(column: ConsensusSortKey): 'asc' | 'desc' {
-  return column === 'ticker' ? 'asc' : 'desc'
+  if (column === 'ticker') return 'asc'
+  /** Conviction / vote counts: higher first */
+  return 'desc'
 }
 
 function ConsensusTable({
@@ -330,6 +346,15 @@ function ConsensusTable({
               label="Ticker"
               activeKey={activeKey}
               dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="conviction"
+              label="Score"
+              title="Composite conviction 0–100 (overlap, position %, blended performance, action strength; ×1.2 WW / ×1.1 Congress when applicable)"
+              activeKey={activeKey}
+              dir={dir}
+              alignRight
               onSort={onConsensusSort}
             />
             <ConsensusSortHeader
@@ -384,12 +409,53 @@ function ConsensusTable({
               : (r.net >= 0 ? '+' : '') + r.net
             const buyUsd = sumConsensusBuyerPositionUsd(r)
             const sellUsd = sumConsensusSellerPositionUsd(r)
+            const bucket = convictionScoreBucket(r.convictionScore)
+            const scoreCls =
+              bucket === 'high'
+                ? 'text-emerald-300 font-semibold'
+                : bucket === 'medium'
+                  ? 'text-amber-200/95'
+                  : 'text-slate-400'
+            const avgDom =
+              r.net >= 0 ? r.avgBuyerPctOfPortfolio : r.avgSellerPctOfPortfolio
             return (
               <tr key={r.ticker} className="border-t border-slate-800/80 hover:bg-slate-800/25 align-top">
                 <td className="px-3 py-2 font-medium">
                   <Link to={`/stock/${r.ticker}`} className="text-sky-400 hover:text-sky-300">
                     {r.ticker}
                   </Link>
+                </td>
+                <td className="px-3 py-2 text-right align-top">
+                  <div className={`tabular-nums text-lg leading-tight ${scoreCls}`}>
+                    {Math.round(r.convictionScore)}
+                  </div>
+                  <div className="text-[11px] text-slate-500 leading-tight mt-0.5">
+                    {avgDom != null && Number.isFinite(avgDom) ? (
+                      <span title="Average % of portfolio (dominant side among panel experts)">
+                        Avg {avgDom.toFixed(1)}% port
+                      </span>
+                    ) : (
+                      <span className="invisible">—</span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-1 mt-1">
+                    {r.crossSourceWhalewisdom ? (
+                      <span
+                        className="text-[10px] uppercase tracking-wide rounded border border-sky-700/50 px-1 text-sky-300/90"
+                        title="Ticker also appears in latest WhaleWisdom 13F snapshot"
+                      >
+                        WW
+                      </span>
+                    ) : null}
+                    {r.crossSourceCongress ? (
+                      <span
+                        className="text-[10px] uppercase tracking-wide rounded border border-violet-700/50 px-1 text-violet-300/90"
+                        title="Ticker in latest synced Congress disclosures"
+                      >
+                        Cong
+                      </span>
+                    ) : null}
+                  </div>
                 </td>
                 <td className="px-3 py-2 tabular-nums text-emerald-200/90">{r.buyVotes}</td>
                 <td className="px-3 py-2 tabular-nums text-rose-200/90">{r.sellVotes}</td>
@@ -691,11 +757,12 @@ export default function StockcircleExperts() {
   const consensusRows = useMemo(
     () =>
       computeTickerConsensusRows(popular, weights as Record<string, ExpertWeightLike[]>, {
-        topK: CONSENSUS_TOP_K,
+        topK: CONSENSUS_TOP_K_CAP,
         minVotes: 1,
         weightByPerformance: WEIGHT_VOTES_BY_PERFORMANCE,
+        crossSourceByTicker: data?.crossSourceTickers,
       }),
-    [popular, weights]
+    [popular, weights, data?.crossSourceTickers]
   )
 
   const { buyLeaning, sellLeaning, mixed } = useMemo(
@@ -709,7 +776,7 @@ export default function StockcircleExperts() {
   const buySingleExpert = useMemo(() => buyLeaning.filter((r) => r.buyVotes === 1), [buyLeaning])
 
   const expertsInDataset = expertRows.length
-  const effectiveTopK = Math.min(CONSENSUS_TOP_K, Math.max(1, expertsInDataset))
+  const effectiveTopK = Math.min(CONSENSUS_TOP_K_CAP, Math.max(1, expertsInDataset))
 
   /** Guru overlap rows first (with return % when synced), then 13F filers not already in that set. */
   const blendedLeaderboard = useMemo((): BlendedLeaderboardEntry[] => {
@@ -740,7 +807,7 @@ export default function StockcircleExperts() {
       sortBlendedLeaderboardEntries(
         blendedLeaderboard,
         expertRows,
-        CONSENSUS_TOP_K,
+        CONSENSUS_TOP_K_CAP,
         blendedSort.key ?? 'pipeline',
         blendedSort.dir
       ),
@@ -784,10 +851,32 @@ export default function StockcircleExperts() {
     return list.find((w) => w.investorSlug === slug) ?? null
   }
 
+  const syncFreshness = syncFreshnessLabel(data?.latestRun?.finished_at ?? null)
+
   return (
     <div className="w-full max-w-none px-1 sm:px-0">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-        <h1 className="text-2xl font-semibold text-slate-100">Expert consensus</h1>
+        <div className="flex flex-wrap items-baseline gap-2 min-w-0">
+          <h1 className="text-2xl font-semibold text-slate-100">Expert consensus</h1>
+          {data?.latestRun?.finished_at && syncFreshness.label !== 'Unknown' ? (
+            <span
+              className={`shrink-0 text-xs font-medium rounded border px-2 py-0.5 tabular-nums ${
+                syncFreshness.label === 'Fresh'
+                  ? 'border-emerald-700/60 text-emerald-300/95 bg-emerald-950/40'
+                  : syncFreshness.label === 'Stale'
+                    ? 'border-amber-700/60 text-amber-300/95 bg-amber-950/30'
+                    : 'border-slate-600/60 text-slate-400 bg-slate-900/50'
+              }`}
+              title={
+                syncFreshness.days != null
+                  ? `Guru data age: ~${syncFreshness.days.toFixed(0)} days since last sync finished`
+                  : 'Sync recency'
+              }
+            >
+              {syncFreshness.label}
+            </span>
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={() => void handleExpertsSync()}
@@ -1099,7 +1188,7 @@ export default function StockcircleExperts() {
                         }
                         const ex = entry.row
                         const guruRank = expertRows.findIndex((e) => e.investorSlug === ex.investorSlug)
-                        const inPanel = guruRank >= 0 && guruRank < CONSENSUS_TOP_K
+                        const inPanel = guruRank >= 0 && guruRank < CONSENSUS_TOP_K_CAP
                         return (
                           <tr key={ex.investorSlug} className="border-t border-slate-800/80 hover:bg-slate-800/25">
                             <td className="px-3 py-2 tabular-nums text-slate-500">{rank}</td>

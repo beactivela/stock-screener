@@ -27,6 +27,7 @@ export async function buildExpertsSummaryPayload() {
       congressRecent: { senate: [], house: [] },
       whalewisdomFilers: [],
       quiverCongress: null,
+      crossSourceTickers: {},
     };
   }
 }
@@ -40,6 +41,7 @@ async function buildExpertsSummaryPayloadInner() {
       congressRecent: { senate: [], house: [] },
       whalewisdomFilers: [],
       quiverCongress: null,
+      crossSourceTickers: {},
     };
   }
 
@@ -51,6 +53,7 @@ async function buildExpertsSummaryPayloadInner() {
       congressRecent: { senate: [], house: [] },
       whalewisdomFilers: [],
       quiverCongress: null,
+      crossSourceTickers: {},
     };
   }
 
@@ -59,6 +62,8 @@ async function buildExpertsSummaryPayloadInner() {
     fmpInstitutional: /** @type {unknown} */ (null),
   };
   let congressRecent = { senate: /** @type {object[]} */ ([]), house: /** @type {object[]} */ ([]) };
+  /** @type {string | null} */
+  let fmpRunIdForCross = null;
 
   try {
     const { data: fmpRun, error: runErr } = await supabase
@@ -74,6 +79,7 @@ async function buildExpertsSummaryPayloadInner() {
     if (runErr) throw runErr;
 
     if (fmpRun?.id) {
+      fmpRunIdForCross = fmpRun.id;
       gateway = {
         fmpCongress: {
           finishedAt: fmpRun.finished_at,
@@ -188,13 +194,80 @@ async function buildExpertsSummaryPayloadInner() {
     quiverCongress = null;
   }
 
+  /** Per-ticker overlap with WhaleWisdom 13F snapshot + FMP Congress disclosures (for conviction multipliers). */
+  let crossSourceTickers = {};
+  try {
+    crossSourceTickers = await buildCrossSourceTickersMap(supabase, base.popular, fmpRunIdForCross);
+  } catch {
+    crossSourceTickers = {};
+  }
+
   return {
     ...base,
     gateway,
     congressRecent,
     whalewisdomFilers,
     quiverCongress,
+    crossSourceTickers,
   };
+}
+
+/**
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {Array<{ ticker?: string }>} popular
+ * @param {string | null} fmpRunId
+ */
+async function buildCrossSourceTickersMap(supabase, popular, fmpRunId) {
+  const upper = (t) => String(t || '').trim().toUpperCase();
+  const out = /** @type {Record<string, { whalewisdom: boolean; congress: boolean }>} */ ({});
+  const popList = popular || [];
+  if (!popList.length) return out;
+
+  const popSet = new Set();
+  for (const p of popList) {
+    const tk = upper(p.ticker);
+    if (tk) popSet.add(tk);
+  }
+
+  const wwSet = new Set();
+  try {
+    const { data, error } = await supabase.from('v_whalewisdom_positions_latest').select('ticker').limit(20000);
+    if (!error && data?.length) {
+      for (const r of data) {
+        const tk = upper(r.ticker);
+        if (tk) wwSet.add(tk);
+      }
+    }
+  } catch {
+    // view / RLS — leave wwSet empty
+  }
+
+  const congressSet = new Set();
+  if (fmpRunId) {
+    try {
+      const { data, error } = await supabase
+        .from('fmp_congress_trades')
+        .select('symbol')
+        .eq('sync_run_id', fmpRunId)
+        .limit(20000);
+      if (!error && data?.length) {
+        for (const r of data) {
+          const tk = upper(r.symbol);
+          if (tk) congressSet.add(tk);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const tk of popSet) {
+    out[tk] = {
+      whalewisdom: wwSet.has(tk),
+      congress: congressSet.has(tk),
+    };
+  }
+  return out;
 }
 
 function tryParseJson(s) {
