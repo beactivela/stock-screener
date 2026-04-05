@@ -342,6 +342,7 @@ test('sortConsensusTickerRows: buyVotes desc; tie-break ticker', () => {
   )
 })
 
+/** Matches `/experts` ConsensusTable default: Score column = conviction, highest first. */
 test('sortConsensusTickerRows: conviction desc', () => {
   const rows = [row('A', { convictionScore: 40 }), row('B', { convictionScore: 90 }), row('C', { convictionScore: 90 })]
   const out = sortConsensusTickerRows(rows, 'conviction', 'desc', false)

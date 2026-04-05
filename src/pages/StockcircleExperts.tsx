@@ -307,33 +307,34 @@ function ConsensusTable({
   weightVotesByPerformance: boolean
 }) {
   const netLabel = weightVotesByPerformance ? 'Wtd net' : 'Net'
-  /** `null` = preserve API / section order until the user picks a column. */
+  /** Default: Score (conviction) high → low; user can change column or toggle direction. */
   const [consensusSort, setConsensusSort] = useState<{
     key: ConsensusSortKey
     dir: 'asc' | 'desc'
-  } | null>(null)
+  }>({ key: 'conviction', dir: 'desc' })
 
-  const displayRows = useMemo(() => {
-    if (!consensusSort) return rows
-    return sortConsensusTickerRows(
-      rows,
-      consensusSort.key,
-      consensusSort.dir,
-      weightVotesByPerformance
-    )
-  }, [rows, consensusSort, weightVotesByPerformance])
+  const displayRows = useMemo(
+    () =>
+      sortConsensusTickerRows(
+        rows,
+        consensusSort.key,
+        consensusSort.dir,
+        weightVotesByPerformance
+      ),
+    [rows, consensusSort, weightVotesByPerformance]
+  )
 
   const onConsensusSort = useCallback((column: ConsensusSortKey) => {
     setConsensusSort((prev) => {
-      if (!prev || prev.key !== column) {
+      if (prev.key !== column) {
         return { key: column, dir: consensusDefaultSortDir(column) }
       }
       return { key: column, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
     })
   }, [])
 
-  const activeKey = consensusSort?.key ?? null
-  const dir = consensusSort?.dir ?? 'desc'
+  const activeKey = consensusSort.key
+  const dir = consensusSort.dir
 
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800">
