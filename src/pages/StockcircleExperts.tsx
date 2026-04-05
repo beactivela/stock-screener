@@ -664,10 +664,6 @@ export default function StockcircleExperts() {
                   <h3 className="text-sm font-semibold text-teal-200/95 mb-2">
                     AI — money flow &amp; sectors
                   </h3>
-                  <p className="text-xs text-slate-500 mb-2">
-                    Narrative from overlap consensus (top experts by 1Y rank), via OpenRouter{' '}
-                    <code className="text-slate-400">moonshotai/kimi-k2.5</code>. Not investment advice.
-                  </p>
                   {(moneyFlowNarrative.status === 'idle' || moneyFlowNarrative.status === 'loading') && (
                     <p className="text-xs text-slate-500">
                       Mapping buys/sells to sector themes and where capital is clustering…
