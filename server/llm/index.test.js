@@ -201,4 +201,31 @@ describe('assistantTextFromChatMessage', () => {
       ''
     );
   });
+
+  it('skips type=reasoning array parts when reasoningFallback is false', () => {
+    assert.equal(
+      assistantTextFromChatMessage(
+        {
+          content: [
+            { type: 'reasoning', text: 'think' },
+            { type: 'text', text: 'hi' },
+          ],
+        },
+        { reasoningFallback: false }
+      ),
+      'hi'
+    );
+  });
+
+  it('includes type=reasoning array parts when reasoningFallback is true', () => {
+    assert.equal(
+      assistantTextFromChatMessage(
+        {
+          content: [{ type: 'reasoning', text: 'out' }],
+        },
+        { reasoningFallback: true }
+      ),
+      'out'
+    );
+  });
 });

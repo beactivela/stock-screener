@@ -61,7 +61,8 @@ export async function generateConsensusBuysInsights(digest) {
       ? Math.min(HARD_CAP, maxEnv)
       : DEFAULT_MAX;
 
-  const call = async (messages) =>
+  /** Gemini / some OpenRouter models leave `content` empty but fill `reasoning`; first pass stays user-facing-safe. */
+  const call = async (messages, { reasoningFallback = false } = {}) =>
     generateLlmReply({
       provider,
       model,
@@ -69,10 +70,10 @@ export async function generateConsensusBuysInsights(digest) {
       messages,
       maxTokens,
       temperature: 0.18,
-      reasoningFallback: false,
+      reasoningFallback,
     });
 
-  let text = (await call([{ role: 'user', content: user }])).trim();
+  let text = (await call([{ role: 'user', content: user }], { reasoningFallback: false })).trim();
 
   if (!text || text === 'No response.') {
     throw new Error(
@@ -85,6 +86,7 @@ export async function generateConsensusBuysInsights(digest) {
     if (String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
       console.warn('[consensus-buys-ai] disallowed ticker mentions, retrying', { bad });
     }
+    const firstDraft = text;
     const fixUser = [
       'Your previous answer cited stock symbols that are NOT in the dataset and NOT in ALLOWED_TICKERS:',
       bad.join(', '),
@@ -94,21 +96,26 @@ export async function generateConsensusBuysInsights(digest) {
       'Rewrite the ENTIRE column from scratch. Use ONLY those tickers. Every (TICK) parenthetical must be one of them. Do not name ETFs, funds, or dollar amounts unless they appear in the JSON with matching firmName/ticker. Do not use outside knowledge.',
       '',
       'Previous draft (do not copy sentences; replace with JSON-grounded text only):',
-      text.slice(0, 4000),
+      firstDraft.slice(0, 4000),
     ].join('\n');
 
+    // Retry: allow reasoning fallback — some models (e.g. Gemini via OpenRouter) omit `content` on follow-ups.
     text = (
-      await call([
-        { role: 'user', content: user },
-        { role: 'assistant', content: text },
-        { role: 'user', content: fixUser },
-      ])
+      await call(
+        [
+          { role: 'user', content: user },
+          { role: 'assistant', content: firstDraft },
+          { role: 'user', content: fixUser },
+        ],
+        { reasoningFallback: true }
+      )
     ).trim();
 
     if (!text || text === 'No response.') {
-      throw new Error(
-        'LLM returned no assistant text on hallucination-correct pass. Try again or adjust EXPERTS_INSIGHTS_MODEL.'
+      console.warn(
+        '[consensus-buys-ai] hallucination-correct pass returned no text; using first draft (may include extra symbols)'
       );
+      text = firstDraft;
     }
 
     bad = findDisallowedTickerMentions(text, allowedTickers);

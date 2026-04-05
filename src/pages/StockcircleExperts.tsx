@@ -506,9 +506,8 @@ export default function StockcircleExperts() {
     | { status: 'error'; message: string }
   >({ status: 'idle' })
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const [matrixOpen, setMatrixOpen] = useState(false)
-  /** Tab 1 = ticker consensus; tab 2 = full expert list with multi-year performance. */
-  const [expertsMainTab, setExpertsMainTab] = useState<'consensus' | 'experts'>('consensus')
+  /** Tab: consensus tickers · experts×tickers matrix · full leaderboard + Congress tables. */
+  const [expertsMainTab, setExpertsMainTab] = useState<'consensus' | 'matrix' | 'experts'>('consensus')
   /** Which consensus bucket is visible (strong multi-buy, single-buy, sells, mixed). */
   const [consensusSubTab, setConsensusSubTab] = useState<
     'strongBuys' | 'singleBuys' | 'sells' | 'mixed'
@@ -685,6 +684,13 @@ export default function StockcircleExperts() {
   }
 
   const popular = data?.popular ?? []
+
+  useEffect(() => {
+    if (popular.length === 0 && expertsMainTab === 'matrix') {
+      setExpertsMainTab('consensus')
+    }
+  }, [popular.length, expertsMainTab])
+
   /** First N tickers by “firms buying” for the wide overlap matrix only (full `popular` drives consensus). */
   const popularMatrix = useMemo(
     () => popular.slice(0, MATRIX_MAX_TICKERS),
@@ -930,6 +936,24 @@ export default function StockcircleExperts() {
             >
               Consensus overlap
             </button>
+            {popular.length > 0 && (
+              <button
+                type="button"
+                role="tab"
+                id="experts-tab-matrix"
+                aria-selected={expertsMainTab === 'matrix'}
+                aria-controls="experts-panel-matrix"
+                tabIndex={expertsMainTab === 'matrix' ? 0 : -1}
+                onClick={() => setExpertsMainTab('matrix')}
+                className={`rounded-t-md px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 ${
+                  expertsMainTab === 'matrix'
+                    ? 'border border-b-0 border-slate-700 bg-slate-900/90 text-slate-100'
+                    : 'border border-transparent text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                Overlap matrix
+              </button>
+            )}
             <button
               type="button"
               role="tab"
@@ -1154,6 +1178,160 @@ export default function StockcircleExperts() {
               </p>
             )}
           </div>
+
+          {popular.length > 0 && (
+            <div
+              role="tabpanel"
+              id="experts-panel-matrix"
+              aria-labelledby="experts-tab-matrix"
+              hidden={expertsMainTab !== 'matrix'}
+              className={expertsMainTab === 'matrix' ? 'pt-4' : ''}
+            >
+              <section className="mb-6" aria-labelledby="overlap-matrix-heading">
+                <h2 id="overlap-matrix-heading" className="text-lg font-semibold text-slate-100 mb-1">
+                  Experts × tickers
+                </h2>
+                <p className="text-xs text-slate-500 mb-4">
+                  Advanced grid: each row is an expert, each column a ticker (first {MATRIX_MAX_TICKERS} by “firms buying”
+                  — the full ticker set powers the Consensus overlap tab). Cells show % of portfolio and estimated $ on
+                  adds (green) or trims/sells (red) — not audited.
+                </p>
+
+                {data?.ok && data.latestRun != null && (data.latestRun.investors_fetched ?? 0) < 25 && (
+                  <div
+                    className="mb-4 rounded border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-100/95"
+                    role="note"
+                  >
+                    <p className="font-medium text-amber-200/95">Why “Firms buying” is often 1</p>
+                    <p className="mt-1 text-amber-100/85">
+                      That column counts experts in the last sync with a <strong>new</strong> or{' '}
+                      <strong>increased</strong> position — not total purchases.
+                    </p>
+                    <p className="mt-2 text-amber-100/85">
+                      Your last run loaded <strong>{data.latestRun.investors_fetched ?? '—'}</strong> guru portfolio(s).
+                      For more overlap on the same ticker, run a <strong>full</strong> unified sync or raise{' '}
+                      <code className="text-amber-200">STOCKCIRCLE_MAX_INVESTORS</code>.
+                    </p>
+                  </div>
+                )}
+
+                {expertRows.length === 0 ? (
+                  <p className="text-slate-500 text-sm py-2">No expert rows — matrix is empty for this dataset.</p>
+                ) : (
+                  <div className="overflow-x-auto max-h-[min(85vh,1200px)] overflow-y-auto rounded-lg border border-slate-800">
+                    <table className="min-w-max text-xs text-left text-slate-300 border-collapse">
+                      <thead className="bg-slate-900/95 text-slate-400 uppercase sticky top-0 z-20 shadow-sm">
+                        <tr>
+                          <th
+                            scope="col"
+                            className="sticky left-0 z-30 bg-slate-900/95 px-2 py-2 text-left font-medium border-b border-r border-slate-800 min-w-[10rem]"
+                          >
+                            Expert
+                          </th>
+                          {popularMatrix.map((row) => (
+                            <th
+                              key={row.ticker}
+                              scope="col"
+                              className="px-1.5 py-2 text-center font-medium border-b border-slate-800 align-bottom min-w-[4.5rem] max-w-[6rem]"
+                              title={`Buying firms: ${row.buying_firms ?? 0} · Selling: ${row.selling_firms ?? 0}`}
+                            >
+                              <Link
+                                to={`/stock/${row.ticker}`}
+                                className="text-sky-400 hover:text-sky-300 font-semibold normal-case tracking-normal"
+                              >
+                                {row.ticker}
+                              </Link>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expertRows.map((ex) => (
+                          <tr key={ex.investorSlug} className="border-t border-slate-800/80 hover:bg-slate-800/30">
+                            <th
+                              scope="row"
+                              className="sticky left-0 z-10 bg-slate-950/95 px-2 py-1.5 text-left font-normal border-r border-slate-800 align-top whitespace-nowrap"
+                            >
+                              <Link
+                                to={`/experts/${ex.investorSlug}`}
+                                className="text-sky-400 hover:underline font-medium text-sm"
+                                title={[
+                                  ex.performance1yPct != null ? `1Y ${fmtStockcirclePct(ex.performance1yPct)}` : null,
+                                  ex.performance3yPct != null ? `3Y ${fmtStockcirclePct(ex.performance3yPct)}` : null,
+                                  ex.performance5yPct != null ? `5Y ${fmtStockcirclePct(ex.performance5yPct)}` : null,
+                                  ex.performance10yPct != null ? `10Y ${fmtStockcirclePct(ex.performance10yPct)}` : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              >
+                                {abbreviateExpertFirmDisplayName(ex.firmName)}
+                              </Link>
+                              <span className="block text-xs leading-tight text-slate-500 mt-0.5 max-w-[11rem]">
+                                1Y {fmtStockcirclePct(ex.performance1yPct)} · 3Y {fmtStockcirclePct(ex.performance3yPct)}{' '}
+                                · 5Y {fmtStockcirclePct(ex.performance5yPct)} · 10Y{' '}
+                                {fmtStockcirclePct(ex.performance10yPct)}
+                              </span>
+                            </th>
+                            {popularMatrix.map((row) => {
+                              const w = findWeight(ex.investorSlug, row.ticker)
+                              const { increaseUsd, decreaseUsd } = w
+                                ? estimatePositionDollarDeltas(
+                                    w.actionType,
+                                    w.actionPct ?? null,
+                                    w.positionValueUsd ?? null
+                                  )
+                                : { increaseUsd: null, decreaseUsd: null }
+                              return (
+                                <td
+                                  key={`${ex.investorSlug}-${row.ticker}`}
+                                  className="px-1 py-1 border-l border-slate-800/60 align-top text-center"
+                                >
+                                  {!w ? (
+                                    <span className="text-slate-700">·</span>
+                                  ) : (
+                                    <div className="flex flex-col items-center gap-0.5 leading-tight">
+                                      {w.pctOfPortfolio != null ? (
+                                        <span className="text-slate-200 tabular-nums">{w.pctOfPortfolio.toFixed(1)}%</span>
+                                      ) : (
+                                        <span className="text-slate-600">—</span>
+                                      )}
+                                      {increaseUsd != null && (
+                                        <span
+                                          className="text-emerald-400/95 tabular-nums"
+                                          title={`Est. add / new $ (full ~${increaseUsd.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })})`}
+                                        >
+                                          +{formatUsdCompact(increaseUsd)}
+                                        </span>
+                                      )}
+                                      {decreaseUsd != null && (
+                                        <span
+                                          className="text-rose-400/95 tabular-nums"
+                                          title={`Est. trim / sell $ (full ~${decreaseUsd.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })})`}
+                                        >
+                                          {formatUsdCompact(-decreaseUsd)}
+                                        </span>
+                                      )}
+                                      {increaseUsd == null &&
+                                        decreaseUsd == null &&
+                                        w.actionType !== 'unknown' && (
+                                          <span className="text-slate-600 text-xs" title={w.actionType}>
+                                            {w.actionType.replace('_', ' ')}
+                                          </span>
+                                        )}
+                                    </div>
+                                  )}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
 
           <div
             role="tabpanel"
@@ -1485,160 +1663,6 @@ export default function StockcircleExperts() {
           </div>
         )}
 
-      {data?.ok && data.latestRun != null && (data.latestRun.investors_fetched ?? 0) < 25 && (
-        <div
-          className="mb-4 rounded border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-100/95"
-          role="note"
-        >
-          <p className="font-medium text-amber-200/95">Why “Firms buying” is often 1</p>
-          <p className="mt-1 text-amber-100/85">
-            That column counts experts in the last sync with a <strong>new</strong> or <strong>increased</strong>{' '}
-            position — not total purchases.
-          </p>
-          <p className="mt-2 text-amber-100/85">
-            Your last run loaded <strong>{data.latestRun.investors_fetched ?? '—'}</strong> guru portfolio(s). For more
-            overlap on the same ticker, run a <strong>full</strong> unified sync or raise{' '}
-            <code className="text-amber-200">STOCKCIRCLE_MAX_INVESTORS</code>.
-          </p>
-        </div>
-      )}
-
-      {popular.length > 0 && (
-        <details
-          className="group mb-6 rounded-lg border border-slate-800"
-          open={matrixOpen}
-          onToggle={(e) => setMatrixOpen((e.target as HTMLDetailsElement).open)}
-        >
-          <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium text-slate-300 hover:bg-slate-900/50 [&::-webkit-details-marker]:hidden">
-            <span className="text-slate-400 group-open:hidden">▸</span>
-            <span className="text-slate-400 hidden group-open:inline">▾</span>
-            {' '}
-            Overlap matrix (advanced) — experts × tickers
-          </summary>
-          <div className="border-t border-slate-800 px-3 pb-3">
-            {expertRows.length > 0 && (
-              <p className="my-3 text-xs text-slate-500">
-                Rows are experts; columns are tickers from the latest sync (first {MATRIX_MAX_TICKERS} by “firms buying”
-                — full ticker set drives the consensus tables above). Each cell shows % of that expert’s portfolio and
-                estimated $ change for adds (green) or trims/sells (red) — not audited.
-              </p>
-            )}
-            {expertRows.length === 0 ? (
-              <p className="text-slate-500 text-sm py-2">No expert rows — matrix is empty for this dataset.</p>
-            ) : (
-              <div className="overflow-x-auto max-h-[min(85vh,1200px)] overflow-y-auto">
-                <table className="min-w-max text-xs text-left text-slate-300 border-collapse">
-                  <thead className="bg-slate-900/95 text-slate-400 uppercase sticky top-0 z-20 shadow-sm">
-                    <tr>
-                      <th
-                        scope="col"
-                        className="sticky left-0 z-30 bg-slate-900/95 px-2 py-2 text-left font-medium border-b border-r border-slate-800 min-w-[10rem]"
-                      >
-                        Expert
-                      </th>
-                      {popularMatrix.map((row) => (
-                        <th
-                          key={row.ticker}
-                          scope="col"
-                          className="px-1.5 py-2 text-center font-medium border-b border-slate-800 align-bottom min-w-[4.5rem] max-w-[6rem]"
-                          title={`Buying firms: ${row.buying_firms ?? 0} · Selling: ${row.selling_firms ?? 0}`}
-                        >
-                          <Link
-                            to={`/stock/${row.ticker}`}
-                            className="text-sky-400 hover:text-sky-300 font-semibold normal-case tracking-normal"
-                          >
-                            {row.ticker}
-                          </Link>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {expertRows.map((ex) => (
-                      <tr key={ex.investorSlug} className="border-t border-slate-800/80 hover:bg-slate-800/30">
-                        <th
-                          scope="row"
-                          className="sticky left-0 z-10 bg-slate-950/95 px-2 py-1.5 text-left font-normal border-r border-slate-800 align-top whitespace-nowrap"
-                        >
-                          <Link
-                            to={`/experts/${ex.investorSlug}`}
-                            className="text-sky-400 hover:underline font-medium text-sm"
-                            title={[
-                              ex.performance1yPct != null ? `1Y ${fmtStockcirclePct(ex.performance1yPct)}` : null,
-                              ex.performance3yPct != null ? `3Y ${fmtStockcirclePct(ex.performance3yPct)}` : null,
-                              ex.performance5yPct != null ? `5Y ${fmtStockcirclePct(ex.performance5yPct)}` : null,
-                              ex.performance10yPct != null ? `10Y ${fmtStockcirclePct(ex.performance10yPct)}` : null,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ')}
-                          >
-                            {abbreviateExpertFirmDisplayName(ex.firmName)}
-                          </Link>
-                          <span className="block text-xs leading-tight text-slate-500 mt-0.5 max-w-[11rem]">
-                            1Y {fmtStockcirclePct(ex.performance1yPct)} · 3Y {fmtStockcirclePct(ex.performance3yPct)} ·
-                            5Y {fmtStockcirclePct(ex.performance5yPct)} · 10Y {fmtStockcirclePct(ex.performance10yPct)}
-                          </span>
-                        </th>
-                        {popularMatrix.map((row) => {
-                          const w = findWeight(ex.investorSlug, row.ticker)
-                          const { increaseUsd, decreaseUsd } = w
-                            ? estimatePositionDollarDeltas(
-                                w.actionType,
-                                w.actionPct ?? null,
-                                w.positionValueUsd ?? null
-                              )
-                            : { increaseUsd: null, decreaseUsd: null }
-                          return (
-                            <td
-                              key={`${ex.investorSlug}-${row.ticker}`}
-                              className="px-1 py-1 border-l border-slate-800/60 align-top text-center"
-                            >
-                              {!w ? (
-                                <span className="text-slate-700">·</span>
-                              ) : (
-                                <div className="flex flex-col items-center gap-0.5 leading-tight">
-                                  {w.pctOfPortfolio != null ? (
-                                    <span className="text-slate-200 tabular-nums">{w.pctOfPortfolio.toFixed(1)}%</span>
-                                  ) : (
-                                    <span className="text-slate-600">—</span>
-                                  )}
-                                  {increaseUsd != null && (
-                                    <span
-                                      className="text-emerald-400/95 tabular-nums"
-                                      title={`Est. add / new $ (full ~${increaseUsd.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })})`}
-                                    >
-                                      +{formatUsdCompact(increaseUsd)}
-                                    </span>
-                                  )}
-                                  {decreaseUsd != null && (
-                                    <span
-                                      className="text-rose-400/95 tabular-nums"
-                                      title={`Est. trim / sell $ (full ~${decreaseUsd.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })})`}
-                                    >
-                                      {formatUsdCompact(-decreaseUsd)}
-                                    </span>
-                                  )}
-                                  {increaseUsd == null &&
-                                    decreaseUsd == null &&
-                                    w.actionType !== 'unknown' && (
-                                      <span className="text-slate-600 text-xs" title={w.actionType}>
-                                        {w.actionType.replace('_', ' ')}
-                                      </span>
-                                    )}
-                                </div>
-                              )}
-                            </td>
-                          )
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </details>
-      )}
     </div>
   )
 }

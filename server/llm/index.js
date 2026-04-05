@@ -4,10 +4,10 @@
  */
 
 /** Default model for POST /api/experts/ai-insights when using OpenRouter. */
-export const DEFAULT_EXPERTS_OPENROUTER_MODEL = 'moonshotai/kimi-k2.5';
+export const DEFAULT_EXPERTS_OPENROUTER_MODEL = 'gemini-3-flash-preview:cloud';
 
 /** Default model for expert insights when using Ollama (cloud model name). */
-export const DEFAULT_EXPERTS_OLLAMA_MODEL = 'minimax-m2.7:cloud';
+export const DEFAULT_EXPERTS_OLLAMA_MODEL = 'gemini-3-flash-preview:cloud';
 
 export function normalizeProvider(provider) {
   const p = String(provider || '').trim().toLowerCase();
@@ -141,6 +141,10 @@ export function assistantTextFromChatMessage(message, options = {}) {
     for (const part of c) {
       if (typeof part === 'string') parts.push(part);
       else if (part && typeof part === 'object') {
+        const ty = part.type;
+        // OpenRouter / Gemini: chain-of-thought chunks; omit from user-facing copy unless we use reasoning fallback below.
+        if (ty === 'reasoning' && !reasoningFallback) continue;
+        if (ty === 'tool_calls' || ty === 'function_call') continue;
         if ('text' in part && part.text != null) parts.push(String(part.text));
         else if (part.type === 'text' && 'text' in part) parts.push(String(part.text ?? ''));
       }
