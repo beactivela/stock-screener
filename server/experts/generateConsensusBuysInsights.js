@@ -9,6 +9,27 @@ import {
 import { slimConsensusDigestForLlm } from './slimConsensusDigestForLlm.js';
 
 /**
+ * Gemini / OpenRouter sometimes emit a lone "thought" or "Thinking:" line before the column, or the
+ * API counts chain-of-thought against the same completion budget — strip obvious lead-in labels only.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripConsensusBuysNarrativeLeadIn(text) {
+  if (typeof text !== 'string') return '';
+  let t = text.replace(/\r\n/g, '\n');
+  for (;;) {
+    const m = t.match(/^\s*(thought|thinking|analysis)\s*:?\s*\n+/i);
+    if (m) {
+      t = t.slice(m[0].length);
+      continue;
+    }
+    break;
+  }
+  return t.trim();
+}
+
+/**
  * @param {Record<string, unknown>} digest from buildConsensusBuysDigest
  */
 export async function generateConsensusBuysInsights(digest) {
@@ -22,6 +43,7 @@ export async function generateConsensusBuysInsights(digest) {
     'You will receive JSON: expert overlap votes and position sizes (StockCircle; not audited filings).',
     'Your ONLY job is to output the finished column text — polished prose, ready to publish.',
     'Do not output: meta-commentary, task restatement, numbered lists of rules, phrases like "The user wants", "Key constraints", "First I need to", "I will analyze".',
+    'Do not print standalone labels such as "thought", "Thinking:", or "Analysis:" before the column — start with the opening sentence or the first stock block only.',
     'Do not label sections "Requirement summary" or "Process step".',
     'GROUND TRUTH — NO OUTSIDE KNOWLEDGE: The JSON block is the ONLY source of tickers, company names, fund names (firmName), dollar sizes, and percentages. Do not use financial news, prior years, ETFs, or “typical” holdings you remember. If a fact is not in the JSON, do not write it. Do not invent sector plays (e.g. “financial sector via XLF”) unless those exact tickers and rows appear in the JSON.',
     `SYMBOL RULE: You may ONLY cite stock tickers that appear in the ALLOWED_TICKERS line. Every symbol in parentheses like (TICK) and every ALL-CAPS ticker token must be from that list. If a ticker is not in ALLOWED_TICKERS, it must not appear anywhere in your text — including in examples, contrasts, or “mixed conviction” paragraphs.`,
@@ -53,17 +75,28 @@ export async function generateConsensusBuysInsights(digest) {
   }
 
   const maxEnv = Number(process.env.EXPERTS_CONSENSUS_BUYS_MAX_TOKENS);
-  /** Narrative rarely needs >2k completion tokens; keep default lower to stay inside shared context limits. */
-  const DEFAULT_MAX = 2000;
-  const HARD_CAP = 8000;
+  /** Gemini / reasoning models count hidden chain-of-thought + visible text toward the same completion cap — budget high enough for full column + overhead. */
+  const DEFAULT_MAX = 8192;
+  const HARD_CAP = 16384;
   const maxTokens =
     Number.isFinite(maxEnv) && maxEnv > 0
       ? Math.min(HARD_CAP, maxEnv)
       : DEFAULT_MAX;
 
-  /** Gemini / some OpenRouter models leave `content` empty but fill `reasoning`; first pass stays user-facing-safe. */
-  const call = async (messages, { reasoningFallback = false } = {}) =>
-    generateLlmReply({
+  const maxContEnv = Number(process.env.EXPERTS_CONSENSUS_BUYS_MAX_CONTINUATIONS);
+  const maxContinuationRounds =
+    Number.isFinite(maxContEnv) && maxContEnv >= 0 ? Math.min(4, maxContEnv) : 2;
+
+  const CONTINUATION_USER = [
+    'Your previous answer was cut off by the output limit.',
+    'Continue exactly where you stopped. Do NOT repeat paragraphs or sentences already written.',
+    'Complete the incomplete word or sentence, then finish the remaining stock blocks.',
+    'Ground every fact in the JSON only; obey ALLOWED_TICKERS and firm names from the JSON.',
+  ].join(' ');
+
+  /** Returns `{ text, finishReason }` so we can chain when the API returns `finish_reason: length`. */
+  const callWithMeta = async (messages, reasoningFallback) => {
+    const out = await generateLlmReply({
       provider,
       model,
       system,
@@ -71,9 +104,53 @@ export async function generateConsensusBuysInsights(digest) {
       maxTokens,
       temperature: 0.18,
       reasoningFallback,
+      returnFinishReason: true,
     });
+    if (out && typeof out === 'object' && 'text' in out) {
+      return /** @type {{ text: string, finishReason: string | null }} */ (out);
+    }
+    return { text: String(out ?? ''), finishReason: null };
+  };
 
-  let text = (await call([{ role: 'user', content: user }], { reasoningFallback: false })).trim();
+  /**
+   * Gemini / reasoning models often hit `max_tokens` mid-sentence; request one or more continuations.
+   * @param {Array<{ role: string, content: string }>} seedMessages
+   */
+  async function runWithContinuation(seedMessages, reasoningFallbackFirst) {
+    let messages = [...seedMessages];
+    let { text: lastSegment, finishReason } = await callWithMeta(messages, reasoningFallbackFirst);
+    lastSegment = stripConsensusBuysNarrativeLeadIn(lastSegment.trim());
+    let accumulated = lastSegment;
+
+    let continuations = 0;
+    while (
+      finishReason === 'length' &&
+      continuations < maxContinuationRounds &&
+      lastSegment &&
+      lastSegment !== 'No response.'
+    ) {
+      continuations += 1;
+      messages = [
+        ...messages,
+        { role: 'assistant', content: lastSegment },
+        { role: 'user', content: CONTINUATION_USER },
+      ];
+      const next = await callWithMeta(messages, true);
+      lastSegment = stripConsensusBuysNarrativeLeadIn(next.text.trim());
+      accumulated = accumulated.trimEnd() + '\n\n' + lastSegment;
+      finishReason = next.finishReason ?? null;
+    }
+
+    if (continuations > 0 && String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
+      console.warn(
+        `[consensus-buys-ai] stitched ${continuations} continuation(s) after finish_reason=length`
+      );
+    }
+
+    return accumulated;
+  }
+
+  let text = await runWithContinuation([{ role: 'user', content: user }], false);
 
   if (!text || text === 'No response.') {
     throw new Error(
@@ -100,16 +177,14 @@ export async function generateConsensusBuysInsights(digest) {
     ].join('\n');
 
     // Retry: allow reasoning fallback — some models (e.g. Gemini via OpenRouter) omit `content` on follow-ups.
-    text = (
-      await call(
-        [
-          { role: 'user', content: user },
-          { role: 'assistant', content: firstDraft },
-          { role: 'user', content: fixUser },
-        ],
-        { reasoningFallback: true }
-      )
-    ).trim();
+    text = await runWithContinuation(
+      [
+        { role: 'user', content: user },
+        { role: 'assistant', content: firstDraft },
+        { role: 'user', content: fixUser },
+      ],
+      true
+    );
 
     if (!text || text === 'No response.') {
       console.warn(
@@ -129,5 +204,5 @@ export async function generateConsensusBuysInsights(digest) {
     }
   }
 
-  return text;
+  return stripConsensusBuysNarrativeLeadIn(text);
 }

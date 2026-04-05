@@ -7,7 +7,7 @@
 export const DEFAULT_EXPERTS_OPENROUTER_MODEL = 'gemini-3-flash-preview:cloud';
 
 /** Default model for expert insights when using Ollama (cloud model name). */
-export const DEFAULT_EXPERTS_OLLAMA_MODEL = 'gemini-3-flash-preview:cloud';
+export const DEFAULT_EXPERTS_OLLAMA_MODEL = 'minimax-m2.7:cloud';
 
 export function normalizeProvider(provider) {
   const p = String(provider || '').trim().toLowerCase();
@@ -166,6 +166,10 @@ function openRouterDefaultHeaders() {
   };
 }
 
+/**
+ * @param {{ provider: string, model: string, system?: string, messages?: unknown[], maxTokens?: number, temperature?: number, reasoningFallback?: boolean, returnFinishReason?: boolean }} opts
+ * @returns {Promise<string | { text: string, finishReason: string | null }>}
+ */
 export async function generateLlmReply({
   provider,
   model,
@@ -175,9 +179,18 @@ export async function generateLlmReply({
   temperature = 0.2,
   /** When false, ignore `message.reasoning` (avoids showing model scratchpad on OpenAI-compatible APIs). */
   reasoningFallback = true,
+  /** When true, return `{ text, finishReason }` so callers can continue on `length` / max_tokens. */
+  returnFinishReason = false,
 }) {
   const normalizedProvider = normalizeProvider(provider);
   const cleanMessages = normalizeMessages(messages);
+
+  const pack = (text, finishReason) => {
+    if (returnFinishReason) {
+      return { text, finishReason: finishReason ?? null };
+    }
+    return text;
+  };
 
   if (normalizedProvider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -200,7 +213,9 @@ export async function generateLlmReply({
         .map((block) => block.text)
         .join('')
         .trim() || 'No response.';
-    return text;
+    const fr =
+      response.stop_reason === 'max_tokens' ? 'length' : response.stop_reason != null ? String(response.stop_reason) : null;
+    return pack(text, fr);
   }
 
   if (normalizedProvider === 'openai') {
@@ -222,10 +237,11 @@ export async function generateLlmReply({
       temperature,
     });
 
+    const choice = response.choices?.[0];
     const text =
-      assistantTextFromChatMessage(response.choices?.[0]?.message, { reasoningFallback }) ||
+      assistantTextFromChatMessage(choice?.message, { reasoningFallback }) ||
       'No response.';
-    return text;
+    return pack(text, choice?.finish_reason ?? null);
   }
 
   if (normalizedProvider === 'ollama') {
@@ -268,10 +284,15 @@ export async function generateLlmReply({
         reasoningFallback,
       });
     }
+    if (choice?.finish_reason === 'length') {
+      console.warn(
+        '[ollama] finish_reason=length (completion hit max_tokens). If narratives truncate, raise EXPERTS_CONSENSUS_BUYS_MAX_TOKENS (consensus) or EXPERTS_INSIGHTS_MAX_TOKENS (overlap).'
+      );
+    }
 
     const text =
       assistantTextFromChatMessage(msg, { reasoningFallback }) || 'No response.';
-    return text;
+    return pack(text, choice?.finish_reason ?? null);
   }
 
   if (normalizedProvider === 'openrouter') {
@@ -315,10 +336,15 @@ export async function generateLlmReply({
         reasoningFallback,
       });
     }
+    if (choice?.finish_reason === 'length') {
+      console.warn(
+        '[openrouter] finish_reason=length (completion hit max_tokens). If narratives truncate, raise EXPERTS_CONSENSUS_BUYS_MAX_TOKENS or EXPERTS_INSIGHTS_MAX_TOKENS.'
+      );
+    }
 
     const text =
       assistantTextFromChatMessage(msg, { reasoningFallback }) || 'No response.';
-    return text;
+    return pack(text, choice?.finish_reason ?? null);
   }
 
   throw new Error(`Unsupported LLM provider: ${provider}`);

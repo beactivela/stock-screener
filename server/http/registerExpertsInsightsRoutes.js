@@ -68,7 +68,7 @@ export function registerExpertsInsightsRoutes(app) {
           ok: false,
           disabled: true,
           error:
-            'Set OLLAMA_API_KEY (default model gemini-3-flash-preview:cloud), OPENROUTER_API_KEY, or ANTHROPIC_API_KEY / OPENAI_API_KEY for consensus analysis (see EXPERTS_INSIGHTS_PROVIDER / EXPERTS_INSIGHTS_MODEL).',
+            'Set OLLAMA_API_KEY (default model minimax-m2.7:cloud), OPENROUTER_API_KEY, or ANTHROPIC_API_KEY / OPENAI_API_KEY for consensus analysis (see EXPERTS_INSIGHTS_PROVIDER / EXPERTS_INSIGHTS_MODEL).',
         });
       }
 
