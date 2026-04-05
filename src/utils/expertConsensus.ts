@@ -56,6 +56,17 @@ export interface ConsensusTickerRow {
   sellers: ConsensusExpertRef[]
 }
 
+/** UI column keys for client-side consensus table sorting (`ConsensusTable`). */
+export type ConsensusSortKey =
+  | 'ticker'
+  | 'buyVotes'
+  | 'sellVotes'
+  | 'net'
+  /** Net buy USD minus sell USD among the row’s expert chips */
+  | 'dollarNet'
+  | 'bulls'
+  | 'bears'
+
 export interface ExpertConsensusOptions {
   /** Experts considered for voting: first K from performance-sorted universe (default 10). */
   topK: number
@@ -253,6 +264,56 @@ export function sumConsensusSellerPositionUsd(row: ConsensusTickerRow): number {
  */
 export function netConsensusPositionUsd(row: ConsensusTickerRow): number {
   return sumConsensusBuyerPositionUsd(row) - sumConsensusSellerPositionUsd(row)
+}
+
+function consensusSortComparable(
+  row: ConsensusTickerRow,
+  key: ConsensusSortKey,
+  weightVotesByPerformance: boolean
+): string | number {
+  switch (key) {
+    case 'ticker':
+      return row.ticker
+    case 'buyVotes':
+      return row.buyVotes
+    case 'sellVotes':
+      return row.sellVotes
+    case 'net':
+      return weightVotesByPerformance ? row.weightedNet : row.net
+    case 'dollarNet':
+      return netConsensusPositionUsd(row)
+    case 'bulls':
+      return row.buyers.length
+    case 'bears':
+      return row.sellers.length
+    default: {
+      const _exhaustive: never = key
+      return _exhaustive
+    }
+  }
+}
+
+/**
+ * Stable client-side sort for consensus ticker rows (tie-break: ticker A–Z).
+ */
+export function sortConsensusTickerRows(
+  rows: ConsensusTickerRow[],
+  key: ConsensusSortKey,
+  dir: 'asc' | 'desc',
+  weightVotesByPerformance: boolean
+): ConsensusTickerRow[] {
+  return [...rows].sort((a, b) => {
+    const va = consensusSortComparable(a, key, weightVotesByPerformance)
+    const vb = consensusSortComparable(b, key, weightVotesByPerformance)
+    let cmp: number
+    if (typeof va === 'string' && typeof vb === 'string') {
+      cmp = va.localeCompare(vb, undefined, { sensitivity: 'base' })
+    } else {
+      cmp = (va as number) - (vb as number)
+    }
+    if (cmp !== 0) return dir === 'asc' ? cmp : -cmp
+    return a.ticker.localeCompare(b.ticker, undefined, { sensitivity: 'base' })
+  })
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * Expert overlap — blended guru portfolios, 13F filers, FMP Congress (unified experts sync).
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { API_BASE } from '../utils/api'
 import { estimatePositionDollarDeltas } from '../utils/stockcircleActionDollars'
@@ -11,14 +11,21 @@ import {
   buildSortedExpertUniverse,
   computeTickerConsensusRows,
   splitConsensusByNet,
+  sortConsensusTickerRows,
   type ExpertWeightLike,
-  type ExpertLeaderboardRow,
   type ConsensusTickerRow,
   type ConsensusExpertRef,
+  type ConsensusSortKey,
   isConsensusLargeBuyChip,
   sumConsensusBuyerPositionUsd,
   sumConsensusSellerPositionUsd,
 } from '../utils/expertConsensus'
+import {
+  defaultBlendedSortDir,
+  sortBlendedLeaderboardEntries,
+  type BlendedLeaderboardEntry,
+  type BlendedSortKey,
+} from '../utils/blendedLeaderboardSort'
 
 interface ExpertWeight {
   investorSlug: string
@@ -98,10 +105,6 @@ interface SummaryPayload {
   error?: string
 }
 
-type BlendedLeaderboardEntry =
-  | { kind: 'guru'; row: ExpertLeaderboardRow }
-  | { kind: 'whalewisdom'; slug: string; displayName: string; managerName: string }
-
 /** Top N experts by 1Y % included in consensus tallies (UI controls removed). */
 const CONSENSUS_TOP_K = 10
 /** Cap overlap-matrix columns so the table stays usable when the API returns hundreds of tickers. */
@@ -118,6 +121,92 @@ function formatInvestedUsd(usd: number): string {
   if (usd <= 0 || !Number.isFinite(usd)) return '—'
   if (usd >= 1e9 || usd < 1e6) return formatUsdCompact(usd)
   return `$${(usd / 1e6).toFixed(1)}M`
+}
+
+/** Sortable column header for the blended guru + 13F leaderboard (`aria-sort` + keyboard-focusable button). */
+function BlendedSortHeader({
+  column,
+  label,
+  activeKey,
+  dir,
+  alignRight,
+  onSort,
+}: {
+  column: BlendedSortKey
+  label: string
+  activeKey: BlendedSortKey | null
+  dir: 'asc' | 'desc'
+  alignRight?: boolean
+  onSort: (k: BlendedSortKey) => void
+}) {
+  const active = activeKey != null && column === activeKey
+  return (
+    <th
+      scope="col"
+      className={alignRight ? 'px-3 py-2 text-right' : 'px-3 py-2'}
+      aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className={`group inline-flex w-full min-h-[1.25rem] items-center gap-1 bg-transparent p-0 font-inherit text-[14px] uppercase tracking-wide text-inherit hover:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 rounded ${
+          alignRight ? 'justify-end' : 'justify-start'
+        }`}
+      >
+        <span>{label}</span>
+        {active && (
+          <span className="shrink-0 text-sky-400" aria-hidden="true">
+            {dir === 'asc' ? '↑' : '↓'}
+          </span>
+        )}
+      </button>
+    </th>
+  )
+}
+
+/** Sortable header for ticker consensus tables (`ConsensusTable`); mirrors `BlendedSortHeader` a11y pattern. */
+function ConsensusSortHeader({
+  column,
+  label,
+  title: headerTitle,
+  activeKey,
+  dir,
+  alignRight,
+  onSort,
+}: {
+  column: ConsensusSortKey
+  label: string
+  /** Extra context for the dollar column (sort key = net buy USD − sell USD). */
+  title?: string
+  activeKey: ConsensusSortKey | null
+  dir: 'asc' | 'desc'
+  alignRight?: boolean
+  onSort: (k: ConsensusSortKey) => void
+}) {
+  const active = activeKey === column
+  return (
+    <th
+      scope="col"
+      className={alignRight ? 'px-3 py-2 text-right' : 'px-3 py-2'}
+      aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        title={headerTitle}
+        onClick={() => onSort(column)}
+        className={`group inline-flex w-full min-h-[1.25rem] items-center gap-1 bg-transparent p-0 font-inherit text-[14px] uppercase tracking-wide text-inherit hover:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 rounded ${
+          alignRight ? 'justify-end' : 'justify-start'
+        }`}
+      >
+        <span>{label}</span>
+        {active && (
+          <span className="shrink-0 text-sky-400" aria-hidden="true">
+            {dir === 'asc' ? '↑' : '↓'}
+          </span>
+        )}
+      </button>
+    </th>
+  )
 }
 
 function ExpertChips({
@@ -169,6 +258,10 @@ function ExpertChips({
   )
 }
 
+function consensusDefaultSortDir(column: ConsensusSortKey): 'asc' | 'desc' {
+  return column === 'ticker' ? 'asc' : 'desc'
+}
+
 function ConsensusTable({
   rows,
   weightVotesByPerformance,
@@ -177,37 +270,94 @@ function ConsensusTable({
   weightVotesByPerformance: boolean
 }) {
   const netLabel = weightVotesByPerformance ? 'Wtd net' : 'Net'
+  /** `null` = preserve API / section order until the user picks a column. */
+  const [consensusSort, setConsensusSort] = useState<{
+    key: ConsensusSortKey
+    dir: 'asc' | 'desc'
+  } | null>(null)
+
+  const displayRows = useMemo(() => {
+    if (!consensusSort) return rows
+    return sortConsensusTickerRows(
+      rows,
+      consensusSort.key,
+      consensusSort.dir,
+      weightVotesByPerformance
+    )
+  }, [rows, consensusSort, weightVotesByPerformance])
+
+  const onConsensusSort = useCallback((column: ConsensusSortKey) => {
+    setConsensusSort((prev) => {
+      if (!prev || prev.key !== column) {
+        return { key: column, dir: consensusDefaultSortDir(column) }
+      }
+      return { key: column, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+    })
+  }, [])
+
+  const activeKey = consensusSort?.key ?? null
+  const dir = consensusSort?.dir ?? 'desc'
+
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800">
       {/* text-[14px]: explicit px in CSS so DevTools never shows ~12px from stale 0.875rem text-sm */}
       <table className="min-w-[40rem] w-full text-left text-[14px] text-slate-300">
         <thead className="bg-slate-900/90 text-slate-400 text-[14px] uppercase tracking-wide">
           <tr>
-            <th scope="col" className="px-3 py-2">
-              Ticker
-            </th>
-            <th scope="col" className="px-3 py-2">
-              Buy
-            </th>
-            <th scope="col" className="px-3 py-2">
-              Sell
-            </th>
-            <th scope="col" className="px-3 py-2">
-              {netLabel}
-            </th>
-            <th scope="col" className="px-3 py-2">
-              Dollar invested
-            </th>
-            <th scope="col" className="px-3 py-2">
-              Bulls (add / new)
-            </th>
-            <th scope="col" className="px-3 py-2">
-              Bears (trim / sold)
-            </th>
+            <ConsensusSortHeader
+              column="ticker"
+              label="Ticker"
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="buyVotes"
+              label="Buy"
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="sellVotes"
+              label="Sell"
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="net"
+              label={netLabel}
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="dollarNet"
+              label="Dollar invested"
+              title="Sort by net buy minus sell dollars (reported positions, same expert cohort as chips)"
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="bulls"
+              label="Bulls (add / new)"
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
+            <ConsensusSortHeader
+              column="bears"
+              label="Bears (trim / sold)"
+              activeKey={activeKey}
+              dir={dir}
+              onSort={onConsensusSort}
+            />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => {
+          {displayRows.map((r) => {
             const netDisplay = weightVotesByPerformance
               ? (r.weightedNet >= 0 ? '+' : '') + r.weightedNet.toFixed(1)
               : (r.net >= 0 ? '+' : '') + r.net
@@ -278,6 +428,11 @@ export default function StockcircleExperts() {
   const [matrixOpen, setMatrixOpen] = useState(false)
   /** Tab 1 = ticker consensus; tab 2 = full expert list with multi-year performance. */
   const [expertsMainTab, setExpertsMainTab] = useState<'consensus' | 'experts'>('consensus')
+  /** `key: null` = pipeline order, no header highlighted (matches original table). */
+  const [blendedSort, setBlendedSort] = useState<{ key: BlendedSortKey | null; dir: 'asc' | 'desc' }>({
+    key: null,
+    dir: 'asc',
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -550,6 +705,26 @@ export default function StockcircleExperts() {
     return [...guru, ...extra]
   }, [expertRows, data?.whalewisdomFilers])
 
+  const handleBlendedSort = useCallback((key: BlendedSortKey) => {
+    setBlendedSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: defaultBlendedSortDir(key) }
+    )
+  }, [])
+
+  const sortedBlendedLeaderboard = useMemo(
+    () =>
+      sortBlendedLeaderboardEntries(
+        blendedLeaderboard,
+        expertRows,
+        CONSENSUS_TOP_K,
+        blendedSort.key ?? 'pipeline',
+        blendedSort.dir
+      ),
+    [blendedLeaderboard, expertRows, blendedSort]
+  )
+
   function findWeight(slug: string, ticker: string): ExpertWeight | null {
     const list = weightsForTicker(ticker)
     return list.find((w) => w.investorSlug === slug) ?? null
@@ -780,34 +955,70 @@ export default function StockcircleExperts() {
                 <table className="min-w-[56rem] w-full text-left text-[14px] text-slate-300">
                   <thead className="bg-slate-900/90 text-slate-400 text-[14px] uppercase tracking-wide">
                     <tr>
-                      <th scope="col" className="px-3 py-2">
-                        #
-                      </th>
-                      <th scope="col" className="px-3 py-2">
-                        Name
-                      </th>
-                      <th scope="col" className="px-3 py-2">
-                        Source
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-right">
-                        1Y
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-right">
-                        3Y
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-right">
-                        5Y
-                      </th>
-                      <th scope="col" className="px-3 py-2 text-right">
-                        10Y
-                      </th>
-                      <th scope="col" className="px-3 py-2">
-                        Overlap vote
-                      </th>
+                      <BlendedSortHeader
+                        column="pipeline"
+                        label="#"
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="name"
+                        label="Name"
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="source"
+                        label="Source"
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="perf1y"
+                        label="1Y"
+                        alignRight
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="perf3y"
+                        label="3Y"
+                        alignRight
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="perf5y"
+                        label="5Y"
+                        alignRight
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="perf10y"
+                        label="10Y"
+                        alignRight
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
+                      <BlendedSortHeader
+                        column="overlap"
+                        label="Overlap vote"
+                        activeKey={blendedSort.key}
+                        dir={blendedSort.dir}
+                        onSort={handleBlendedSort}
+                      />
                     </tr>
                   </thead>
                   <tbody>
-                    {blendedLeaderboard.map((entry, i) => {
+                    {sortedBlendedLeaderboard.map((entry, i) => {
                       const rank = i + 1
                       if (entry.kind === 'whalewisdom') {
                         const label = entry.managerName || entry.displayName

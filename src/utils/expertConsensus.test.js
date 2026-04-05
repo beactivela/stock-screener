@@ -6,6 +6,7 @@ import {
   CONSENSUS_LARGE_BUY_USD,
   isConsensusLargeBuyChip,
   splitConsensusByNet,
+  sortConsensusTickerRows,
   sumConsensusBuyerPositionUsd,
   sumConsensusSellerPositionUsd,
   sumConsensusTotalPositionUsd,
@@ -261,4 +262,93 @@ test('isConsensusLargeBuyChip: buy row only, position ≥ $50M', () => {
   assert.equal(isConsensusLargeBuyChip('sell', CONSENSUS_LARGE_BUY_USD * 2), false)
   assert.equal(isConsensusLargeBuyChip('buy', null), false)
   assert.equal(isConsensusLargeBuyChip('buy', NaN), false)
+})
+
+const row = (ticker, overrides = {}) => ({
+  ticker,
+  buyVotes: 0,
+  sellVotes: 0,
+  net: 0,
+  weightedBuy: 0,
+  weightedSell: 0,
+  weightedNet: 0,
+  buyers: [],
+  sellers: [],
+  ...overrides,
+})
+
+test('sortConsensusTickerRows: ticker asc', () => {
+  const rows = [row('ZZZ'), row('AAA'), row('MMM')]
+  const out = sortConsensusTickerRows(rows, 'ticker', 'asc', false)
+  assert.deepEqual(
+    out.map((r) => r.ticker),
+    ['AAA', 'MMM', 'ZZZ']
+  )
+})
+
+test('sortConsensusTickerRows: buyVotes desc; tie-break ticker', () => {
+  const rows = [row('B', { buyVotes: 2 }), row('A', { buyVotes: 3 }), row('C', { buyVotes: 3 })]
+  const out = sortConsensusTickerRows(rows, 'buyVotes', 'desc', false)
+  assert.deepEqual(
+    out.map((r) => r.ticker),
+    ['A', 'C', 'B']
+  )
+})
+
+test('sortConsensusTickerRows: net uses weightedNet when weightVotesByPerformance', () => {
+  const rows = [
+    row('A', { net: 5, weightedNet: 1 }),
+    row('B', { net: 1, weightedNet: 9 }),
+  ]
+  const unweighted = sortConsensusTickerRows(rows, 'net', 'desc', false)
+  assert.deepEqual(
+    unweighted.map((r) => r.ticker),
+    ['A', 'B']
+  )
+  const weighted = sortConsensusTickerRows(rows, 'net', 'desc', true)
+  assert.deepEqual(
+    weighted.map((r) => r.ticker),
+    ['B', 'A']
+  )
+})
+
+test('sortConsensusTickerRows: dollarNet from buy/sell USD', () => {
+  const expert = (usd) => ({
+    investorSlug: 'x',
+    firmName: 'F',
+    displayName: 'D',
+    positionValueUsd: usd,
+    pctOfPortfolio: null,
+  })
+  const rows = [
+    row('LOW', { buyers: [expert(1e6)], sellers: [expert(5e6)] }),
+    row('HIGH', { buyers: [expert(10e6)], sellers: [expert(1e6)] }),
+  ]
+  const out = sortConsensusTickerRows(rows, 'dollarNet', 'desc', false)
+  assert.deepEqual(
+    out.map((r) => r.ticker),
+    ['HIGH', 'LOW']
+  )
+})
+
+test('sortConsensusTickerRows: bulls / bears = chip counts', () => {
+  const e = (slug) => ({
+    investorSlug: slug,
+    firmName: 'F',
+    displayName: 'D',
+    positionValueUsd: null,
+    pctOfPortfolio: null,
+  })
+  const rows = [
+    row('A', { buyers: [e('1'), e('2')], sellers: [e('3')] }),
+    row('B', { buyers: [e('4')], sellers: [e('5'), e('6'), e('7')] }),
+  ]
+  assert.deepEqual(
+    sortConsensusTickerRows(rows, 'bulls', 'desc', false).map((r) => r.ticker),
+    ['A', 'B']
+  )
+  assert.deepEqual(
+    sortConsensusTickerRows(rows, 'bears', 'desc', false).map((r) => r.ticker),
+    ['B', 'A']
+  )
 })
