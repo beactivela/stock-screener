@@ -1088,13 +1088,6 @@ export default function StockcircleExperts() {
                 <h2 id="blended-leaderboard-heading" className="text-lg font-semibold text-slate-100 mb-2">
                   All tracked experts &amp; filers
                 </h2>
-                <p className="text-xs text-slate-500 mb-2">
-                  Single blended list from your unified pipeline: guru portfolios (return % when the sync captured
-                  performance) plus configured WhaleWisdom filers. <strong>Source</strong> marks the track; open a row for
-                  the detail page. To add more guru portfolios, raise{' '}
-                  <code className="text-slate-400">STOCKCIRCLE_MAX_INVESTORS</code> and complete runs (match “portfolios
-                  in run” to “matched”). Multi-year return columns need the performance migration + sync.
-                </p>
                 <div className="overflow-x-auto rounded-lg border border-slate-800">
                   <table className="min-w-[56rem] w-full text-left text-[14px] text-slate-300">
                     <thead className="bg-slate-900/90 text-slate-400 text-[14px] uppercase tracking-wide">
@@ -1248,14 +1241,7 @@ export default function StockcircleExperts() {
                   . Recent filings: last {90} days. Set <code className="text-slate-400">QUIVER_SYNC=1</code> on
                   experts sync to refresh.
                 </p>
-              ) : (
-                <p className="text-xs text-slate-500 mb-2">
-                  Curated placeholder until Quiver sync fills the API — edit{' '}
-                  <code className="text-slate-400">src/data/congressTradesLeaderboard.ts</code> or run sync with{' '}
-                  <code className="text-slate-400">QUIVER_SYNC=1</code> and{' '}
-                  <code className="text-slate-400">congress_politician_identity</code> seeds.
-                </p>
-              )}
+              ) : null}
               <div className="overflow-x-auto rounded-lg border border-slate-800">
                 <table className="min-w-[56rem] w-full text-left text-[14px] text-slate-300">
                   <thead className="bg-slate-900/90 text-slate-400 text-[14px] uppercase tracking-wide">

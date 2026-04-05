@@ -156,19 +156,12 @@ export default function StockcircleExpertDetail() {
             </div>
           </header>
 
-          <div className="mb-8 grid gap-6 md:grid-cols-2">
+          <div className="mb-8">
             <section>
               <h2 className="mb-2 text-lg font-medium text-slate-200">About (StockCircle)</h2>
               <p className="text-sm leading-relaxed text-slate-400">
                 {data.aboutBlurb ||
                   'No description returned — open the portfolio link above for the live StockCircle page.'}
-              </p>
-            </section>
-            <section>
-              <h2 className="mb-2 text-lg font-medium text-slate-200">Performance page summary</h2>
-              <p className="text-sm leading-relaxed text-slate-400">
-                {data.performanceBlurb ||
-                  'No meta description for the performance tab — use “Performance & track record” to view charts on StockCircle.'}
               </p>
             </section>
           </div>
