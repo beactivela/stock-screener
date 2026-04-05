@@ -234,11 +234,7 @@ function ExpertChips({
               ? 'Large buy (≥$50M position) · % of portfolio (guru data)'
               : 'Position value (USD) · % of portfolio (guru data)'
           }
-          className={`inline-flex max-w-[22rem] min-w-0 flex-nowrap items-baseline gap-1.5 rounded border px-1.5 py-0.5 text-left text-[14px] leading-none ${
-            largeBuy
-              ? 'border-emerald-400/75 bg-emerald-950/55 text-emerald-50 ring-1 ring-emerald-400/40 hover:bg-emerald-950/75'
-              : `hover:bg-slate-800/80 ${border}`
-          }`}
+          className={`inline-flex max-w-[22rem] min-w-0 flex-nowrap items-baseline gap-1.5 rounded border px-1.5 py-0.5 text-left text-[14px] leading-none hover:bg-slate-800/80 ${border}`}
         >
           <span className="min-w-0 flex-1 truncate">{abbreviateExpertFirmDisplayName(e.firmName)}</span>
           <span
@@ -478,9 +474,10 @@ export default function StockcircleExperts() {
     }
   }, [refreshToken])
 
+  /** Refresh AI when summary data changes; do not require latestRun (avoids stuck idle if run metadata is missing). */
   const summaryFingerprint =
-    data?.ok && data.latestRun
-      ? `${data.latestRun.finished_at ?? ''}|${data.latestRun.id ?? ''}|${(data.popular ?? []).length}`
+    data?.ok && (data.popular ?? []).length > 0
+      ? `${data.latestRun?.finished_at ?? ''}|${data.latestRun?.id ?? ''}|${(data.popular ?? []).length}`
       : ''
 
   useEffect(() => {

@@ -99,6 +99,13 @@ export function registerExpertsInsightsRoutes(app) {
       }
 
       const text = await generateConsensusBuysInsights(digest);
+      if (String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
+        const words = text.trim().split(/\s+/).filter(Boolean).length;
+        console.log('[consensus-buys-ai]', {
+          words,
+          preview: text.trim().slice(0, 220).replace(/\s+/g, ' '),
+        });
+      }
       res.json({ ok: true, text });
     } catch (e) {
       res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });

@@ -8,6 +8,7 @@ import {
   resolveExpertsInsightsConfig,
   normalizeProvider,
   DEFAULT_EXPERTS_OPENROUTER_MODEL,
+  assistantTextFromChatMessage,
 } from './index.js';
 
 const INSIGHTS_ENV_KEYS = [
@@ -101,5 +102,37 @@ describe('normalizeProvider', () => {
     assert.equal(normalizeProvider('openai'), 'openai');
     assert.equal(normalizeProvider('OpenRouter'), 'openrouter');
     assert.throws(() => normalizeProvider('random-provider'));
+  });
+});
+
+describe('assistantTextFromChatMessage', () => {
+  it('handles string content', () => {
+    assert.equal(assistantTextFromChatMessage({ content: '  hello  ' }), 'hello');
+  });
+
+  it('joins array text parts (OpenAI-compatible)', () => {
+    assert.equal(
+      assistantTextFromChatMessage({
+        content: [
+          { type: 'text', text: 'a' },
+          { type: 'text', text: 'b' },
+        ],
+      }),
+      'ab'
+    );
+  });
+
+  it('falls back to reasoning when content empty', () => {
+    assert.equal(
+      assistantTextFromChatMessage({ content: '', reasoning: 'fallback' }),
+      'fallback'
+    );
+  });
+
+  it('skips reasoning when reasoningFallback is false', () => {
+    assert.equal(
+      assistantTextFromChatMessage({ content: '', reasoning: 'internal' }, { reasoningFallback: false }),
+      ''
+    );
   });
 });

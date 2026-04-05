@@ -94,6 +94,50 @@ function normalizeMessages(messages = []) {
     }));
 }
 
+/**
+ * OpenAI-compatible chat: `message.content` may be a string, null, or an array of text/tool parts.
+ * OpenRouter recommends HTTP-Referer + X-Title; without them some models return empty content.
+ *
+ * Some models put chain-of-thought in `reasoning` while leaving `content` empty — set
+ * `reasoningFallback: false` for user-facing copy so we do not surface internal reasoning.
+ *
+ * @param {Record<string, unknown> | null | undefined} message
+ * @param {{ reasoningFallback?: boolean }} [options]
+ * @returns {string}
+ */
+export function assistantTextFromChatMessage(message, options = {}) {
+  const { reasoningFallback = true } = options;
+  if (!message || typeof message !== 'object') return '';
+  const c = message.content;
+  if (typeof c === 'string') {
+    const t = c.trim();
+    if (t) return t;
+  } else if (Array.isArray(c)) {
+    const parts = [];
+    for (const part of c) {
+      if (typeof part === 'string') parts.push(part);
+      else if (part && typeof part === 'object') {
+        if ('text' in part && part.text != null) parts.push(String(part.text));
+        else if (part.type === 'text' && 'text' in part) parts.push(String(part.text ?? ''));
+      }
+    }
+    const joined = parts.join('').trim();
+    if (joined) return joined;
+  }
+  if (reasoningFallback) {
+    const reasoning = message.reasoning;
+    if (typeof reasoning === 'string' && reasoning.trim()) return reasoning.trim();
+  }
+  return '';
+}
+
+function openRouterDefaultHeaders() {
+  return {
+    'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://127.0.0.1:5173',
+    'X-Title': process.env.OPENROUTER_APP_TITLE || 'stock-screener',
+  };
+}
+
 export async function generateLlmReply({
   provider,
   model,
@@ -101,6 +145,8 @@ export async function generateLlmReply({
   messages = [],
   maxTokens = 800,
   temperature = 0.2,
+  /** When false, ignore `message.reasoning` (avoids showing model scratchpad on OpenAI-compatible APIs). */
+  reasoningFallback = true,
 }) {
   const normalizedProvider = normalizeProvider(provider);
   const cleanMessages = normalizeMessages(messages);
@@ -148,7 +194,9 @@ export async function generateLlmReply({
       temperature,
     });
 
-    const text = response.choices?.[0]?.message?.content?.trim() || 'No response.';
+    const text =
+      assistantTextFromChatMessage(response.choices?.[0]?.message, { reasoningFallback }) ||
+      'No response.';
     return text;
   }
 
@@ -160,12 +208,7 @@ export async function generateLlmReply({
     const client = new OpenAI({
       apiKey,
       baseURL: 'https://openrouter.ai/api/v1',
-      defaultHeaders: {
-        ...(process.env.OPENROUTER_HTTP_REFERER
-          ? { 'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER }
-          : {}),
-        ...(process.env.OPENROUTER_APP_TITLE ? { 'X-Title': process.env.OPENROUTER_APP_TITLE } : {}),
-      },
+      defaultHeaders: openRouterDefaultHeaders(),
     });
 
     const openaiMessages = [
@@ -180,7 +223,27 @@ export async function generateLlmReply({
       temperature,
     });
 
-    const text = response.choices?.[0]?.message?.content?.trim() || 'No response.';
+    const choice = response.choices?.[0];
+    const msg = choice?.message;
+    if (String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
+      const ct = msg?.content;
+      const contentDesc =
+        typeof ct === 'string'
+          ? `string(len=${ct.length})`
+          : Array.isArray(ct)
+            ? `array(len=${ct.length})`
+            : String(ct);
+      console.log('[openrouter]', {
+        model,
+        finish_reason: choice?.finish_reason,
+        content: contentDesc,
+        hasReasoning: typeof msg?.reasoning === 'string' && msg.reasoning.length > 0,
+        reasoningFallback,
+      });
+    }
+
+    const text =
+      assistantTextFromChatMessage(msg, { reasoningFallback }) || 'No response.';
     return text;
   }
 

@@ -9,28 +9,29 @@ import { generateLlmReply, DEFAULT_EXPERTS_OPENROUTER_MODEL } from '../llm/index
 export async function generateConsensusBuysInsights(digest) {
   const model = process.env.EXPERTS_INSIGHTS_MODEL || DEFAULT_EXPERTS_OPENROUTER_MODEL;
 
+  // Keep system minimal so the model does not parrot long rule lists. Details live in the user block + closing instruction.
   const system = [
-    'You write a compact narrative on where capital appears to be flowing among tracked "smart money" overlap, for a sophisticated retail user.',
-    'Data are StockCircle-derived: buy/sell votes among the top-K experts by 1Y performance; position USD is reported holding size, not trade delta or audited 13F.',
-    '',
-    'LENGTH (strict): The entire response must stay under 400 words. Count carefully. Prefer tight prose or short bullets; no filler. If there are many tickers, prioritize naming those in consensusMultiBuys, largeBuyPositions, and largeSellPositions; batch the rest by sector or comma-separated lists rather than skipping stocks entirely.',
-    '',
-    'STOCK NAMES: Cite tickers as SYMBOL (Company Name) when companyName exists in the JSON. Mention expert fund names where they add signal. Include USD from largeBuyPositions / largeSellPositions when those arrays are non-empty.',
-    '',
-    'STRUCTURE: 2–4 short blocks: (1) one-paragraph overview of buy vs sell tilt; (2) strongest themes / sectors with named tickers; (3) trims/sells or mixed names briefly; (4) one or two speculative "why" lines labeled as speculation.',
-    '',
-    'Never invent tickers, firms, or dollar amounts not present in the JSON.',
+    'You are a financial editor writing a short column for readers.',
+    'You will receive JSON: expert overlap votes and position sizes (StockCircle; not audited filings).',
+    'Your ONLY job is to output the finished column text — polished prose, ready to publish.',
+    'Do not output: meta-commentary, task restatement, numbered lists of rules, phrases like "The user wants", "Key constraints", "First I need to", "I will analyze", or a raw inventory of every ticker before the narrative.',
+    'Do not label sections "Requirement summary" or "Process step". Integrate tickers and fund names inside flowing paragraphs.',
+    'Max 400 words. Name important tickers as SYMBOL (Company) when companyName exists. Mention large USD lines from the JSON when present. Label speculation as speculation.',
   ].join('\n');
 
   const user = [
-    'Digest JSON (consensus rows, single-expert net buys, sells, mixed, large positions, meta.tickerCatalog):',
+    'Use this data only (do not invent symbols or dollars):',
     JSON.stringify(digest, null, 2),
-  ].join('\n\n');
+    '',
+    'Write the column now.',
+    'Start with your opening sentence of analysis immediately — no preamble.',
+    'Use 2–4 short paragraphs (or tight bullets only if needed for clarity). End with the analysis; do not append checklists or repeat these instructions.',
+  ].join('\n');
 
   const maxEnv = Number(process.env.EXPERTS_CONSENSUS_BUYS_MAX_TOKENS);
-  // ~400 English words ≈ 520–600 tokens; cap output so the model cannot ramble past the word budget.
+  // Room for prose after stopping instruction-dump behavior (was truncating the actual write-up at 650).
   const maxTokens =
-    Number.isFinite(maxEnv) && maxEnv > 0 ? Math.min(900, maxEnv) : 650;
+    Number.isFinite(maxEnv) && maxEnv > 0 ? Math.min(1200, maxEnv) : 900;
 
   const text = await generateLlmReply({
     provider: 'openrouter',
@@ -38,8 +39,15 @@ export async function generateConsensusBuysInsights(digest) {
     system,
     messages: [{ role: 'user', content: user }],
     maxTokens,
-    temperature: 0.25,
+    temperature: 0.35,
+    reasoningFallback: false,
   });
 
-  return text.trim();
+  const trimmed = text.trim();
+  if (!trimmed || trimmed === 'No response.') {
+    throw new Error(
+      'OpenRouter returned no assistant text in `content` (reasoning-only or empty). Try again, set EXPERTS_AI_DEBUG=1 for logs, or adjust EXPERTS_INSIGHTS_MODEL.'
+    );
+  }
+  return trimmed;
 }
