@@ -1,26 +1,44 @@
 /**
- * LLM adapter: minimal wrapper for Anthropic, OpenAI, and OpenRouter (OpenAI-compatible) chat.
+ * LLM adapter: minimal wrapper for Anthropic, OpenAI, OpenRouter, and Ollama (OpenAI-compatible) chat.
  * Keeps provider/model selection centralized for multi-agent orchestration.
  */
 
 /** Default model for POST /api/experts/ai-insights when using OpenRouter. */
 export const DEFAULT_EXPERTS_OPENROUTER_MODEL = 'moonshotai/kimi-k2.5';
 
+/** Default model for expert insights when using Ollama (cloud model name). */
+export const DEFAULT_EXPERTS_OLLAMA_MODEL = 'minimax-m2.7:cloud';
+
 export function normalizeProvider(provider) {
   const p = String(provider || '').trim().toLowerCase();
   if (!p || p === 'anthropic') return 'anthropic';
   if (p === 'openai') return 'openai';
   if (p === 'openrouter') return 'openrouter';
+  if (p === 'ollama') return 'ollama';
   throw new Error(`Unsupported LLM provider: ${provider}`);
+}
+
+/** OpenAI-compatible base URL: local default or Ollama Cloud when `OLLAMA_API_KEY` is set. */
+export function resolveOllamaOpenAiBaseUrl() {
+  const explicit = String(process.env.OLLAMA_BASE_URL || '').trim().replace(/\/$/, '');
+  if (explicit) return explicit;
+  if (process.env.OLLAMA_API_KEY) return 'https://ollama.com/v1';
+  return 'http://127.0.0.1:11434/v1';
 }
 
 /**
  * Provider + model for expert overlap AI snapshot.
- * Precedence: EXPERTS_INSIGHTS_PROVIDER (if set) → else OpenRouter when OPENROUTER_API_KEY exists → else AGENT_DIALOGUE / Anthropic / OpenAI.
+ * Precedence: EXPERTS_INSIGHTS_PROVIDER (if set) → else Ollama when OLLAMA_API_KEY exists → else OpenRouter → else AGENT_DIALOGUE / Anthropic / OpenAI.
  */
 export function resolveExpertsInsightsConfig() {
   const explicit = String(process.env.EXPERTS_INSIGHTS_PROVIDER || '').trim().toLowerCase();
 
+  if (explicit === 'ollama') {
+    return {
+      provider: 'ollama',
+      model: process.env.EXPERTS_INSIGHTS_MODEL || DEFAULT_EXPERTS_OLLAMA_MODEL,
+    };
+  }
   if (explicit === 'openrouter') {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) throw new Error('EXPERTS_INSIGHTS_PROVIDER=openrouter requires OPENROUTER_API_KEY.');
@@ -47,6 +65,12 @@ export function resolveExpertsInsightsConfig() {
     };
   }
 
+  if (process.env.OLLAMA_API_KEY) {
+    return {
+      provider: 'ollama',
+      model: process.env.EXPERTS_INSIGHTS_MODEL || DEFAULT_EXPERTS_OLLAMA_MODEL,
+    };
+  }
   if (process.env.OPENROUTER_API_KEY) {
     return {
       provider: 'openrouter',
@@ -197,6 +221,52 @@ export async function generateLlmReply({
     const text =
       assistantTextFromChatMessage(response.choices?.[0]?.message, { reasoningFallback }) ||
       'No response.';
+    return text;
+  }
+
+  if (normalizedProvider === 'ollama') {
+    const OpenAI = (await import('openai')).default;
+    const apiKey = process.env.OLLAMA_API_KEY || 'ollama';
+    const baseURL = resolveOllamaOpenAiBaseUrl();
+    const client = new OpenAI({
+      apiKey,
+      baseURL,
+    });
+
+    const openaiMessages = [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...cleanMessages,
+    ];
+
+    const response = await client.chat.completions.create({
+      model,
+      messages: openaiMessages,
+      max_tokens: maxTokens,
+      temperature,
+    });
+
+    const choice = response.choices?.[0];
+    const msg = choice?.message;
+    if (String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
+      const ct = msg?.content;
+      const contentDesc =
+        typeof ct === 'string'
+          ? `string(len=${ct.length})`
+          : Array.isArray(ct)
+            ? `array(len=${ct.length})`
+            : String(ct);
+      console.log('[ollama]', {
+        baseURL,
+        model,
+        finish_reason: choice?.finish_reason,
+        content: contentDesc,
+        hasReasoning: typeof msg?.reasoning === 'string' && msg.reasoning.length > 0,
+        reasoningFallback,
+      });
+    }
+
+    const text =
+      assistantTextFromChatMessage(msg, { reasoningFallback }) || 'No response.';
     return text;
   }
 

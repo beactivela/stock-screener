@@ -8,11 +8,15 @@ import {
   resolveExpertsInsightsConfig,
   normalizeProvider,
   DEFAULT_EXPERTS_OPENROUTER_MODEL,
+  DEFAULT_EXPERTS_OLLAMA_MODEL,
+  resolveOllamaOpenAiBaseUrl,
   assistantTextFromChatMessage,
 } from './index.js';
 
 const INSIGHTS_ENV_KEYS = [
   'EXPERTS_INSIGHTS_PROVIDER',
+  'OLLAMA_API_KEY',
+  'OLLAMA_BASE_URL',
   'OPENROUTER_API_KEY',
   'EXPERTS_INSIGHTS_MODEL',
   'ANTHROPIC_API_KEY',
@@ -57,7 +61,20 @@ describe('resolveDialogueConfig', () => {
 });
 
 describe('resolveExpertsInsightsConfig', () => {
-  it('prefers OpenRouter and Kimi K2.5 when OPENROUTER_API_KEY is set', () => {
+  it('prefers Ollama when OLLAMA_API_KEY is set (over OpenRouter)', () => {
+    const prev = stashInsightsEnv();
+    try {
+      process.env.OLLAMA_API_KEY = 'ok-test';
+      process.env.OPENROUTER_API_KEY = 'sk-or-test';
+      const cfg = resolveExpertsInsightsConfig();
+      assert.equal(cfg.provider, 'ollama');
+      assert.equal(cfg.model, DEFAULT_EXPERTS_OLLAMA_MODEL);
+    } finally {
+      restoreInsightsEnv(prev);
+    }
+  });
+
+  it('uses OpenRouter when only OPENROUTER_API_KEY is set', () => {
     const prev = stashInsightsEnv();
     try {
       process.env.OPENROUTER_API_KEY = 'sk-or-test';
@@ -94,6 +111,54 @@ describe('resolveExpertsInsightsConfig', () => {
       restoreInsightsEnv(prev);
     }
   });
+
+  it('forces Ollama when EXPERTS_INSIGHTS_PROVIDER=ollama', () => {
+    const prev = stashInsightsEnv();
+    try {
+      process.env.EXPERTS_INSIGHTS_PROVIDER = 'ollama';
+      process.env.OPENROUTER_API_KEY = 'sk-or-test';
+      const cfg = resolveExpertsInsightsConfig();
+      assert.equal(cfg.provider, 'ollama');
+      assert.equal(cfg.model, DEFAULT_EXPERTS_OLLAMA_MODEL);
+    } finally {
+      restoreInsightsEnv(prev);
+    }
+  });
+});
+
+describe('resolveOllamaOpenAiBaseUrl', () => {
+  it('uses OLLAMA_BASE_URL when set', () => {
+    const prev = stashInsightsEnv();
+    try {
+      process.env.OLLAMA_BASE_URL = 'https://example.com/v1';
+      delete process.env.OLLAMA_API_KEY;
+      assert.equal(resolveOllamaOpenAiBaseUrl(), 'https://example.com/v1');
+    } finally {
+      restoreInsightsEnv(prev);
+    }
+  });
+
+  it('defaults to ollama.com/v1 when OLLAMA_API_KEY is set and base URL unset', () => {
+    const prev = stashInsightsEnv();
+    try {
+      process.env.OLLAMA_API_KEY = 'key';
+      delete process.env.OLLAMA_BASE_URL;
+      assert.equal(resolveOllamaOpenAiBaseUrl(), 'https://ollama.com/v1');
+    } finally {
+      restoreInsightsEnv(prev);
+    }
+  });
+
+  it('defaults to localhost when no key and no base URL', () => {
+    const prev = stashInsightsEnv();
+    try {
+      delete process.env.OLLAMA_API_KEY;
+      delete process.env.OLLAMA_BASE_URL;
+      assert.equal(resolveOllamaOpenAiBaseUrl(), 'http://127.0.0.1:11434/v1');
+    } finally {
+      restoreInsightsEnv(prev);
+    }
+  });
 });
 
 describe('normalizeProvider', () => {
@@ -101,6 +166,7 @@ describe('normalizeProvider', () => {
     assert.equal(normalizeProvider('Anthropic'), 'anthropic');
     assert.equal(normalizeProvider('openai'), 'openai');
     assert.equal(normalizeProvider('OpenRouter'), 'openrouter');
+    assert.equal(normalizeProvider('ollama'), 'ollama');
     assert.throws(() => normalizeProvider('random-provider'));
   });
 });

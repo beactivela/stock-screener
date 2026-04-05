@@ -5,6 +5,11 @@ import { estimatePositionDollarDeltas } from './estimatePositionDollarDeltas.js'
 
 const DEFAULT_TOP_N = 30;
 
+function numEnv(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
 /**
  * @param {{
  *   popular: Array<{ ticker: string }>,
@@ -13,7 +18,12 @@ const DEFAULT_TOP_N = 30;
  *   topN?: number,
  * }} p
  */
-export function buildExpertMovesDigest({ popular, expertWeightsByTicker, congressRecent, topN = DEFAULT_TOP_N }) {
+export function buildExpertMovesDigest({
+  popular,
+  expertWeightsByTicker,
+  congressRecent,
+  topN = numEnv('EXPERTS_MOVES_DIGEST_TOP_N', DEFAULT_TOP_N),
+}) {
   const moves = [];
 
   for (const row of popular || []) {

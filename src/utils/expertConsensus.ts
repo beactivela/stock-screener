@@ -643,6 +643,20 @@ export function sumConsensusTotalPositionUsd(row: ConsensusTickerRow): number {
   return sumConsensusBuyerPositionUsd(row) + sumConsensusSellerPositionUsd(row)
 }
 
+/** Experts overlap UI: optional screener — total reported USD (buy + sell sums) must be ≥ this. */
+export const CONSENSUS_MIN_TOTAL_USD_SCREENER = 20_000_000
+
+/**
+ * Keep rows whose summed buy- and sell-side position USD meets the floor (default $20M).
+ * Matches the “Dollar invested” column (both sides added).
+ */
+export function filterConsensusRowsByMinTotalUsd(
+  rows: ConsensusTickerRow[],
+  minUsd: number = CONSENSUS_MIN_TOTAL_USD_SCREENER
+): ConsensusTickerRow[] {
+  return rows.filter((r) => sumConsensusTotalPositionUsd(r) >= minUsd)
+}
+
 /**
  * Split into buy-leaning, sell-leaning, and neutral tickers; sort as in the plan.
  */

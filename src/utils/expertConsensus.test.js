@@ -11,6 +11,8 @@ import {
   sumConsensusSellerPositionUsd,
   sumConsensusTotalPositionUsd,
   netConsensusPositionUsd,
+  filterConsensusRowsByMinTotalUsd,
+  CONSENSUS_MIN_TOTAL_USD_SCREENER,
   blendedPerformanceMetric,
   computeConvictionComposite,
   syncFreshnessLabel,
@@ -208,6 +210,60 @@ test('sumConsensusTotalPositionUsd sums buyers and sellers; ignores null/NaN', (
     sellers: [{ positionValueUsd: 12e6 }, { positionValueUsd: NaN }],
   })
   assert.equal(sumConsensusTotalPositionUsd(rowObj), 62e6)
+})
+
+test('filterConsensusRowsByMinTotalUsd keeps rows with buy+sell sum ≥ default ($20M)', () => {
+  assert.equal(CONSENSUS_MIN_TOTAL_USD_SCREENER, 20_000_000)
+  const small = row('S', {
+    buyVotes: 1,
+    sellVotes: 0,
+    net: 1,
+    weightedBuy: 1,
+    weightedSell: 0,
+    weightedNet: 1,
+    buyers: [{ positionValueUsd: 10e6 }],
+    sellers: [],
+  })
+  const edge = row('E', {
+    buyVotes: 1,
+    sellVotes: 1,
+    net: 0,
+    weightedBuy: 1,
+    weightedSell: 1,
+    weightedNet: 0,
+    buyers: [{ positionValueUsd: 15e6 }],
+    sellers: [{ positionValueUsd: 5e6 }],
+  })
+  const large = row('L', {
+    buyVotes: 1,
+    sellVotes: 0,
+    net: 1,
+    weightedBuy: 1,
+    weightedSell: 0,
+    weightedNet: 1,
+    buyers: [{ positionValueUsd: 25e6 }],
+    sellers: [],
+  })
+  const out = filterConsensusRowsByMinTotalUsd([small, edge, large])
+  assert.deepEqual(
+    out.map((r) => r.ticker),
+    ['E', 'L']
+  )
+})
+
+test('filterConsensusRowsByMinTotalUsd respects custom minUsd', () => {
+  const r = row('X', {
+    buyVotes: 1,
+    sellVotes: 0,
+    net: 1,
+    weightedBuy: 1,
+    weightedSell: 0,
+    weightedNet: 1,
+    buyers: [{ positionValueUsd: 15e6 }],
+    sellers: [],
+  })
+  assert.deepEqual(filterConsensusRowsByMinTotalUsd([r], 10e6).map((x) => x.ticker), ['X'])
+  assert.deepEqual(filterConsensusRowsByMinTotalUsd([r], 20e6), [])
 })
 
 test('netConsensusPositionUsd is buy minus sell', () => {

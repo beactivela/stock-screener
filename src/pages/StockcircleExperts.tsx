@@ -22,6 +22,7 @@ import {
   convictionScoreBucket,
   syncFreshnessLabel,
   DEFAULT_CONSENSUS_TOP_K_CAP,
+  filterConsensusRowsByMinTotalUsd,
 } from '../utils/expertConsensus'
 import {
   defaultBlendedSortDir,
@@ -496,15 +497,7 @@ export default function StockcircleExperts() {
   const [refreshToken, setRefreshToken] = useState(0)
   const [postInFlight, setPostInFlight] = useState(false)
   const [syncBanner, setSyncBanner] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  /** LLM summary of largest estimated $ moves (loads once per summary refresh). */
-  const [aiInsight, setAiInsight] = useState<
-    | { status: 'idle' }
-    | { status: 'loading' }
-    | { status: 'ready'; text: string; skipped?: boolean }
-    | { status: 'no_llm' }
-    | { status: 'error'; message: string }
-  >({ status: 'idle' })
-  /** OpenRouter Kimi K2.5: sector / money-flow narrative from consensus digest (replaces static coverage line). */
+  /** LLM money-flow narrative from consensus digest (Ollama or OpenRouter per server env). */
   const [moneyFlowNarrative, setMoneyFlowNarrative] = useState<
     | { status: 'idle' }
     | { status: 'loading' }
@@ -516,6 +509,10 @@ export default function StockcircleExperts() {
   const [matrixOpen, setMatrixOpen] = useState(false)
   /** Tab 1 = ticker consensus; tab 2 = full expert list with multi-year performance. */
   const [expertsMainTab, setExpertsMainTab] = useState<'consensus' | 'experts'>('consensus')
+  /** Which consensus bucket is visible (strong multi-buy, single-buy, sells, mixed). */
+  const [consensusSubTab, setConsensusSubTab] = useState<
+    'strongBuys' | 'singleBuys' | 'sells' | 'mixed'
+  >('strongBuys')
   /** `key: null` = pipeline order, no header highlighted (matches original table). */
   const [blendedSort, setBlendedSort] = useState<{ key: BlendedSortKey | null; dir: 'asc' | 'desc' }>({
     key: null,
@@ -571,52 +568,6 @@ export default function StockcircleExperts() {
     data?.ok && (data.popular ?? []).length > 0
       ? `${data.latestRun?.finished_at ?? ''}|${data.latestRun?.id ?? ''}|${(data.popular ?? []).length}`
       : ''
-
-  useEffect(() => {
-    if (!data?.ok || !summaryFingerprint || (data.popular ?? []).length === 0) {
-      setAiInsight({ status: 'idle' })
-      return
-    }
-    let cancelled = false
-    setAiInsight({ status: 'loading' })
-    ;(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/experts/ai-insights`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        })
-        const json = (await res.json().catch(() => ({}))) as {
-          ok?: boolean
-          disabled?: boolean
-          error?: string
-          text?: string
-          skipped?: boolean
-        }
-        if (cancelled) return
-        if (res.status === 503 && json.disabled) {
-          setAiInsight({ status: 'no_llm' })
-          return
-        }
-        if (!res.ok) {
-          setAiInsight({ status: 'error', message: json.error || res.statusText })
-          return
-        }
-        if (json.ok && typeof json.text === 'string') {
-          setAiInsight({ status: 'ready', text: json.text, skipped: json.skipped })
-        } else {
-          setAiInsight({ status: 'error', message: json.error || 'Unexpected response' })
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setAiInsight({ status: 'error', message: e instanceof Error ? e.message : String(e) })
-        }
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [summaryFingerprint, refreshToken, data?.ok])
 
   useEffect(() => {
     if (!data?.ok || !summaryFingerprint || (data.popular ?? []).length === 0) {
@@ -766,15 +717,46 @@ export default function StockcircleExperts() {
     [popular, weights, data?.crossSourceTickers]
   )
 
-  const { buyLeaning, sellLeaning, mixed } = useMemo(
+  const { buyLeaning, sellLeaning: sellLeaningSplit, mixed: mixedSplit } = useMemo(
     () => splitConsensusByNet(consensusRows),
     [consensusRows]
   )
 
-  /** True multi-expert overlap (what most people mean by “consensus”). */
-  const buyMultiExpert = useMemo(() => buyLeaning.filter((r) => r.buyVotes >= 2), [buyLeaning])
+  /** True multi-expert overlap (what most people mean by “consensus”). Rows ≥ $20M buy+sell reported USD. */
+  const buyMultiExpert = useMemo(
+    () => filterConsensusRowsByMinTotalUsd(buyLeaning.filter((r) => r.buyVotes >= 2)),
+    [buyLeaning]
+  )
   /** Net buy but only one of the selected experts is adding — informative, noisy if listed alone. */
-  const buySingleExpert = useMemo(() => buyLeaning.filter((r) => r.buyVotes === 1), [buyLeaning])
+  const buySingleExpert = useMemo(
+    () => filterConsensusRowsByMinTotalUsd(buyLeaning.filter((r) => r.buyVotes === 1)),
+    [buyLeaning]
+  )
+
+  const sellLeaning = useMemo(
+    () => filterConsensusRowsByMinTotalUsd(sellLeaningSplit),
+    [sellLeaningSplit]
+  )
+
+  const mixed = useMemo(() => filterConsensusRowsByMinTotalUsd(mixedSplit), [mixedSplit])
+
+  /** Rows for the nested consensus sub-tab (each group is mutually exclusive). */
+  const consensusSubTabRows = useMemo(() => {
+    switch (consensusSubTab) {
+      case 'strongBuys':
+        return buyMultiExpert
+      case 'singleBuys':
+        return buySingleExpert
+      case 'sells':
+        return sellLeaning
+      case 'mixed':
+        return mixed
+      default: {
+        const _x: never = consensusSubTab
+        return _x
+      }
+    }
+  }, [consensusSubTab, buyMultiExpert, buySingleExpert, sellLeaning, mixed])
 
   const expertsInDataset = expertRows.length
   const effectiveTopK = Math.min(CONSENSUS_TOP_K_CAP, Math.max(1, expertsInDataset))
@@ -990,8 +972,8 @@ export default function StockcircleExperts() {
                   )}
                   {moneyFlowNarrative.status === 'no_llm' && (
                     <p className="text-xs text-slate-500">
-                      Set <code className="text-slate-400">OPENROUTER_API_KEY</code> for this narrative (same default
-                      model as server: Kimi K2.5).
+                      Set <code className="text-slate-400">OLLAMA_API_KEY</code> or{' '}
+                      <code className="text-slate-400">OPENROUTER_API_KEY</code> (see server defaults for model).
                     </p>
                   )}
                   {moneyFlowNarrative.status === 'error' && (
@@ -1012,53 +994,150 @@ export default function StockcircleExperts() {
                   )}
                 </div>
 
-            {buyMultiExpert.length > 0 && (
-              <section className="mb-6" aria-labelledby="consensus-buys-strong-heading">
-                <h2 id="consensus-buys-strong-heading" className="text-lg font-semibold text-emerald-200/95 mb-2">
-                  Strong consensus buys (2+ experts)
+            {consensusRows.length > 0 && (
+              <section className="mb-6" aria-labelledby="consensus-groups-heading">
+                <h2 id="consensus-groups-heading" className="sr-only">
+                  Consensus by group
                 </h2>
-                <p className="text-xs text-slate-500 mb-2">
-                  At least two of the up-to-{effectiveTopK} ranked experts show an add or new position; sells/trims on
-                  the same ticker count against that.
-                </p>
-                <ConsensusTable rows={buyMultiExpert} weightVotesByPerformance={WEIGHT_VOTES_BY_PERFORMANCE} />
-              </section>
-            )}
-
-            {buySingleExpert.length > 0 && (
-              <section className="mb-6" aria-labelledby="consensus-buys-solo-heading">
-                <h2
-                  id="consensus-buys-solo-heading"
-                  className="text-base font-semibold text-emerald-300/85 mb-2"
+                <div
+                  role="tablist"
+                  aria-label="Consensus ticker groups"
+                  className="flex flex-wrap gap-1 border-b border-slate-800/90 mb-3"
                 >
-                  Other net buys (single expert among top ranks)
-                </h2>
-                <p className="text-xs text-slate-500 mb-2">
-                  Net positive among ranked experts, but only one expert has an add/increase on this symbol — useful for
-                  ideas, not multi-manager overlap.
-                </p>
-                <ConsensusTable rows={buySingleExpert} weightVotesByPerformance={WEIGHT_VOTES_BY_PERFORMANCE} />
-              </section>
-            )}
+                  <button
+                    type="button"
+                    role="tab"
+                    id="consensus-subtab-strongBuys"
+                    aria-selected={consensusSubTab === 'strongBuys'}
+                    aria-controls="consensus-subtab-panel"
+                    tabIndex={consensusSubTab === 'strongBuys' ? 0 : -1}
+                    onClick={() => setConsensusSubTab('strongBuys')}
+                    className={`rounded-t-md px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 ${
+                      consensusSubTab === 'strongBuys'
+                        ? 'border border-b-0 border-slate-700 bg-slate-900/90 text-emerald-200/95'
+                        : 'border border-transparent text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    Strong buys (2+){' '}
+                    <span className="tabular-nums text-slate-500">({buyMultiExpert.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="consensus-subtab-singleBuys"
+                    aria-selected={consensusSubTab === 'singleBuys'}
+                    aria-controls="consensus-subtab-panel"
+                    tabIndex={consensusSubTab === 'singleBuys' ? 0 : -1}
+                    onClick={() => setConsensusSubTab('singleBuys')}
+                    className={`rounded-t-md px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 ${
+                      consensusSubTab === 'singleBuys'
+                        ? 'border border-b-0 border-slate-700 bg-slate-900/90 text-emerald-300/85'
+                        : 'border border-transparent text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    Single-expert buys{' '}
+                    <span className="tabular-nums text-slate-500">({buySingleExpert.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="consensus-subtab-sells"
+                    aria-selected={consensusSubTab === 'sells'}
+                    aria-controls="consensus-subtab-panel"
+                    tabIndex={consensusSubTab === 'sells' ? 0 : -1}
+                    onClick={() => setConsensusSubTab('sells')}
+                    className={`rounded-t-md px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 ${
+                      consensusSubTab === 'sells'
+                        ? 'border border-b-0 border-slate-700 bg-slate-900/90 text-rose-200/95'
+                        : 'border border-transparent text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    Sells / trims{' '}
+                    <span className="tabular-nums text-slate-500">({sellLeaning.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="consensus-subtab-mixed"
+                    aria-selected={consensusSubTab === 'mixed'}
+                    aria-controls="consensus-subtab-panel"
+                    tabIndex={consensusSubTab === 'mixed' ? 0 : -1}
+                    onClick={() => setConsensusSubTab('mixed')}
+                    className={`rounded-t-md px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/80 ${
+                      consensusSubTab === 'mixed'
+                        ? 'border border-b-0 border-slate-700 bg-slate-900/90 text-slate-200'
+                        : 'border border-transparent text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    Split / tied{' '}
+                    <span className="tabular-nums text-slate-500">({mixed.length})</span>
+                  </button>
+                </div>
 
-            {sellLeaning.length > 0 && (
-              <section className="mb-6" aria-labelledby="consensus-sells-heading">
-                <h2 id="consensus-sells-heading" className="text-lg font-semibold text-rose-200/95 mb-2">
-                  Consensus sells / trims (net lean sell)
-                </h2>
-                <ConsensusTable rows={sellLeaning} weightVotesByPerformance={WEIGHT_VOTES_BY_PERFORMANCE} />
-              </section>
-            )}
+                <div
+                  role="tabpanel"
+                  id="consensus-subtab-panel"
+                  aria-labelledby={`consensus-subtab-${consensusSubTab}`}
+                  className="min-h-[12rem]"
+                >
+                  {consensusSubTab === 'strongBuys' && (
+                    <>
+                      <h3 className="text-lg font-semibold text-emerald-200/95 mb-2">
+                        Strong consensus buys (2+ experts)
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        At least two of the up-to-{effectiveTopK} ranked experts show an add or new position; sells/trims
+                        on the same ticker count against that. Table lists names with ≥ $20M total reported position
+                        (buy + sell).
+                      </p>
+                    </>
+                  )}
+                  {consensusSubTab === 'singleBuys' && (
+                    <>
+                      <h3 className="text-base font-semibold text-emerald-300/85 mb-2">
+                        Other net buys (single expert among top ranks)
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        Net positive among ranked experts, but only one expert has an add/increase on this symbol —
+                        useful for ideas, not multi-manager overlap. Same $20M position filter as other groups.
+                      </p>
+                    </>
+                  )}
+                  {consensusSubTab === 'sells' && (
+                    <>
+                      <h3 className="text-lg font-semibold text-rose-200/95 mb-2">
+                        Consensus sells / trims (net lean sell)
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        More sell than buy votes from the panel on this ticker. ≥ $20M total reported position (buy +
+                        sell).
+                      </p>
+                    </>
+                  )}
+                  {consensusSubTab === 'mixed' && (
+                    <>
+                      <h3 className="text-base font-semibold text-slate-300 mb-2">
+                        Split / tied (net 0 among selected experts)
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        Same number of buy and sell votes from the up-to-{effectiveTopK} ranked experts on this ticker.
+                        ≥ $20M total reported position (buy + sell).
+                      </p>
+                    </>
+                  )}
 
-            {mixed.length > 0 && (
-              <section className="mb-6" aria-labelledby="mixed-heading">
-                <h2 id="mixed-heading" className="text-base font-semibold text-slate-300 mb-2">
-                  Split / tied (net 0 among selected experts)
-                </h2>
-                <p className="text-xs text-slate-500 mb-2">
-                  Same number of buy and sell votes from the up-to-{effectiveTopK} ranked experts on this ticker.
-                </p>
-                <ConsensusTable rows={mixed} weightVotesByPerformance={WEIGHT_VOTES_BY_PERFORMANCE} />
+                  {consensusSubTabRows.length > 0 ? (
+                    <ConsensusTable
+                      key={consensusSubTab}
+                      rows={consensusSubTabRows}
+                      weightVotesByPerformance={WEIGHT_VOTES_BY_PERFORMANCE}
+                    />
+                  ) : (
+                    <p className="text-sm text-slate-500 py-4" role="status">
+                      No tickers in this group for the current sync (or none meet the minimum position size).
+                    </p>
+                  )}
+                </div>
               </section>
             )}
 
@@ -1321,41 +1400,6 @@ export default function StockcircleExperts() {
             </section>
           </>
           </div>
-        </div>
-      )}
-
-      {popular.length > 0 && aiInsight.status !== 'idle' && (
-        <div
-          className="mb-6 rounded-lg border border-violet-500/25 bg-violet-950/20 px-4 py-3"
-          aria-live="polite"
-        >
-          <h2 className="text-sm font-semibold text-violet-200/95 mb-2">AI snapshot — major moves</h2>
-          {aiInsight.status === 'loading' && (
-            <p className="text-xs text-slate-500">Analyzing estimated adds, trims, and recent Congress lines…</p>
-          )}
-          {aiInsight.status === 'no_llm' && (
-            <p className="text-xs text-slate-500">
-              Add <code className="text-slate-400">OPENROUTER_API_KEY</code> (default model Kimi K2.5) or{' '}
-              <code className="text-slate-400">ANTHROPIC_API_KEY</code> /{' '}
-              <code className="text-slate-400">OPENAI_API_KEY</code> for automatic summaries.
-            </p>
-          )}
-          {aiInsight.status === 'error' && (
-            <p className="text-xs text-amber-400/95" role="alert">
-              {aiInsight.message}
-            </p>
-          )}
-          {aiInsight.status === 'ready' && (
-            <div className="text-sm text-slate-200/95 leading-relaxed space-y-2">
-              {aiInsight.skipped && (
-                <p className="text-xs text-slate-500">Light snapshot — limited change data in this run.</p>
-              )}
-              <p className="whitespace-pre-wrap">{aiInsight.text}</p>
-              <p className="text-xs text-slate-500">
-                Estimates match the table math (position × action %) — not audited filings.
-              </p>
-            </div>
-          )}
         </div>
       )}
 

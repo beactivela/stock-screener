@@ -1,6 +1,6 @@
 /**
  * POST /api/experts/ai-insights — LLM summary of largest estimated expert moves (overlap matrix + optional Congress lines).
- * POST /api/experts/consensus-buys-ai — sector / thesis narrative from consensus table (OpenRouter + Kimi K2.5 by default).
+ * POST /api/experts/consensus-buys-ai — sector / thesis narrative from consensus table (Ollama or OpenRouter / other via resolveExpertsInsightsConfig).
  */
 import { buildExpertsSummaryPayload } from '../experts/buildExpertsSummaryPayload.js';
 import { buildExpertMovesDigest } from '../experts/buildExpertMovesDigest.js';
@@ -12,6 +12,7 @@ export function registerExpertsInsightsRoutes(app) {
   app.post('/api/experts/ai-insights', async (req, res) => {
     try {
       if (
+        !process.env.OLLAMA_API_KEY &&
         !process.env.OPENROUTER_API_KEY &&
         !process.env.ANTHROPIC_API_KEY &&
         !process.env.OPENAI_API_KEY
@@ -20,7 +21,7 @@ export function registerExpertsInsightsRoutes(app) {
           ok: false,
           disabled: true,
           error:
-            'Set OPENROUTER_API_KEY (recommended: Kimi K2.5), or ANTHROPIC_API_KEY / OPENAI_API_KEY for expert AI insights.',
+            'Set OLLAMA_API_KEY (Ollama Cloud/local) or OPENROUTER_API_KEY, or ANTHROPIC_API_KEY / OPENAI_API_KEY for expert AI insights.',
         });
       }
 
@@ -57,12 +58,17 @@ export function registerExpertsInsightsRoutes(app) {
 
   app.post('/api/experts/consensus-buys-ai', async (_req, res) => {
     try {
-      if (!process.env.OPENROUTER_API_KEY) {
+      if (
+        !process.env.OLLAMA_API_KEY &&
+        !process.env.OPENROUTER_API_KEY &&
+        !process.env.ANTHROPIC_API_KEY &&
+        !process.env.OPENAI_API_KEY
+      ) {
         return res.status(503).json({
           ok: false,
           disabled: true,
           error:
-            'Set OPENROUTER_API_KEY for consensus sector analysis (default model: moonshotai/kimi-k2.5 via EXPERTS_INSIGHTS_MODEL).',
+            'Set OLLAMA_API_KEY (default model minimax-m2.7:cloud), OPENROUTER_API_KEY, or ANTHROPIC_API_KEY / OPENAI_API_KEY for consensus analysis (see EXPERTS_INSIGHTS_PROVIDER / EXPERTS_INSIGHTS_MODEL).',
         });
       }
 
