@@ -589,7 +589,7 @@ function MarketIndexChart({
             <span className="text-xs text-slate-500">{latestDate}</span>
           )}
           {!loading && !error && (
-            <div className={`inline-flex px-2 py-1 rounded border text-[11px] font-medium ${getRegimeTone(regime)}`}>
+            <div className={`inline-flex px-2 py-1 rounded border text-xs font-medium ${getRegimeTone(regime)}`}>
               {regime}
             </div>
           )}
@@ -618,7 +618,7 @@ function MarketIndexChart({
           <div ref={containerRef} className="absolute inset-0" />
           {legend && (
             <div className="absolute left-3 top-3 z-10 rounded-md border border-slate-700/60 bg-slate-950/80 px-3 py-2 text-xs text-slate-200 backdrop-blur">
-              <div className="text-[11px] text-slate-400">
+              <div className="text-xs text-slate-400">
                 {new Date(legend.time * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
               </div>
               <div className="mt-1 flex gap-3">
@@ -652,7 +652,7 @@ function MarketIndexChart({
               ref={tooltipRef}
               className="absolute z-20 w-[220px] rounded-md border border-slate-700/60 bg-slate-950/90 px-3 py-2 text-xs text-slate-100 shadow-lg backdrop-blur"
             >
-              <div className="text-[11px] text-slate-400">
+              <div className="text-xs text-slate-400">
                 {new Date(legend.time * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
               </div>
               <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">

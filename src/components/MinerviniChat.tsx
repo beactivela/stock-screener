@@ -205,7 +205,7 @@ export default function MinerviniChat() {
                   key={tab}
                   type="button"
                   onClick={() => setActiveTab(t)}
-                  className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                  className={`text-xs px-2 py-1 rounded-md border transition-colors ${
                     active
                       ? 'bg-slate-700 text-slate-100 border-slate-500'
                       : 'bg-slate-800/40 text-slate-400 border-slate-700 hover:text-slate-200'
@@ -326,7 +326,7 @@ export default function MinerviniChat() {
                             <div className="text-xs text-slate-200 font-medium">
                               {msg.agentName}
                             </div>
-                            <div className="text-[10px] text-slate-500">
+                            <div className="text-xs text-slate-500">
                               {msg.title}
                             </div>
                           </div>
@@ -369,7 +369,7 @@ export default function MinerviniChat() {
                 </svg>
               </button>
             </div>
-            <p className="mt-1.5 text-center text-[10px] text-slate-600">
+            <p className="mt-1.5 text-center text-xs text-slate-600">
               Enter to send · Shift+Enter for newline
             </p>
           </div>

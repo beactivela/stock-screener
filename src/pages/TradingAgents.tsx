@@ -226,7 +226,7 @@ export default function TradingAgents() {
       <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 space-y-4">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <label className="block space-y-1">
-            <span className="text-[11px] uppercase tracking-wide text-slate-500">Ticker</span>
+            <span className="text-xs uppercase tracking-wide text-slate-500">Ticker</span>
             <input
               className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100"
               value={ticker}
@@ -236,7 +236,7 @@ export default function TradingAgents() {
             />
           </label>
           <label className="block space-y-1">
-            <span className="text-[11px] uppercase tracking-wide text-slate-500">As of</span>
+            <span className="text-xs uppercase tracking-wide text-slate-500">As of</span>
             <input
               type="date"
               className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100"
@@ -246,7 +246,7 @@ export default function TradingAgents() {
             />
           </label>
           <label className="block space-y-1">
-            <span className="text-[11px] uppercase tracking-wide text-slate-500">Provider</span>
+            <span className="text-xs uppercase tracking-wide text-slate-500">Provider</span>
             <select
               className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100"
               value={provider}
@@ -261,7 +261,7 @@ export default function TradingAgents() {
             </select>
           </label>
           <label className="block space-y-1">
-            <span className="text-[11px] uppercase tracking-wide text-slate-500">Analyst profile</span>
+            <span className="text-xs uppercase tracking-wide text-slate-500">Analyst profile</span>
             <select
               className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100"
               value={profile}
@@ -323,7 +323,7 @@ export default function TradingAgents() {
           <div className="overflow-x-auto rounded-lg border border-slate-700/80">
             <table className="w-full text-sm text-left">
               <thead>
-                <tr className="border-b border-slate-700 bg-slate-900/50 text-[11px] uppercase tracking-wide text-slate-500">
+                <tr className="border-b border-slate-700 bg-slate-900/50 text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-3 py-2 font-medium">Ticker</th>
                   <th className="px-3 py-2 font-medium">Latest decision</th>
                   <th className="px-3 py-2 font-medium hidden sm:table-cell">As of</th>
@@ -411,7 +411,7 @@ export default function TradingAgents() {
                 <div
                   className={`flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 ${ratingToneClass}`}
                 >
-                  <span className="text-[11px] uppercase tracking-wide text-slate-400/90">Rating</span>
+                  <span className="text-xs uppercase tracking-wide text-slate-400/90">Rating</span>
                   <span className="text-2xl font-semibold tracking-tight">
                     {decisionView.rating ?? '—'}
                   </span>
@@ -448,12 +448,12 @@ export default function TradingAgents() {
                   </section>
                 ))}
                 <details className="group border border-slate-700/60 rounded-lg bg-slate-900/50">
-                  <summary className="cursor-pointer list-none px-3 py-2 text-[11px] text-slate-500 hover:text-slate-400 [&::-webkit-details-marker]:hidden flex items-center gap-2">
+                  <summary className="cursor-pointer list-none px-3 py-2 text-xs text-slate-500 hover:text-slate-400 [&::-webkit-details-marker]:hidden flex items-center gap-2">
                     <span className="text-slate-600">▸</span>
                     <span className="group-open:hidden">Show raw JSON</span>
                     <span className="hidden group-open:inline">Hide raw JSON</span>
                   </summary>
-                  <pre className="px-3 pb-3 text-[11px] text-slate-500 whitespace-pre-wrap font-mono overflow-x-auto border-t border-slate-700/50 pt-2">
+                  <pre className="px-3 pb-3 text-xs text-slate-500 whitespace-pre-wrap font-mono overflow-x-auto border-t border-slate-700/50 pt-2">
                     {decisionJson}
                   </pre>
                 </details>

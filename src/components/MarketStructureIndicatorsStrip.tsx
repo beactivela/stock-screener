@@ -168,7 +168,7 @@ export default function MarketStructureIndicatorsStrip() {
                 {/* Title + Protect/Neutral/Grow on one row so each chart cell reads left→right like a single headline. */}
                 <div className="flex flex-row items-center justify-between gap-2 min-w-0">
                   <div className="min-w-0 flex-1 flex items-center gap-1">
-                    <div className="text-[10px] font-semibold text-slate-200 uppercase tracking-wide leading-tight truncate">
+                    <div className="text-xs font-semibold text-slate-200 uppercase tracking-wide leading-tight truncate">
                       {row.title}
                     </div>
                     {row.weakeningVsWeek && (
@@ -189,19 +189,19 @@ export default function MarketStructureIndicatorsStrip() {
                     aria-label={`${row.title}: ${row.stance}`}
                   >
                     <div className="flex flex-col items-center gap-0.5 min-w-0">
-                      <span className="text-[7px] font-semibold uppercase tracking-wide text-red-400/90 leading-none text-center w-full truncate">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-red-400/90 leading-none text-center w-full truncate">
                         Protect
                       </span>
                       <StanceIcon stance="protect" active={col === 0} compact />
                     </div>
                     <div className="flex flex-col items-center gap-0.5 min-w-0">
-                      <span className="text-[7px] font-semibold uppercase tracking-wide text-amber-300/90 leading-none text-center w-full truncate">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-amber-300/90 leading-none text-center w-full truncate">
                         Neutral
                       </span>
                       <StanceIcon stance="neutral" active={col === 1} compact />
                     </div>
                     <div className="flex flex-col items-center gap-0.5 min-w-0">
-                      <span className="text-[7px] font-semibold uppercase tracking-wide text-emerald-400/90 leading-none text-center w-full truncate">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-emerald-400/90 leading-none text-center w-full truncate">
                         Grow
                       </span>
                       <StanceIcon stance="grow" active={col === 2} compact />
@@ -209,7 +209,7 @@ export default function MarketStructureIndicatorsStrip() {
                   </div>
                 </div>
                 <div
-                  className={`text-[9px] leading-tight mt-1 line-clamp-2 ${subtitleClass(row.subtitleTone)}`}
+                  className={`text-xs leading-tight mt-1 line-clamp-2 ${subtitleClass(row.subtitleTone)}`}
                   title={row.subtitle}
                 >
                   {row.subtitle}

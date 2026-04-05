@@ -36,6 +36,8 @@ import { registerAtlasRoutes } from './http/registerAtlasRoutes.js';
 import { registerStockcircleRoutes } from './http/registerStockcircleRoutes.js';
 import { registerWhalewisdomRoutes } from './http/registerWhalewisdomRoutes.js';
 import { registerExpertsSyncRoutes } from './http/registerExpertsSyncRoutes.js';
+import { registerExpertsSummaryRoutes } from './http/registerExpertsSummaryRoutes.js';
+import { registerExpertsInsightsRoutes } from './http/registerExpertsInsightsRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -60,6 +62,8 @@ registerCoreScanCronBarsMarketRoutes(app);
 registerStockcircleRoutes(app);
 registerWhalewisdomRoutes(app);
 registerExpertsSyncRoutes(app);
+registerExpertsSummaryRoutes(app);
+registerExpertsInsightsRoutes(app);
 registerLearningRoutes(app);
 
 // Optional: run full scan every 24 hours

@@ -83,9 +83,9 @@ export default function Layout({ children }: LayoutProps) {
             <Link to="/" className="text-xl font-semibold text-sky-400 hover:text-sky-300">
               VCP Screener
             </Link>
-            {/* 10pt ≈ text-[10px] — last time daily bars were written to DB from Yahoo (any ticker / cron / scan) */}
+            {/* 10pt ≈ text-xs — last time daily bars were written to DB from Yahoo (any ticker / cron / scan) */}
             <p
-              className={`text-[10px] mt-1 leading-tight truncate max-w-[min(100vw-8rem,28rem)] ${
+              className={`text-xs mt-1 leading-tight truncate max-w-[min(100vw-8rem,28rem)] ${
                 yahooFetch.state === 'error' ? 'text-amber-500/95' : 'text-slate-500'
               }`}
               title={yahooFetch.state === 'ok' ? yahooFetch.at : yahooFetch.state === 'error' ? yahooFetch.message : ''}

@@ -280,7 +280,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
 
       {!isVix && (
         <div className="px-3 py-2 border-t border-b border-slate-800">
-          <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs">
             <span className="text-slate-400">Portfolio allocation in market</span>
             <div className="text-right leading-tight">
               <div className="font-medium text-slate-200">
@@ -302,7 +302,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
                   key={segment.score}
                   className={`${segment.className} ${
                     isActive ? 'border-2 border-slate-100 opacity-100' : 'border border-slate-900/40 opacity-40'
-                  } flex min-h-[28px] items-center justify-center px-1 text-center text-[9px] font-semibold leading-none`}
+                  } flex min-h-[28px] items-center justify-center px-1 text-center text-xs font-semibold leading-none`}
                   title={`${segment.score}/7 ${segment.label} - ${segment.exposureLabel} ${segment.exposurePercentage}%`}
                 >
                   {segment.exposurePercentage}%
@@ -314,8 +314,8 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       )}
 
       <div className={`px-3 py-2 space-y-1.5 ${isVix ? 'border-t border-slate-800' : ''}`}>
-        <div className="text-[11px] text-slate-300">Default range: last 12 months</div>
-        <div className="text-[11px] text-slate-500">
+        <div className="text-xs text-slate-300">Default range: last 12 months</div>
+        <div className="text-xs text-slate-500">
           10 MA {ma10Last != null ? ma10Last.toFixed(1) : '—'} · 20 MA {ma20Last != null ? ma20Last.toFixed(1) : '—'} · 50 MA{' '}
           {ma50Last != null ? ma50Last.toFixed(1) : '—'}
         </div>

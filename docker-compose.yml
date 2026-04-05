@@ -73,6 +73,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      # Same-origin /experts Sync button without pasting CRON_SECRET; set CRON_ALLOW_EXPERTS_BROWSER_SYNC=0 in .env to require Bearer.
+      CRON_ALLOW_EXPERTS_BROWSER_SYNC: "1"
     volumes:
       - screener-data:/app/data
     labels:

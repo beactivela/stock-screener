@@ -398,7 +398,7 @@ export default function TradePanel({ ticker, companyName, currentPrice, metrics 
                       }`}
                     >
                       {c.value}
-                      <div className="text-[10px] opacity-70">{c.label}</div>
+                      <div className="text-xs opacity-70">{c.label}</div>
                     </button>
                   ))}
                 </div>

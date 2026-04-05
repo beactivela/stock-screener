@@ -246,7 +246,7 @@ export default function MarcusSummary() {
             <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-slate-500">Mission status</div>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${pillColorByStatus(runStatus === 'done' ? 'ok' : runStatus === 'error' ? 'fail' : 'warn')}`}>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${pillColorByStatus(runStatus === 'done' ? 'ok' : runStatus === 'error' ? 'fail' : 'warn')}`}>
                   {runStatus}
                 </span>
               </div>
@@ -274,7 +274,7 @@ export default function MarcusSummary() {
                     >
                       {n.title}
                     </a>
-                    <div className="text-[10px] text-slate-500 mt-0.5">
+                    <div className="text-xs text-slate-500 mt-0.5">
                       {n.source}{n.publishedAt ? ` · ${new Date(n.publishedAt).toLocaleString()}` : ''}
                     </div>
                   </li>
@@ -304,7 +304,7 @@ export default function MarcusSummary() {
                     <tr key={a.agentType} className="border-b border-slate-800/60 align-top">
                       <td className="py-2 pr-3 text-slate-100 font-medium">{a.name}</td>
                       <td className="py-2 pr-3">
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${pillColorByStatus(a.status)}`}>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${pillColorByStatus(a.status)}`}>
                           {a.status}
                         </span>
                       </td>

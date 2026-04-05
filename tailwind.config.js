@@ -3,9 +3,10 @@ export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
-      // Match body (index.css): utilities like text-sm were ~14px via 0.875rem; use 12px for UI “body” text.
+      // Minimum readable size 14px (body in index.css). Replaces default xs/sm that were smaller.
       fontSize: {
-        sm: ['12px', { lineHeight: '1.25rem' }],
+        xs: ['14px', { lineHeight: '1.25rem' }],
+        sm: ['14px', { lineHeight: '1.375rem' }],
       },
       fontFamily: {
         sans: ['DM Sans', 'system-ui', 'sans-serif'],

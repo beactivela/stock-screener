@@ -732,7 +732,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-start gap-4 text-[12px] leading-snug">
+      <div className="flex flex-wrap items-start gap-4 text-sm leading-snug">
         <div className="flex flex-wrap gap-2">
           <span className="text-slate-400 mr-2">Signal Agents:</span>
           {([
@@ -772,7 +772,7 @@ export default function Dashboard() {
                       setEditCriteriaAgent(f.id)
                       setEditCriteriaDraft(getCriteriaForAgent(f.id))
                     }}
-                    className="opacity-0 group-hover/agent:opacity-100 transition-opacity text-sky-400 hover:text-sky-300 text-[10px] font-medium mt-0.5"
+                    className="opacity-0 group-hover/agent:opacity-100 transition-opacity text-sky-400 hover:text-sky-300 text-xs font-medium mt-0.5"
                     title={`Edit criteria: ${meta.label}`}
                   >
                     Edit
@@ -1154,7 +1154,7 @@ export default function Dashboard() {
                             <span className="text-slate-300 whitespace-nowrap">
                           {entryDateStr} {ot.daysSinceBuy}d
                           {ot.isNewBuyToday && (
-                            <span className="ml-2 inline-flex items-center rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+                            <span className="ml-2 inline-flex items-center rounded bg-emerald-500/20 px-1.5 py-0.5 text-xs font-semibold text-emerald-300">
                               NEW
                             </span>
                           )}

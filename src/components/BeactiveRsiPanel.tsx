@@ -72,7 +72,7 @@ function buildFillSegments(
 export default function BeactiveRsiPanel({ points, alignWithChart = true }: BeactiveRsiPanelProps) {
   if (points.length === 0) {
     return (
-      <div className="h-[64px] rounded border border-slate-800 bg-slate-950/60 px-2 py-1 flex items-center justify-center text-[11px] text-slate-500">
+      <div className="h-[64px] rounded border border-slate-800 bg-slate-950/60 px-2 py-1 flex items-center justify-center text-xs text-slate-500">
         Beactive RSI Trend loading…
       </div>
     )
@@ -132,7 +132,7 @@ export default function BeactiveRsiPanel({ points, alignWithChart = true }: Beac
     <div
       className={`h-[64px] rounded border border-slate-800 bg-slate-950/60 px-2 py-1 ${alignWithChart ? 'w-[calc(100%-48px)]' : ''}`}
     >
-      <div className="text-[10px] text-slate-400 mb-0.5">Beactive RSI Trend (14)</div>
+      <div className="text-xs text-slate-400 mb-0.5">Beactive RSI Trend (14)</div>
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[44px]" shapeRendering="geometricPrecision">
         <line x1={0} y1={y70} x2={width} y2={y70} stroke="rgba(250,204,21,0.5)" strokeDasharray="4 4" strokeWidth="1" />
         <line x1={0} y1={y50} x2={width} y2={y50} stroke="rgba(148,163,184,0.6)" strokeWidth="1" />

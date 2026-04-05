@@ -6,15 +6,14 @@
 
 export default function Style() {
   const fontSizes = [
-    { class: 'text-[10px]', label: '10px', note: 'Custom' },
-    { class: 'text-xs', label: 'xs', note: '0.75rem / 12px' },
-    { class: 'text-sm', label: 'sm', note: '12px (theme override; default Tailwind is 14px)' },
-    { class: 'text-base', label: 'base', note: '1rem / 16px' },
-    { class: 'text-lg', label: 'lg', note: '1.125rem / 18px' },
-    { class: 'text-xl', label: 'xl', note: '1.25rem / 20px' },
-    { class: 'text-2xl', label: '2xl', note: '1.5rem / 24px' },
-    { class: 'text-3xl', label: '3xl', note: '1.875rem / 30px' },
-    { class: 'text-4xl', label: '4xl', note: '2.25rem / 36px' },
+    { class: 'text-xs', label: 'xs', note: '14px minimum (theme)' },
+    { class: 'text-sm', label: 'sm', note: '14px minimum (theme)' },
+    { class: 'text-base', label: 'base', note: '1rem (14px with html font-size 14px)' },
+    { class: 'text-lg', label: 'lg', note: '1.125rem (scales with html 14px root)' },
+    { class: 'text-xl', label: 'xl', note: '1.25rem' },
+    { class: 'text-2xl', label: '2xl', note: '1.5rem' },
+    { class: 'text-3xl', label: '3xl', note: '1.875rem' },
+    { class: 'text-4xl', label: '4xl', note: '2.25rem' },
   ] as const
 
   const fontWeights = [
@@ -70,7 +69,8 @@ export default function Style() {
             </p>
           </div>
           <p className="text-xs text-slate-500">
-            Body base size in <code className="bg-slate-800 px-1 rounded">index.css</code>: 12pt.
+            Body base size in <code className="bg-slate-800 px-1 rounded">index.css</code>: 14px;{' '}
+            <code className="bg-slate-800 px-1 rounded">html</code> root is 14px so rem-based sizes scale from that.
           </p>
         </div>
       </section>
@@ -122,7 +122,7 @@ export default function Style() {
                 className={`${bg} rounded-lg border border-slate-700/50 flex flex-col items-center justify-center min-h-[3rem] px-2 py-2`}
               >
                 <span className={`${text} text-xs font-medium`}>Aa</span>
-                <span className="text-[10px] font-mono mt-0.5 opacity-80">slate-{label}</span>
+                <span className="text-xs font-mono mt-0.5 opacity-80">slate-{label}</span>
               </div>
             ))}
           </div>

@@ -117,7 +117,7 @@ function TradingViewRsiWidget({ ticker, alignWithChart = true }: TradingViewRsiW
 
   return (
     <div className={`${alignWithChart ? 'w-[calc(100%-48px)]' : ''}`}>
-      <div className="text-[10px] text-slate-400 mb-1">
+      <div className="text-xs text-slate-400 mb-1">
         Beactive RSI Trend (14)
         <span className="ml-2 text-slate-500">· TradingView RSI (green when bullish trend: close &gt; MA50 &amp; MA150)</span>
       </div>

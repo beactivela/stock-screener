@@ -184,7 +184,7 @@ function TickerChart({ ticker, score, recommendation }: TickerChartProps) {
         </div>
       </div>
       <div ref={containerRef} style={{ height: 240 }} />
-      <div className="px-3 py-1.5 text-[10px] text-slate-500 border-t border-slate-800 flex gap-3">
+      <div className="px-3 py-1.5 text-xs text-slate-500 border-t border-slate-800 flex gap-3">
         <span>Vol</span>
         <span>10 MA</span>
         <span>20 MA</span>

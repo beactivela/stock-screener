@@ -10,6 +10,9 @@ interface Investor {
   display_name: string | null
   firm_name: string | null
   performance_1y_pct: number | null
+  performance_3y_pct?: number | null
+  performance_5y_pct?: number | null
+  performance_10y_pct?: number | null
   updated_at?: string | null
 }
 
@@ -105,14 +108,26 @@ export default function StockcircleExpertDetail() {
             {data.investor.display_name && data.investor.firm_name !== data.investor.display_name && (
               <p className="mt-1 text-slate-400">{data.investor.display_name}</p>
             )}
-            {data.investor.performance_1y_pct != null && (
-              <p className="mt-3 text-sm text-slate-300">
-                StockCircle <span className="text-slate-400">1-year portfolio performance (reported):</span>{' '}
-                <span className="font-medium text-emerald-400/95">
-                  {Number(data.investor.performance_1y_pct).toFixed(2)}%
-                </span>
-              </p>
-            )}
+            <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 text-sm">
+              {(
+                [
+                  ['1Y', data.investor.performance_1y_pct],
+                  ['3Y', data.investor.performance_3y_pct ?? null],
+                  ['5Y', data.investor.performance_5y_pct ?? null],
+                  ['10Y', data.investor.performance_10y_pct ?? null],
+                ] as const
+              ).map(([label, pct]) => (
+                <div
+                  key={label}
+                  className="rounded-lg border border-slate-800/90 bg-slate-900/40 px-3 py-2"
+                >
+                  <div className="text-xs text-slate-500">{label} (StockCircle)</div>
+                  <div className="mt-0.5 font-medium tabular-nums text-slate-100">
+                    {pct != null && Number.isFinite(Number(pct)) ? `${Number(pct).toFixed(2)}%` : '—'}
+                  </div>
+                </div>
+              ))}
+            </div>
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               <a
                 href={data.links.portfolio}

@@ -277,7 +277,7 @@ export default function Industry() {
       <div className="relative inline-flex">
         {hoveredPoint && hoveredX != null && (
           <div
-            className="absolute -top-10 -translate-x-1/2 rounded-md border border-slate-700 bg-slate-900/95 px-2 py-1 text-[10px] text-slate-100 shadow-lg whitespace-nowrap pointer-events-none z-20"
+            className="absolute -top-10 -translate-x-1/2 rounded-md border border-slate-700 bg-slate-900/95 px-2 py-1 text-xs text-slate-100 shadow-lg whitespace-nowrap pointer-events-none z-20"
             style={{ left: `${hoveredPoint.x * 100}%` }}
           >
             {formatSparklineMonth(hoveredPoint.monthOffset, data?.fetchedAt)}: {hoveredPoint.y >= 0 ? '+' : ''}{hoveredPoint.y.toFixed(2)}%

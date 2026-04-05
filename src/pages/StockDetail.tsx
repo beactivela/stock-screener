@@ -1480,7 +1480,7 @@ export default function StockDetail() {
               IBD ratings (list import)
             </h3>
             {fundamentals.ibdImportedAt && !Number.isNaN(new Date(fundamentals.ibdImportedAt).getTime()) && (
-              <span className="text-[11px] text-slate-500 tabular-nums">
+              <span className="text-xs text-slate-500 tabular-nums">
                 Imported {new Date(fundamentals.ibdImportedAt).toLocaleString()}
               </span>
             )}
@@ -1661,7 +1661,7 @@ export default function StockDetail() {
               )}
             </div>
             {fundamentals?.industry && rsIndustryData.length === 0 && (
-              <div className="absolute bottom-2 left-2 bg-amber-900/80 backdrop-blur-sm px-2 py-1 rounded text-[10px] text-amber-200 pointer-events-none">
+              <div className="absolute bottom-2 left-2 bg-amber-900/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-amber-200 pointer-events-none">
                 Relative Strength to Industry: run &quot;Fetch all industries&quot; on the Industry page to load.
               </div>
             )}

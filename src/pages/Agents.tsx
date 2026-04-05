@@ -74,7 +74,7 @@ const AGENTS_HEARTBEAT_CACHE_TTL_MS = 30 * 1000
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-3">
+    <div className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-3">
       {children}
     </div>
   )
@@ -101,7 +101,7 @@ function modelBadge(model?: string) {
 function ModelBadge({ model }: { model?: string }) {
   if (!model) return null
   return (
-    <span className={`text-[10px] px-2 py-0.5 rounded-full whitespace-nowrap ${modelBadge(model)}`}>
+    <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${modelBadge(model)}`}>
       {model}
     </span>
   )
@@ -349,7 +349,7 @@ function HarryFetchButton() {
   return (
     <div className="space-y-2">
       {harryStats !== null && (
-        <div className="text-[11px] text-slate-500 space-y-0.5">
+        <div className="text-xs text-slate-500 space-y-0.5">
           <p>
             <span className="text-slate-400 font-medium">{harryStats.count}</span> with 5yr OHLC
             {harryStats.totalTickers > 0 && (
@@ -377,16 +377,16 @@ function HarryFetchButton() {
               style={{ width: `${Math.min(100, pct)}%` }}
             />
           </div>
-          <p className="text-[10px] text-slate-500 truncate">
+          <p className="text-xs text-slate-500 truncate">
             {progress.message ?? (progress.total > 0 ? `${progress.current} / ${progress.total}` : 'Preparing…')}
           </p>
         </div>
       )}
       {status === 'done' && resultMessage && (
-        <p className="text-[11px] text-emerald-400">{resultMessage}</p>
+        <p className="text-xs text-emerald-400">{resultMessage}</p>
       )}
       {status === 'error' && errorMessage && (
-        <p className="text-[11px] text-red-400">{errorMessage}</p>
+        <p className="text-xs text-red-400">{errorMessage}</p>
       )}
     </div>
   )
@@ -431,12 +431,12 @@ function AgentCard({
           <span className="text-2xl leading-none">{avatarIcon}</span>
           <div>
             <div className={`${title} text-slate-100`}>{agent.name}</div>
-            {agent.role && <div className="text-[11px] text-slate-500 mt-0.5">{agent.role === 'Strategy Agent' ? 'Signal agent' : agent.role}</div>}
+            {agent.role && <div className="text-xs text-slate-500 mt-0.5">{agent.role === 'Strategy Agent' ? 'Signal agent' : agent.role}</div>}
           </div>
         </div>
         <div className="flex items-center gap-2">
           {metrics != null && (
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-700/60">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-700/60">
               {metrics.activityPct}% Active
             </span>
           )}
@@ -451,22 +451,22 @@ function AgentCard({
       {metrics != null && (
         <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-700/50">
           <div className="bg-slate-900/60 rounded-lg p-2">
-            <div className="text-[10px] text-slate-500 uppercase tracking-wider">Avg Return</div>
+            <div className="text-xs text-slate-500 uppercase tracking-wider">Avg Return</div>
             <div className="text-sm font-medium text-emerald-400">+{metrics.avgReturnPct.toFixed(2)}%</div>
           </div>
           <div className="bg-slate-900/60 rounded-lg p-2">
-            <div className="text-[10px] text-slate-500 uppercase tracking-wider">Win Rate</div>
+            <div className="text-xs text-slate-500 uppercase tracking-wider">Win Rate</div>
             <div className="text-sm font-medium text-slate-200">{metrics.winRatePct.toFixed(1)}%</div>
           </div>
           <div className="bg-slate-900/60 rounded-lg p-2">
-            <div className="text-[10px] text-slate-500 uppercase tracking-wider">PF</div>
+            <div className="text-xs text-slate-500 uppercase tracking-wider">PF</div>
             <div className="text-sm font-medium text-slate-200">{metrics.profitFactor.toFixed(2)}</div>
           </div>
         </div>
       )}
 
       {metrics != null && (metrics.weightsLabel != null || metrics.runs != null) && (
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 pt-0.5">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 pt-0.5">
           {metrics.weightsLabel != null && (
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden />
@@ -482,7 +482,7 @@ function AgentCard({
       {agent.mandatoryOverrides && Object.keys(agent.mandatoryOverrides).length > 0 && (
         <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-700/50">
           {Object.entries(agent.mandatoryOverrides).map(([k, v]) => (
-            <span key={k} className="text-[10px] bg-slate-700/50 text-slate-400 px-1.5 py-0.5 rounded font-mono">
+            <span key={k} className="text-xs bg-slate-700/50 text-slate-400 px-1.5 py-0.5 rounded font-mono">
               {k}: <span className="text-slate-200">{String(v)}</span>
             </span>
           ))}
@@ -509,14 +509,14 @@ function HeartbeatStrip({
 
   return (
     <div className="flex items-center gap-3 shrink-0">
-      <span className="text-[11px] text-slate-500">Heartbeat</span>
+      <span className="text-xs text-slate-500">Heartbeat</span>
       <span
         className={`text-xl leading-none ${cronOn || isRunning ? 'inline-block animate-heartbeat' : ''}`}
         aria-hidden="true"
       >
         🫀
       </span>
-      <span className="text-[11px] text-slate-400 tabular-nums">Last: {displayLastRun}</span>
+      <span className="text-xs text-slate-400 tabular-nums">Last: {displayLastRun}</span>
       <div
         className={`flex items-center gap-1.5 select-none ${cronToggleLoading ? 'opacity-60 cursor-wait' : 'cursor-pointer'}`}
         role="button"
@@ -541,7 +541,7 @@ function HeartbeatStrip({
             className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition ${cronOn ? 'translate-x-4' : 'translate-x-0.5'}`}
           />
         </span>
-        <span className="text-[11px] text-slate-400 w-5">{cronOn ? 'On' : 'Off'}</span>
+        <span className="text-xs text-slate-400 w-5">{cronOn ? 'On' : 'Off'}</span>
       </div>
     </div>
   )

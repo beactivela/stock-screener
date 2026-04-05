@@ -10,103 +10,27 @@ import {
   stockcirclePortfolioUrl,
 } from '../stockcircle/stockcircleMeta.js';
 import { STOCKCIRCLE_BASE } from '../stockcircle/fetchPages.js';
-import { dedupeDbRowsForExpertColumn } from '../stockcircle/dedupeExperts.js';
+import { buildStockcircleSummaryPayload } from '../stockcircle/buildSummaryPayload.js';
+import { selectInvestorBySlug, selectInvestorsBySlugs } from '../stockcircle/selectInvestors.js';
+import { sendJson } from './sendJson.js';
 
 let stockcircleJob = { running: false, lastResult: null, lastStartedAt: null, lastFinishedAt: null };
-
-/** PostgREST caps unfiltered selects (~1000 rows). Chunk `.in('ticker', …)` to load weights for all popular symbols. */
-const TICKER_IN_CHUNK = 120;
 
 export function registerStockcircleRoutes(app) {
   app.get('/api/stockcircle/summary', async (req, res) => {
     try {
       res.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=120');
-      const supabase = getSupabase();
-      if (!supabase) {
-        return res.status(503).json({ ok: false, error: 'Supabase not configured' });
-      }
-
-      const { data: runs, error: runErr } = await supabase
-        .from('stockcircle_sync_runs')
-        .select('id, started_at, finished_at, status, investors_matched, investors_fetched, error_message')
-        .eq('status', 'completed')
-        .order('finished_at', { ascending: false, nullsFirst: false })
-        .limit(1);
-
-      if (runErr) throw runErr;
-      const latestRun = runs?.[0] ?? null;
-
-      const { data: popular, error: popErr } = await supabase
-        .from('v_stockcircle_ticker_popularity')
-        .select('ticker, buying_firms, selling_firms')
-        .order('buying_firms', { ascending: false })
-        .limit(500);
-
-      if (popErr) throw popErr;
-
-      /** @type {Record<string, Array<Record<string, unknown>>>} */
-      let expertWeightsByTicker = {};
-
-      if (latestRun?.id && popular?.length) {
-        const tickersUpper = [
-          ...new Set(popular.map((p) => String(p.ticker || '').trim().toUpperCase()).filter(Boolean)),
-        ];
-        const allPos = [];
-        for (let i = 0; i < tickersUpper.length; i += TICKER_IN_CHUNK) {
-          const chunk = tickersUpper.slice(i, i + TICKER_IN_CHUNK);
-          const { data: part, error: posErr } = await supabase
-            .from('stockcircle_positions')
-            .select(
-              'ticker, investor_slug, pct_of_portfolio, position_value_usd, action_type, action_pct, company_name'
-            )
-            .eq('sync_run_id', latestRun.id)
-            .in('ticker', chunk);
-          if (posErr) throw posErr;
-          allPos.push(...(part || []));
-        }
-
-        const slugs = [...new Set(allPos.map((p) => p.investor_slug))];
-        const { data: invRows } = await supabase
-          .from('stockcircle_investors')
-          .select('slug, display_name, firm_name, performance_1y_pct')
-          .in('slug', slugs);
-
-        const invBySlug = Object.fromEntries((invRows || []).map((i) => [i.slug, i]));
-
-        const byTicker = new Map();
-        for (const p of allPos) {
-          const tk = String(p.ticker || '').trim().toUpperCase();
-          if (!byTicker.has(tk)) byTicker.set(tk, []);
-          byTicker.get(tk).push(p);
-        }
-
-        for (const [tk, plist] of byTicker) {
-          const rows = dedupeDbRowsForExpertColumn(plist);
-          expertWeightsByTicker[tk] = rows.map((p) => {
-            const inv = invBySlug[p.investor_slug];
-            return {
-              investorSlug: p.investor_slug,
-              firmName: inv?.firm_name || p.investor_slug,
-              displayName: inv?.display_name || p.investor_slug,
-              performance1yPct: inv?.performance_1y_pct ?? null,
-              pctOfPortfolio: p.pct_of_portfolio,
-              positionValueUsd: p.position_value_usd,
-              actionType: p.action_type,
-              actionPct: p.action_pct,
-              companyName: p.company_name,
-            };
-          });
-        }
-      }
-
-      res.json({
-        ok: true,
-        latestRun,
-        popular: popular ?? [],
-        expertWeightsByTicker,
-      });
+      const payload = await buildStockcircleSummaryPayload();
+      const status = payload.ok ? 200 : 503;
+      sendJson(res, status, payload);
     } catch (e) {
-      res.status(500).json({ ok: false, error: e.message });
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === 'object' && e !== null && 'message' in e
+            ? String(e.message)
+            : String(e);
+      sendJson(res, 500, { ok: false, error: msg || 'Summary failed' });
     }
   });
 
@@ -125,11 +49,7 @@ export function registerStockcircleRoutes(app) {
         return res.status(503).json({ ok: false, error: 'Supabase not configured' });
       }
 
-      const { data: investor, error: invErr } = await supabase
-        .from('stockcircle_investors')
-        .select('slug, display_name, firm_name, performance_1y_pct, updated_at')
-        .eq('slug', slug)
-        .maybeSingle();
+      const { data: investor, error: invErr } = await selectInvestorBySlug(supabase, slug);
 
       if (invErr) throw invErr;
       if (!investor) {
@@ -197,10 +117,8 @@ export function registerStockcircleRoutes(app) {
       const slugs = [...new Set(rows.map((r) => r.investor_slug))];
       let investors = {};
       if (slugs.length) {
-        const { data: invs } = await supabase
-          .from('stockcircle_investors')
-          .select('slug, display_name, firm_name, performance_1y_pct')
-          .in('slug', slugs);
+        const { data: invs, error: invListErr } = await selectInvestorsBySlugs(supabase, slugs);
+        if (invListErr) throw invListErr;
         investors = Object.fromEntries((invs || []).map((i) => [i.slug, i]));
       }
 

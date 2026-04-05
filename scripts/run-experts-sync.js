@@ -1,5 +1,5 @@
 /**
- * Manual combined experts sync: StockCircle + WhaleWisdom (same as POST /api/cron/experts-sync).
+ * Manual combined experts sync: FMP Congress + StockCircle + WhaleWisdom (same as POST /api/cron/experts-sync).
  */
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -24,7 +24,7 @@ const HEARTBEAT_MS = 15000;
 async function main() {
   const min = Number(process.env.STOCKCIRCLE_MIN_PERF_PCT);
   const t0 = Date.now();
-  console.error(`[experts:sync] started (StockCircle → WhaleWisdom) — heartbeat every ${HEARTBEAT_MS / 1000}s…`);
+  console.error(`[experts:sync] started (FMP Congress → StockCircle → WhaleWisdom) — heartbeat every ${HEARTBEAT_MS / 1000}s…`);
   const heartbeat = setInterval(() => {
     console.error(`[experts:sync] still running… ${formatElapsed(Date.now() - t0)}`);
   }, HEARTBEAT_MS);
@@ -44,8 +44,9 @@ async function main() {
   }
 
   const total = Date.now() - t0;
+  const fmp = result?.fmpCongress?.skipped ? 'skipped' : result?.fmpCongress?.ok ? 'ok' : 'error';
   console.error(
-    `[experts:sync] finished in ${formatElapsed(total)} (stockcircle: ${result?.stockcircle?.ok ? 'ok' : 'error'}, whalewisdom: ${result?.whalewisdom?.ok ? 'ok' : 'error'})`
+    `[experts:sync] finished in ${formatElapsed(total)} (fmp congress: ${fmp}, stockcircle: ${result?.stockcircle?.ok ? 'ok' : 'error'}, whalewisdom: ${result?.whalewisdom?.ok ? 'ok' : 'error'})`
   );
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exit(1);
