@@ -6,6 +6,10 @@ import {
   CONSENSUS_LARGE_BUY_USD,
   isConsensusLargeBuyChip,
   splitConsensusByNet,
+  sumConsensusBuyerPositionUsd,
+  sumConsensusSellerPositionUsd,
+  sumConsensusTotalPositionUsd,
+  netConsensusPositionUsd,
 } from './expertConsensus.ts'
 
 const base = {
@@ -70,6 +74,116 @@ test('splitConsensusByNet sorts buys and sells', () => {
   )
   assert.deepEqual(sellLeaning.map((r) => r.ticker), ['Z'])
   assert.deepEqual(mixed.map((r) => r.ticker), ['M'])
+})
+
+test('splitConsensusByNet buy-lean: primary buyVotes, then sum of buy-side $', () => {
+  const mk = (ticker, buyVotes, sellVotes, buyers) => ({
+    ticker,
+    buyVotes,
+    sellVotes,
+    net: buyVotes - sellVotes,
+    weightedBuy: buyVotes,
+    weightedSell: sellVotes,
+    weightedNet: buyVotes - sellVotes,
+    buyers,
+    sellers: [],
+  })
+  const rows = [
+    mk('LowerNetMoreBuys', 3, 2, [
+      { positionValueUsd: 1e6 },
+      { positionValueUsd: 1e6 },
+      { positionValueUsd: 1e6 },
+    ]),
+    mk('HigherNetFewerBuys', 2, 0, [
+      { positionValueUsd: 9e8 },
+      { positionValueUsd: 9e8 },
+    ]),
+  ]
+  const { buyLeaning } = splitConsensusByNet(rows)
+  assert.deepEqual(
+    buyLeaning.map((r) => r.ticker),
+    ['LowerNetMoreBuys', 'HigherNetFewerBuys']
+  )
+})
+
+test('splitConsensusByNet buy-lean: tie on buyVotes uses total buy $', () => {
+  const mk = (ticker, buyVotes, buyers) => ({
+    ticker,
+    buyVotes,
+    sellVotes: 0,
+    net: buyVotes,
+    weightedBuy: buyVotes,
+    weightedSell: 0,
+    weightedNet: buyVotes,
+    buyers,
+    sellers: [],
+  })
+  const rows = [
+    mk('SmallerUsd', 2, [{ positionValueUsd: 10e6 }, { positionValueUsd: 10e6 }]),
+    mk('LargerUsd', 2, [{ positionValueUsd: 200e6 }, { positionValueUsd: 1e6 }]),
+  ]
+  const { buyLeaning } = splitConsensusByNet(rows)
+  assert.deepEqual(buyLeaning.map((r) => r.ticker), ['LargerUsd', 'SmallerUsd'])
+})
+
+test('sumConsensusBuyerPositionUsd ignores nulls', () => {
+  const row = {
+    ticker: 'X',
+    buyVotes: 2,
+    sellVotes: 0,
+    net: 2,
+    weightedBuy: 2,
+    weightedSell: 0,
+    weightedNet: 2,
+    buyers: [{ positionValueUsd: 100 }, { positionValueUsd: null }, { positionValueUsd: 50 }],
+    sellers: [],
+  }
+  assert.equal(sumConsensusBuyerPositionUsd(row), 150)
+})
+
+test('sumConsensusSellerPositionUsd ignores nulls', () => {
+  const row = {
+    ticker: 'X',
+    buyVotes: 0,
+    sellVotes: 2,
+    net: -2,
+    weightedBuy: 0,
+    weightedSell: 2,
+    weightedNet: -2,
+    buyers: [],
+    sellers: [{ positionValueUsd: 10e6 }, { positionValueUsd: null }],
+  }
+  assert.equal(sumConsensusSellerPositionUsd(row), 10e6)
+})
+
+test('sumConsensusTotalPositionUsd sums buyers and sellers; ignores null/NaN', () => {
+  const row = {
+    ticker: 'X',
+    buyVotes: 1,
+    sellVotes: 1,
+    net: 0,
+    weightedBuy: 1,
+    weightedSell: 1,
+    weightedNet: 0,
+    buyers: [{ positionValueUsd: 50e6 }, { positionValueUsd: null }],
+    sellers: [{ positionValueUsd: 12e6 }, { positionValueUsd: NaN }],
+  }
+  assert.equal(sumConsensusTotalPositionUsd(row), 62e6)
+})
+
+test('netConsensusPositionUsd is buy minus sell', () => {
+  const row = {
+    ticker: 'X',
+    buyVotes: 2,
+    sellVotes: 1,
+    net: 1,
+    weightedBuy: 2,
+    weightedSell: 1,
+    weightedNet: 1,
+    buyers: [{ positionValueUsd: 100e6 }, { positionValueUsd: 50e6 }],
+    sellers: [{ positionValueUsd: 40e6 }],
+  }
+  assert.equal(netConsensusPositionUsd(row), 110e6)
 })
 
 test('weightByPerformance uses performance as vote weight', () => {

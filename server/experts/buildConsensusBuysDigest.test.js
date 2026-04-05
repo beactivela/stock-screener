@@ -53,5 +53,32 @@ describe('buildConsensusBuysDigest', () => {
     assert.equal(d.consensusSells[0].ticker, 'BBB');
     assert.ok(d.largeSellPositions.length >= 1);
     assert.ok(d.largeSellPositions.some((x) => x.ticker === 'BBB' && x.positionValueUsd >= CONSENSUS_LARGE_POSITION_USD));
+
+    assert.equal(d.singleExpertNetBuys.length, 0);
+    assert.ok(Array.isArray(d.meta.tickerCatalog));
+    assert.ok(d.meta.tickerCatalog.some((x) => x.ticker === 'AAA' && x.bucket === 'strong_consensus_buy'));
+    assert.ok(d.meta.tickerCatalog.some((x) => x.ticker === 'BBB' && x.bucket === 'sell_leaning'));
+  });
+
+  it('exposes single-expert net buys and catalog entries', () => {
+    const popular = [{ ticker: 'ZZZ' }];
+    const expertWeightsByTicker = {
+      ZZZ: [
+        {
+          investorSlug: 'e1',
+          firmName: 'Solo Fund',
+          displayName: 'Solo',
+          performance1yPct: 50,
+          actionType: 'new_holding',
+          positionValueUsd: 5_000_000,
+          pctOfPortfolio: 2,
+          companyName: 'Zed Inc',
+        },
+      ],
+    };
+    const d = buildConsensusBuysDigest({ popular, expertWeightsByTicker });
+    assert.equal(d.singleExpertNetBuys.length, 1);
+    assert.equal(d.singleExpertNetBuys[0].ticker, 'ZZZ');
+    assert.ok(d.meta.tickerCatalog.some((x) => x.ticker === 'ZZZ' && x.bucket === 'single_expert_net_buy'));
   });
 });

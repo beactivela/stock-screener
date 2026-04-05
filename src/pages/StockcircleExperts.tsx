@@ -16,6 +16,8 @@ import {
   type ConsensusTickerRow,
   type ConsensusExpertRef,
   isConsensusLargeBuyChip,
+  sumConsensusBuyerPositionUsd,
+  sumConsensusSellerPositionUsd,
 } from '../utils/expertConsensus'
 
 interface ExpertWeight {
@@ -111,6 +113,13 @@ function fmtStockcirclePct(n: number | null | undefined): string {
   return `${Number(n).toFixed(1)}%`
 }
 
+/** One side’s summed guru position $ (millions band, or K/B for small/large). */
+function formatInvestedUsd(usd: number): string {
+  if (usd <= 0 || !Number.isFinite(usd)) return '—'
+  if (usd >= 1e9 || usd < 1e6) return formatUsdCompact(usd)
+  return `$${(usd / 1e6).toFixed(1)}M`
+}
+
 function ExpertChips({
   experts,
   variant,
@@ -187,6 +196,9 @@ function ConsensusTable({
               {netLabel}
             </th>
             <th scope="col" className="px-3 py-2">
+              Dollar invested
+            </th>
+            <th scope="col" className="px-3 py-2">
               Bulls (add / new)
             </th>
             <th scope="col" className="px-3 py-2">
@@ -199,6 +211,8 @@ function ConsensusTable({
             const netDisplay = weightVotesByPerformance
               ? (r.weightedNet >= 0 ? '+' : '') + r.weightedNet.toFixed(1)
               : (r.net >= 0 ? '+' : '') + r.net
+            const buyUsd = sumConsensusBuyerPositionUsd(r)
+            const sellUsd = sumConsensusSellerPositionUsd(r)
             return (
               <tr key={r.ticker} className="border-t border-slate-800/80 hover:bg-slate-800/25 align-top">
                 <td className="px-3 py-2 font-medium">
@@ -209,6 +223,19 @@ function ConsensusTable({
                 <td className="px-3 py-2 tabular-nums text-emerald-200/90">{r.buyVotes}</td>
                 <td className="px-3 py-2 tabular-nums text-rose-200/90">{r.sellVotes}</td>
                 <td className="px-3 py-2 tabular-nums text-slate-200">{netDisplay}</td>
+                <td
+                  className="px-3 py-2"
+                  title="Sum of reported position sizes (USD) on buy vs sell among top-ranked experts in this row"
+                >
+                  <div className="flex min-w-[7.5rem] flex-col gap-0.5 tabular-nums leading-tight">
+                    <span className="text-emerald-200/90">
+                      Buy {formatInvestedUsd(buyUsd)}
+                    </span>
+                    <span className="text-rose-200/90">
+                      Sell {formatInvestedUsd(sellUsd)}
+                    </span>
+                  </div>
+                </td>
                 <td className="px-3 py-2">
                   <ExpertChips experts={r.buyers} variant="buy" />
                 </td>
@@ -233,6 +260,14 @@ export default function StockcircleExperts() {
   const [syncBanner, setSyncBanner] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   /** LLM summary of largest estimated $ moves (loads once per summary refresh). */
   const [aiInsight, setAiInsight] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'ready'; text: string; skipped?: boolean }
+    | { status: 'no_llm' }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' })
+  /** OpenRouter Kimi K2.5: sector / money-flow narrative from consensus digest (replaces static coverage line). */
+  const [moneyFlowNarrative, setMoneyFlowNarrative] = useState<
     | { status: 'idle' }
     | { status: 'loading' }
     | { status: 'ready'; text: string; skipped?: boolean }
@@ -331,6 +366,52 @@ export default function StockcircleExperts() {
       } catch (e) {
         if (!cancelled) {
           setAiInsight({ status: 'error', message: e instanceof Error ? e.message : String(e) })
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [summaryFingerprint, refreshToken, data?.ok])
+
+  useEffect(() => {
+    if (!data?.ok || !summaryFingerprint || (data.popular ?? []).length === 0) {
+      setMoneyFlowNarrative({ status: 'idle' })
+      return
+    }
+    let cancelled = false
+    setMoneyFlowNarrative({ status: 'loading' })
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/experts/consensus-buys-ai`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean
+          disabled?: boolean
+          error?: string
+          text?: string
+          skipped?: boolean
+        }
+        if (cancelled) return
+        if (res.status === 503 && json.disabled) {
+          setMoneyFlowNarrative({ status: 'no_llm' })
+          return
+        }
+        if (!res.ok) {
+          setMoneyFlowNarrative({ status: 'error', message: json.error || res.statusText })
+          return
+        }
+        if (json.ok && typeof json.text === 'string') {
+          setMoneyFlowNarrative({ status: 'ready', text: json.text, skipped: json.skipped })
+        } else {
+          setMoneyFlowNarrative({ status: 'error', message: json.error || 'Unexpected response' })
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setMoneyFlowNarrative({ status: 'error', message: e instanceof Error ? e.message : String(e) })
         }
       }
     })()
@@ -575,17 +656,46 @@ export default function StockcircleExperts() {
           >
             {popular.length > 0 ? (
               <>
-                <p
-                  className="mb-4 rounded-md border border-slate-800/90 bg-slate-900/40 px-3 py-2 text-sm text-slate-300"
+                <div
+                  className="mb-4 rounded-lg border border-teal-500/25 bg-teal-950/20 px-3 py-3 text-sm text-slate-300"
                   aria-live="polite"
                   aria-atomic="true"
                 >
-                  <span className="font-medium text-slate-200">Consensus coverage:</span>{' '}
-                  {consensusRows.length} ticker{consensusRows.length === 1 ? '' : 's'} with at least one buy or sell
-                  vote from up to {effectiveTopK} experts in this dataset (max {CONSENSUS_TOP_K} by 1Y rank; you have{' '}
-                  {expertsInDataset} in overlap). Strong buys (≥2 experts): {buyMultiExpert.length} · other net buys (1
-                  expert): {buySingleExpert.length} · sell-lean: {sellLeaning.length} · tied: {mixed.length}.
-                </p>
+                  <h3 className="text-sm font-semibold text-teal-200/95 mb-2">
+                    AI — money flow &amp; sectors
+                  </h3>
+                  <p className="text-xs text-slate-500 mb-2">
+                    Narrative from overlap consensus (top experts by 1Y rank), via OpenRouter{' '}
+                    <code className="text-slate-400">moonshotai/kimi-k2.5</code>. Not investment advice.
+                  </p>
+                  {(moneyFlowNarrative.status === 'idle' || moneyFlowNarrative.status === 'loading') && (
+                    <p className="text-xs text-slate-500">
+                      Mapping buys/sells to sector themes and where capital is clustering…
+                    </p>
+                  )}
+                  {moneyFlowNarrative.status === 'no_llm' && (
+                    <p className="text-xs text-slate-500">
+                      Set <code className="text-slate-400">OPENROUTER_API_KEY</code> for this narrative (same default
+                      model as server: Kimi K2.5).
+                    </p>
+                  )}
+                  {moneyFlowNarrative.status === 'error' && (
+                    <p className="text-xs text-amber-400/95" role="alert">
+                      {moneyFlowNarrative.message}
+                    </p>
+                  )}
+                  {moneyFlowNarrative.status === 'ready' && (
+                    <div className="text-sm text-slate-200/95 leading-relaxed space-y-2">
+                      {moneyFlowNarrative.skipped && (
+                        <p className="text-xs text-slate-500">Light snapshot — limited consensus rows in this run.</p>
+                      )}
+                      <p className="whitespace-pre-wrap">{moneyFlowNarrative.text}</p>
+                      <p className="text-xs text-slate-500">
+                        Votes and USD come from StockCircle overlap data (reported positions, not verified filings).
+                      </p>
+                    </div>
+                  )}
+                </div>
 
             {buyMultiExpert.length > 0 && (
               <section className="mb-6" aria-labelledby="consensus-buys-strong-heading">

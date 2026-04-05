@@ -139,6 +139,15 @@ function computeTickerConsensusRows(popular, expertWeightsByTicker) {
   return rows;
 }
 
+function sumBuyerPositionUsd(row) {
+  let s = 0;
+  for (const b of row.buyers || []) {
+    const v = b.positionValueUsd;
+    if (v != null && Number.isFinite(Number(v))) s += Number(v);
+  }
+  return s;
+}
+
 /**
  * @param {{
  *   popular: Array<{ ticker: string }>,
@@ -159,7 +168,10 @@ export function buildConsensusBuysDigest({ popular, expertWeightsByTicker }) {
   }
 
   buyLeaning.sort((a, b) => {
-    if (b.net !== a.net) return b.net - a.net;
+    if (b.buyVotes !== a.buyVotes) return b.buyVotes - a.buyVotes;
+    const usdB = sumBuyerPositionUsd(b);
+    const usdA = sumBuyerPositionUsd(a);
+    if (usdB !== usdA) return usdB - usdA;
     return a.ticker.localeCompare(b.ticker);
   });
   sellLeaning.sort((a, b) => {
@@ -170,6 +182,8 @@ export function buildConsensusBuysDigest({ popular, expertWeightsByTicker }) {
 
   /** Same filter as UI: ≥2 buy votes among top-K on buy-lean tickers */
   const consensusMultiBuys = buyLeaning.filter((r) => r.buyVotes >= 2);
+  /** Net buys with only one ranked expert voting buy (same as UI "other net buys") — include so the LLM names these tickers too. */
+  const singleExpertNetBuys = buyLeaning.filter((r) => r.buyVotes === 1);
 
   const largeBuyRefs = [];
   for (const r of consensusMultiBuys) {
@@ -204,14 +218,40 @@ export function buildConsensusBuysDigest({ popular, expertWeightsByTicker }) {
   }
   largeSellRefs.sort((a, b) => (b.positionValueUsd || 0) - (a.positionValueUsd || 0));
 
+  /** Flat index so downstream LLM prompts can require naming every symbol once. */
+  const tickerCatalog = [];
+  const seen = new Set();
+  function pushCatalog(rows, bucket) {
+    for (const r of rows || []) {
+      const tk = normTicker(r.ticker);
+      const key = `${tk}|${bucket}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tickerCatalog.push({
+        ticker: tk,
+        companyName: r.companyName || null,
+        bucket,
+      });
+    }
+  }
+  pushCatalog(consensusMultiBuys, 'strong_consensus_buy');
+  pushCatalog(singleExpertNetBuys, 'single_expert_net_buy');
+  pushCatalog(sellLeaning, 'sell_leaning');
+  pushCatalog(mixed, 'mixed_net_zero');
+  tickerCatalog.sort((a, b) => a.ticker.localeCompare(b.ticker));
+
   return {
     meta: {
       topKExperts: TOP_K,
       largePositionUsdThreshold: CONSENSUS_LARGE_POSITION_USD,
       note:
         'Buy/sell votes are among the top-K StockCircle experts by 1Y performance. Position USD is reported holding size (not estimated trade delta). "Large" means reported position ≥ threshold.',
+      tickerCatalog,
+      tickerCatalogNote:
+        'Use meta.tickerCatalog for a complete list of tickers in this digest with company names when present. Cite tickers as TICKER (Company Name) when companyName is non-null.',
     },
     consensusMultiBuys,
+    singleExpertNetBuys,
     consensusSells: sellLeaning,
     mixedNetZero: mixed,
     largeBuyPositions: largeBuyRefs,

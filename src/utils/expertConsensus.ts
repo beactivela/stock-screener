@@ -224,6 +224,46 @@ export function computeTickerConsensusRows(
 }
 
 /**
+ * Sum of reported buy-side position USD for a ticker row (null/NaN ignored).
+ * Used to sort consensus tables by cumulative expert dollars on the buy side.
+ */
+export function sumConsensusBuyerPositionUsd(row: ConsensusTickerRow): number {
+  let s = 0
+  for (const b of row.buyers) {
+    const v = b.positionValueUsd
+    if (v != null && Number.isFinite(v)) s += v
+  }
+  return s
+}
+
+/**
+ * Sum of reported sell-side position USD (null/NaN ignored).
+ */
+export function sumConsensusSellerPositionUsd(row: ConsensusTickerRow): number {
+  let s = 0
+  for (const x of row.sellers) {
+    const v = x.positionValueUsd
+    if (v != null && Number.isFinite(v)) s += v
+  }
+  return s
+}
+
+/**
+ * Buy notional minus sell notional for experts in this row (same top-K cohort as chips).
+ */
+export function netConsensusPositionUsd(row: ConsensusTickerRow): number {
+  return sumConsensusBuyerPositionUsd(row) - sumConsensusSellerPositionUsd(row)
+}
+
+/**
+ * Total reported position USD across buy- and sell-side experts in this row
+ * (same top-K cohort as the chips). Use for “total notional” per ticker.
+ */
+export function sumConsensusTotalPositionUsd(row: ConsensusTickerRow): number {
+  return sumConsensusBuyerPositionUsd(row) + sumConsensusSellerPositionUsd(row)
+}
+
+/**
  * Split into buy-leaning, sell-leaning, and neutral tickers; sort as in the plan.
  */
 export function splitConsensusByNet(rows: ConsensusTickerRow[]): {
@@ -241,8 +281,12 @@ export function splitConsensusByNet(rows: ConsensusTickerRow[]): {
     else mixed.push(r)
   }
 
+  /** Buy-lean: more expert buys first, then higher total buy-side $ (reported positions), then ticker. */
   const cmpBuy = (a: ConsensusTickerRow, b: ConsensusTickerRow) => {
-    if (b.net !== a.net) return b.net - a.net
+    if (b.buyVotes !== a.buyVotes) return b.buyVotes - a.buyVotes
+    const usdA = sumConsensusBuyerPositionUsd(a)
+    const usdB = sumConsensusBuyerPositionUsd(b)
+    if (usdB !== usdA) return usdB - usdA
     return a.ticker.localeCompare(b.ticker)
   }
   const cmpSell = (a: ConsensusTickerRow, b: ConsensusTickerRow) => {

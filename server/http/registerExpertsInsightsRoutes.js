@@ -83,6 +83,7 @@ export function registerExpertsInsightsRoutes(app) {
       const digest = buildConsensusBuysDigest({ popular, expertWeightsByTicker });
       const hasConsensus =
         digest.consensusMultiBuys.length > 0 ||
+        (digest.singleExpertNetBuys?.length ?? 0) > 0 ||
         digest.consensusSells.length > 0 ||
         digest.mixedNetZero.length > 0 ||
         digest.largeBuyPositions.length > 0 ||
