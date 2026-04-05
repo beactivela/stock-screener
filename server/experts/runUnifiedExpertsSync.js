@@ -6,6 +6,7 @@ import { getSupabase } from '../supabase.js';
 import { runStockcircleSync } from '../stockcircle/sync.js';
 import { runWhalewisdomSync } from '../whalewisdom/sync.js';
 import { runFmpCongressSync, runFmpInstitutionalOwnershipProbe } from '../fmp/runFmpCongressSync.js';
+import { runQuiverCongressSync } from '../quiver/runQuiverCongressSync.js';
 
 /**
  * @param {{
@@ -18,6 +19,7 @@ export async function runUnifiedExpertsSync(opts = {}) {
   const wwOpts = opts.whalewisdom ?? {};
 
   const fmpCongress = await runFmpCongressSync();
+  const quiverCongress = await runQuiverCongressSync();
   const fmpInstitutional = await runFmpInstitutionalOwnershipProbe();
 
   const supabase = getSupabase();
@@ -43,11 +45,19 @@ export async function runUnifiedExpertsSync(opts = {}) {
     fmpCongress.ok === true ||
     allowFmpFail;
 
-  const ok = Boolean(stockcircle.ok && whalewisdom.ok && fmpOk);
+  /** When unset, failed Quiver does not fail the whole run (same pattern as FMP allow-fail). */
+  const allowQuiverFail = process.env.EXPERTS_ALLOW_QUIVER_FAIL !== '0';
+  const quiverSucceeded =
+    quiverCongress.skipped === true || quiverCongress.ok === true;
+
+  const ok = Boolean(
+    stockcircle.ok && whalewisdom.ok && fmpOk && (quiverSucceeded || allowQuiverFail)
+  );
 
   return {
     ok,
     fmpCongress,
+    quiverCongress,
     fmpInstitutional,
     stockcircle,
     whalewisdom,

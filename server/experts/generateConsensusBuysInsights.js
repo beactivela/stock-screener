@@ -29,9 +29,13 @@ export async function generateConsensusBuysInsights(digest) {
   ].join('\n');
 
   const maxEnv = Number(process.env.EXPERTS_CONSENSUS_BUYS_MAX_TOKENS);
-  // Room for prose after stopping instruction-dump behavior (was truncating the actual write-up at 650).
+  /** Output budget for OpenRouter completion (default 5000; env may set lower; upper clamp avoids runaway spend). */
+  const DEFAULT_MAX = 5000;
+  const HARD_CAP = 5000;
   const maxTokens =
-    Number.isFinite(maxEnv) && maxEnv > 0 ? Math.min(1200, maxEnv) : 900;
+    Number.isFinite(maxEnv) && maxEnv > 0
+      ? Math.min(HARD_CAP, maxEnv)
+      : DEFAULT_MAX;
 
   const text = await generateLlmReply({
     provider: 'openrouter',

@@ -26,6 +26,7 @@ import {
   type BlendedLeaderboardEntry,
   type BlendedSortKey,
 } from '../utils/blendedLeaderboardSort'
+import { CONGRESS_TRADES_LEADERBOARD } from '../data/congressTradesLeaderboard'
 
 interface ExpertWeight {
   investorSlug: string
@@ -94,6 +95,25 @@ interface WhalewisdomFilerSummary {
   managerName: string
 }
 
+interface QuiverTradeRow {
+  symbol?: string | null
+  transaction_date?: string | null
+  transaction_type?: string | null
+  amount_range?: string | null
+  description?: string | null
+}
+
+interface QuiverCongressMemberPayload {
+  bioguideId: string
+  fullName: string
+  perf1yPct: number | null
+  perf3yPct: number | null
+  perf5yPct: number | null
+  perf10yPct: number | null
+  strategyStartDate?: string | null
+  recentTrades: QuiverTradeRow[]
+}
+
 interface SummaryPayload {
   ok: boolean
   latestRun: LatestRun | null
@@ -102,6 +122,11 @@ interface SummaryPayload {
   whalewisdomFilers?: WhalewisdomFilerSummary[]
   gateway?: GatewayInfo
   congressRecent?: { senate: CongressRow[]; house: CongressRow[] }
+  quiverCongress?: {
+    finishedAt?: string | null
+    runId?: string
+    members?: QuiverCongressMemberPayload[]
+  } | null
   error?: string
 }
 
@@ -722,6 +747,38 @@ export default function StockcircleExperts() {
     [blendedLeaderboard, expertRows, blendedSort]
   )
 
+  /** Quiver-backed congress metrics when sync has run; else curated static list. */
+  const congressDisplayRows = useMemo(() => {
+    const qm = data?.quiverCongress?.members
+    if (qm && qm.length > 0) {
+      const sorted = [...qm].sort((a, b) => {
+        const pa = a.perf1yPct
+        const pb = b.perf1yPct
+        if (pa == null && pb == null) return a.fullName.localeCompare(b.fullName)
+        if (pa == null) return 1
+        if (pb == null) return -1
+        return pb - pa
+      })
+      return sorted.map((m, i) => ({
+        kind: 'quiver' as const,
+        rank: i + 1,
+        name: m.fullName,
+        perf1y: m.perf1yPct,
+        perf3y: m.perf3yPct,
+        perf5y: m.perf5yPct,
+        perf10y: m.perf10yPct,
+        trades: m.recentTrades ?? [],
+      }))
+    }
+    return CONGRESS_TRADES_LEADERBOARD.map((r) => ({
+      kind: 'static' as const,
+      rank: r.rank,
+      name: r.name,
+      perf1yLabel: r.perf1y,
+      trades: [] as const,
+    }))
+  }, [data?.quiverCongress?.members])
+
   function findWeight(slug: string, ticker: string): ExpertWeight | null {
     const list = weightsForTicker(ticker)
     return list.find((w) => w.investorSlug === slug) ?? null
@@ -936,157 +993,257 @@ export default function StockcircleExperts() {
             hidden={expertsMainTab !== 'experts'}
             className={expertsMainTab === 'experts' ? 'pt-4' : ''}
           >
-          {blendedLeaderboard.length > 0 ? (
-            <section className="mb-2" aria-labelledby="blended-leaderboard-heading">
-              <h2 id="blended-leaderboard-heading" className="text-lg font-semibold text-slate-100 mb-2">
-                All tracked experts &amp; filers
-              </h2>
-              <p className="text-xs text-slate-500 mb-2">
-                Single blended list from your unified pipeline: guru portfolios (return % when the sync captured
-                performance) plus configured WhaleWisdom filers. <strong>Source</strong> marks the track; open a row for
-                the detail page. To add more guru portfolios, raise{' '}
-                <code className="text-slate-400">STOCKCIRCLE_MAX_INVESTORS</code> and complete runs (match “portfolios
-                in run” to “matched”). Multi-year return columns need the performance migration + sync.
+          <>
+            {blendedLeaderboard.length > 0 ? (
+              <section className="mb-2" aria-labelledby="blended-leaderboard-heading">
+                <h2 id="blended-leaderboard-heading" className="text-lg font-semibold text-slate-100 mb-2">
+                  All tracked experts &amp; filers
+                </h2>
+                <p className="text-xs text-slate-500 mb-2">
+                  Single blended list from your unified pipeline: guru portfolios (return % when the sync captured
+                  performance) plus configured WhaleWisdom filers. <strong>Source</strong> marks the track; open a row for
+                  the detail page. To add more guru portfolios, raise{' '}
+                  <code className="text-slate-400">STOCKCIRCLE_MAX_INVESTORS</code> and complete runs (match “portfolios
+                  in run” to “matched”). Multi-year return columns need the performance migration + sync.
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-slate-800">
+                  <table className="min-w-[56rem] w-full text-left text-[14px] text-slate-300">
+                    <thead className="bg-slate-900/90 text-slate-400 text-[14px] uppercase tracking-wide">
+                      <tr>
+                        <BlendedSortHeader
+                          column="pipeline"
+                          label="#"
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="name"
+                          label="Name"
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="source"
+                          label="Source"
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="perf1y"
+                          label="1Y"
+                          alignRight
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="perf3y"
+                          label="3Y"
+                          alignRight
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="perf5y"
+                          label="5Y"
+                          alignRight
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="perf10y"
+                          label="10Y"
+                          alignRight
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                        <BlendedSortHeader
+                          column="overlap"
+                          label="Overlap vote"
+                          activeKey={blendedSort.key}
+                          dir={blendedSort.dir}
+                          onSort={handleBlendedSort}
+                        />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedBlendedLeaderboard.map((entry, i) => {
+                        const rank = i + 1
+                        if (entry.kind === 'whalewisdom') {
+                          const label = entry.managerName || entry.displayName
+                          return (
+                            <tr key={`ww-${entry.slug}`} className="border-t border-slate-800/80 hover:bg-slate-800/25">
+                              <td className="px-3 py-2 tabular-nums text-slate-500">{rank}</td>
+                              <td className="px-3 py-2">
+                                <Link
+                                  to={`/whalewisdom-filers/${encodeURIComponent(entry.slug)}`}
+                                  className="text-sky-400 hover:text-sky-300 font-medium"
+                                >
+                                  {abbreviateExpertFirmDisplayName(label)}
+                                </Link>
+                              </td>
+                              <td className="px-3 py-2 text-slate-400">13F (WhaleWisdom)</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
+                              <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
+                              <td className="px-3 py-2 text-slate-600">—</td>
+                            </tr>
+                          )
+                        }
+                        const ex = entry.row
+                        const guruRank = expertRows.findIndex((e) => e.investorSlug === ex.investorSlug)
+                        const inPanel = guruRank >= 0 && guruRank < CONSENSUS_TOP_K
+                        return (
+                          <tr key={ex.investorSlug} className="border-t border-slate-800/80 hover:bg-slate-800/25">
+                            <td className="px-3 py-2 tabular-nums text-slate-500">{rank}</td>
+                            <td className="px-3 py-2">
+                              <Link
+                                to={`/experts/${ex.investorSlug}`}
+                                className="text-sky-400 hover:text-sky-300 font-medium"
+                              >
+                                {abbreviateExpertFirmDisplayName(ex.firmName)}
+                              </Link>
+                            </td>
+                            <td className="px-3 py-2 text-slate-400">Guru portfolio</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-200">
+                              {fmtStockcirclePct(ex.performance1yPct)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-200">
+                              {fmtStockcirclePct(ex.performance3yPct)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-200">
+                              {fmtStockcirclePct(ex.performance5yPct)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-slate-200">
+                              {fmtStockcirclePct(ex.performance10yPct)}
+                            </td>
+                            <td className="px-3 py-2">
+                              {inPanel ? (
+                                <span className="inline-flex rounded border border-emerald-500/40 bg-emerald-950/40 px-2 py-0.5 text-xs text-emerald-200/95">
+                                  In top ranks
+                                </span>
+                              ) : (
+                                <span className="text-slate-600">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : (
+              <p className="text-sm text-slate-500">
+                No experts in this dataset yet — run <strong>Sync</strong> after unified experts sync completes.
               </p>
+            )}
+
+            <section className="mb-2 mt-8" aria-labelledby="congress-trades-leaderboard-heading">
+              <h2 id="congress-trades-leaderboard-heading" className="text-lg font-semibold text-slate-100 mb-2">
+                Congress Trades
+              </h2>
+              {data?.quiverCongress?.members && data.quiverCongress.members.length > 0 ? (
+                <p className="text-xs text-slate-500 mb-2">
+                  From Quiver Quant strategy pages (estimated horizons vs SPY baseline). Last sync:{' '}
+                  {data.quiverCongress.finishedAt
+                    ? new Date(data.quiverCongress.finishedAt).toLocaleString()
+                    : '—'}
+                  . Recent filings: last {90} days. Set <code className="text-slate-400">QUIVER_SYNC=1</code> on
+                  experts sync to refresh.
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500 mb-2">
+                  Curated placeholder until Quiver sync fills the API — edit{' '}
+                  <code className="text-slate-400">src/data/congressTradesLeaderboard.ts</code> or run sync with{' '}
+                  <code className="text-slate-400">QUIVER_SYNC=1</code> and{' '}
+                  <code className="text-slate-400">congress_politician_identity</code> seeds.
+                </p>
+              )}
               <div className="overflow-x-auto rounded-lg border border-slate-800">
                 <table className="min-w-[56rem] w-full text-left text-[14px] text-slate-300">
                   <thead className="bg-slate-900/90 text-slate-400 text-[14px] uppercase tracking-wide">
                     <tr>
-                      <BlendedSortHeader
-                        column="pipeline"
-                        label="#"
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="name"
-                        label="Name"
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="source"
-                        label="Source"
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="perf1y"
-                        label="1Y"
-                        alignRight
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="perf3y"
-                        label="3Y"
-                        alignRight
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="perf5y"
-                        label="5Y"
-                        alignRight
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="perf10y"
-                        label="10Y"
-                        alignRight
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
-                      <BlendedSortHeader
-                        column="overlap"
-                        label="Overlap vote"
-                        activeKey={blendedSort.key}
-                        dir={blendedSort.dir}
-                        onSort={handleBlendedSort}
-                      />
+                      <th scope="col" className="px-3 py-2 font-medium">
+                        #
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium">
+                        Name
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium">
+                        Source
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium text-right">
+                        1Y
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium text-right">
+                        3Y
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium text-right">
+                        5Y
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium text-right">
+                        10Y
+                      </th>
+                      <th scope="col" className="px-3 py-2 font-medium">
+                        Overlap vote
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedBlendedLeaderboard.map((entry, i) => {
-                      const rank = i + 1
-                      if (entry.kind === 'whalewisdom') {
-                        const label = entry.managerName || entry.displayName
-                        return (
-                          <tr key={`ww-${entry.slug}`} className="border-t border-slate-800/80 hover:bg-slate-800/25">
-                            <td className="px-3 py-2 tabular-nums text-slate-500">{rank}</td>
-                            <td className="px-3 py-2">
-                              <Link
-                                to={`/whalewisdom-filers/${encodeURIComponent(entry.slug)}`}
-                                className="text-sky-400 hover:text-sky-300 font-medium"
-                              >
-                                {abbreviateExpertFirmDisplayName(label)}
-                              </Link>
-                            </td>
-                            <td className="px-3 py-2 text-slate-400">13F (WhaleWisdom)</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-slate-500">—</td>
-                            <td className="px-3 py-2 text-slate-600">—</td>
-                          </tr>
-                        )
-                      }
-                      const ex = entry.row
-                      const guruRank = expertRows.findIndex((e) => e.investorSlug === ex.investorSlug)
-                      const inPanel = guruRank >= 0 && guruRank < CONSENSUS_TOP_K
-                      return (
-                        <tr key={ex.investorSlug} className="border-t border-slate-800/80 hover:bg-slate-800/25">
-                          <td className="px-3 py-2 tabular-nums text-slate-500">{rank}</td>
-                          <td className="px-3 py-2">
-                            <Link
-                              to={`/experts/${ex.investorSlug}`}
-                              className="text-sky-400 hover:text-sky-300 font-medium"
-                            >
-                              {abbreviateExpertFirmDisplayName(ex.firmName)}
-                            </Link>
-                          </td>
-                          <td className="px-3 py-2 text-slate-400">Guru portfolio</td>
-                          <td className="px-3 py-2 text-right tabular-nums text-slate-200">
-                            {fmtStockcirclePct(ex.performance1yPct)}
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-slate-200">
-                            {fmtStockcirclePct(ex.performance3yPct)}
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-slate-200">
-                            {fmtStockcirclePct(ex.performance5yPct)}
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-slate-200">
-                            {fmtStockcirclePct(ex.performance10yPct)}
-                          </td>
-                          <td className="px-3 py-2">
-                            {inPanel ? (
-                              <span className="inline-flex rounded border border-emerald-500/40 bg-emerald-950/40 px-2 py-0.5 text-xs text-emerald-200/95">
-                                In top ranks
-                              </span>
-                            ) : (
-                              <span className="text-slate-600">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
+                    {congressDisplayRows.map((row) => (
+                      <tr
+                        key={row.kind === 'quiver' ? `q-${row.name}-${row.rank}` : `s-${row.rank}`}
+                        className="border-t border-slate-800/80 hover:bg-slate-800/25"
+                      >
+                        <td className="px-3 py-2 tabular-nums text-slate-500">{row.rank}</td>
+                        <td className="px-3 py-2 text-slate-200 font-medium align-top">
+                          <div>{abbreviateExpertFirmDisplayName(row.name)}</div>
+                          {row.kind === 'quiver' && row.trades.length > 0 && (
+                            <details className="mt-1.5 text-xs text-slate-500">
+                              <summary className="cursor-pointer text-sky-500/90 hover:text-sky-400">
+                                Recent trades (90d): {row.trades.length}
+                              </summary>
+                              <ul className="mt-1.5 max-h-40 overflow-y-auto list-disc pl-4 text-slate-400 space-y-0.5">
+                                {row.trades.slice(0, 20).map((t, j) => (
+                                  <li key={`${t.symbol ?? 'x'}-${t.transaction_date ?? j}-${j}`}>
+                                    {t.transaction_date?.slice(0, 10) ?? '—'} · {t.symbol ?? '—'} ·{' '}
+                                    {t.transaction_type ?? '—'}
+                                    {t.amount_range ? ` · ${t.amount_range}` : ''}
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-slate-400 align-top">Congress Trades</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-200 align-top">
+                          {row.kind === 'quiver' ? fmtStockcirclePct(row.perf1y) : row.perf1yLabel}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-200 align-top">
+                          {row.kind === 'quiver' ? fmtStockcirclePct(row.perf3y) : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-200 align-top">
+                          {row.kind === 'quiver' ? fmtStockcirclePct(row.perf5y) : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-200 align-top">
+                          {row.kind === 'quiver' ? fmtStockcirclePct(row.perf10y) : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-slate-600 align-top">—</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
             </section>
-          ) : (
-            <p className="text-sm text-slate-500">
-              No experts in this dataset yet — run <strong>Sync</strong> after unified experts sync completes.
-            </p>
-          )}
+          </>
           </div>
         </div>
       )}

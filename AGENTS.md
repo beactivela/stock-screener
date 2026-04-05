@@ -4,6 +4,8 @@ Incremental notes from high-signal chat history. Authoritative project rules als
 
 ## Learned User Preferences
 
+- **Supabase:** The user has the Supabase MCP (`plugin-supabase-supabase`) connected. Prefer `list_projects`, `apply_migration`, and `execute_sql` for DDL/DML instead of asking the user to paste SQL in the dashboard—unless a task explicitly requires human review.
+
 ## Learned Workspace Facts
 
 - Project conventions and stack notes for UI/planning work live in `frameworks.mdc` at the repo root (read it before assuming stack or workflow).
