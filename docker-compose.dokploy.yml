@@ -1,14 +1,64 @@
-# Dokploy-only stack: app container only (Traefik + Kuma + Watchtower stay on the host compose).
-# Dokploy runs: docker compose -p <appName> -f ./docker-compose.dokploy.yml up -d --build
-# Env vars come from Dokploy’s compose “Environment” (written as .env beside this file at deploy time).
-# Reuses existing Docker volume + networks from the main stack so routing and data stay consistent.
+# Single Dokploy stack: Traefik + Uptime Kuma + app (replaces separate host `docker-compose` for infra).
+# Dokploy: docker compose -p <appName> -f ./docker-compose.dokploy.yml up -d --build
+# Env from Dokploy compose Environment (mirrors former host .env for TRAEFIK_HOST, ACME_EMAIL, HOST_PORT, KUMA_PORT).
+# Volumes are external so we keep existing data from the old `stock-screener` Compose project names.
 
 services:
+  traefik:
+    image: traefik:v3.6
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TZ: UTC
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-acme:/letsencrypt
+      - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
+    command:
+      - --log.level=INFO
+      - --api.dashboard=false
+      - --ping=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=stock-screener-net
+      - --providers.file.directory=/etc/dokploy/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in Dokploy env}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+    networks:
+      - stock-screener-net
+      - dokploy-network
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "${KUMA_PORT:-3001}:3001"
+    volumes:
+      - uptime-kuma-data:/app/data
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    networks:
+      - stock-screener-net
+
   stock-screener:
     build: .
     image: stock-screener:latest
     container_name: stock-screener
     restart: unless-stopped
+    depends_on:
+      - traefik
     ports:
       - "${HOST_PORT:-8080}:3000"
     environment:
@@ -35,6 +85,12 @@ networks:
     external: true
 
 volumes:
+  traefik-acme:
+    external: true
+    name: stock-screener_traefik-acme
+  uptime-kuma-data:
+    external: true
+    name: stock-screener_uptime-kuma-data
   screener-data:
     external: true
     name: stock-screener_screener-data
