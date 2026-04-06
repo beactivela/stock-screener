@@ -501,10 +501,28 @@ export default function StockcircleExperts() {
   const [moneyFlowNarrative, setMoneyFlowNarrative] = useState<
     | { status: 'idle' }
     | { status: 'loading' }
-    | { status: 'ready'; text: string; skipped?: boolean }
+    | {
+        status: 'ready'
+        text: string
+        skipped?: boolean
+        /** Present when server has EXPERTS_CONSENSUS_PROMPT_LOG=1 (temporary prompt-size telemetry). */
+        promptStats?: {
+          systemChars: number
+          userChars: number
+          jsonChars: number
+          totalFirstCallChars: number
+        }
+        /** Same as first `system` + `user` messages to the LLM — for copy/paste to another model. */
+        rawFirstLlmPrompt?: {
+          system: string
+          user: string
+          promptCopyText: string
+        }
+      }
     | { status: 'no_llm' }
     | { status: 'error'; message: string }
   >({ status: 'idle' })
+  const [consensusPromptCopyDone, setConsensusPromptCopyDone] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   /** Tab: consensus tickers · experts×tickers matrix · full leaderboard + Congress tables. */
   const [expertsMainTab, setExpertsMainTab] = useState<'consensus' | 'matrix' | 'experts'>('consensus')
@@ -588,6 +606,17 @@ export default function StockcircleExperts() {
           error?: string
           text?: string
           skipped?: boolean
+          promptStats?: {
+            systemChars: number
+            userChars: number
+            jsonChars: number
+            totalFirstCallChars: number
+          }
+          rawFirstLlmPrompt?: {
+            system: string
+            user: string
+            promptCopyText: string
+          }
         }
         if (cancelled) return
         if (res.status === 503 && json.disabled) {
@@ -599,7 +628,14 @@ export default function StockcircleExperts() {
           return
         }
         if (json.ok && typeof json.text === 'string') {
-          setMoneyFlowNarrative({ status: 'ready', text: json.text, skipped: json.skipped })
+          setConsensusPromptCopyDone(false)
+          setMoneyFlowNarrative({
+            status: 'ready',
+            text: json.text,
+            skipped: json.skipped,
+            promptStats: json.promptStats,
+            rawFirstLlmPrompt: json.rawFirstLlmPrompt,
+          })
         } else {
           setMoneyFlowNarrative({ status: 'error', message: json.error || 'Unexpected response' })
         }
@@ -989,9 +1025,13 @@ export default function StockcircleExperts() {
                   <h3 className="text-sm font-semibold text-teal-200/95 mb-2">
                     AI — money flow &amp; sectors
                   </h3>
+                  <p className="text-xs text-slate-500 mb-2">
+                    Uses <strong className="text-slate-400 font-medium">Strong buys (2+)</strong> only
+                    — same rows as that sub-tab, not single-buys, sells, or mixed.
+                  </p>
                   {(moneyFlowNarrative.status === 'idle' || moneyFlowNarrative.status === 'loading') && (
                     <p className="text-xs text-slate-500">
-                      Mapping buys/sells to sector themes and where capital is clustering…
+                      Mapping those buys to sector themes and where capital is clustering…
                     </p>
                   )}
                   {moneyFlowNarrative.status === 'no_llm' && (
@@ -1014,6 +1054,54 @@ export default function StockcircleExperts() {
                       <p className="text-xs text-slate-500">
                         Votes and USD come from StockCircle overlap data (reported positions, not verified filings).
                       </p>
+                      {moneyFlowNarrative.promptStats && (
+                        <p
+                          className="text-xs font-mono text-slate-500 border-t border-slate-800/80 pt-2 mt-2"
+                          title="Set EXPERTS_CONSENSUS_PROMPT_LOG=1 on the server to include this (first chat turn only)."
+                        >
+                          First LLM call — chars: system {moneyFlowNarrative.promptStats.systemChars} · user{' '}
+                          {moneyFlowNarrative.promptStats.userChars} · JSON block{' '}
+                          {moneyFlowNarrative.promptStats.jsonChars} · total (system+user){' '}
+                          {moneyFlowNarrative.promptStats.totalFirstCallChars}
+                        </p>
+                      )}
+                      {moneyFlowNarrative.rawFirstLlmPrompt && (
+                        <details className="border-t border-slate-800/80 pt-2 mt-2 text-slate-400">
+                          <summary className="cursor-pointer text-xs text-teal-400/90 hover:text-teal-300 select-none">
+                            Raw prompt sent to LLM (copy for external testing)
+                          </summary>
+                          <div className="mt-2 space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                className="rounded border border-slate-600 bg-slate-900/80 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800"
+                                onClick={() => {
+                                  void navigator.clipboard
+                                    .writeText(moneyFlowNarrative.rawFirstLlmPrompt!.promptCopyText)
+                                    .then(() => {
+                                      setConsensusPromptCopyDone(true)
+                                      window.setTimeout(() => setConsensusPromptCopyDone(false), 2500)
+                                    })
+                                }}
+                              >
+                                {consensusPromptCopyDone ? 'Copied' : 'Copy full prompt'}
+                              </button>
+                              <span className="text-xs text-slate-500">
+                                One block: <code className="text-slate-400">--- SYSTEM ---</code> then{' '}
+                                <code className="text-slate-400">--- USER ---</code>
+                              </span>
+                            </div>
+                            <textarea
+                              readOnly
+                              rows={14}
+                              className="w-full resize-y rounded border border-slate-700 bg-slate-950/80 p-2 text-[11px] leading-snug font-mono text-slate-300"
+                              value={moneyFlowNarrative.rawFirstLlmPrompt.promptCopyText}
+                              spellCheck={false}
+                              aria-label="Raw system and user prompt text sent to the consensus LLM"
+                            />
+                          </div>
+                        </details>
+                      )}
                     </div>
                   )}
                 </div>

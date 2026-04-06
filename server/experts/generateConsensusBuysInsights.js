@@ -6,6 +6,7 @@ import {
   collectAllowedTickersFromSlimDigest,
   findDisallowedTickerMentions,
 } from './consensusBuysAllowlists.js';
+import { filterConsensusDigestToStrongBuysOnly } from './filterConsensusDigestToStrongBuysOnly.js';
 import { slimConsensusDigestForLlm } from './slimConsensusDigestForLlm.js';
 
 /**
@@ -34,13 +35,13 @@ export function stripConsensusBuysNarrativeLeadIn(text) {
  */
 export async function generateConsensusBuysInsights(digest) {
   const { provider, model } = resolveExpertsInsightsConfig();
-  const forLlm = slimConsensusDigestForLlm(digest);
+  const forLlm = slimConsensusDigestForLlm(filterConsensusDigestToStrongBuysOnly(digest));
   const allowedTickers = collectAllowedTickersFromSlimDigest(forLlm);
   const allowedCsv = allowedTickers.join(', ');
 
   const system = [
     'You are a financial editor writing a short column for readers.',
-    'You will receive JSON: expert overlap votes and position sizes (StockCircle; not audited filings).',
+    'You will receive JSON for the Strong buys (2+) tab only: multi-expert net buy rows (buyVotes ≥ 2) and large buy position lines tied to those rows — not single-expert buys, sells, or mixed (StockCircle; not audited filings).',
     'Your ONLY job is to output the finished column text — polished prose, ready to publish.',
     'Do not output: meta-commentary, task restatement, numbered lists of rules, phrases like "The user wants", "Key constraints", "First I need to", "I will analyze".',
     'Do not print standalone labels such as "thought", "Thinking:", or "Analysis:" before the column — start with the opening sentence or the first stock block only.',
@@ -60,7 +61,7 @@ export async function generateConsensusBuysInsights(digest) {
       : 'ALLOWED_TICKERS: (none) — do not cite stock symbols.';
 
   const user = [
-    'Evaluate and describe ONLY what is in the JSON below. Do not supplement with general market knowledge.',
+    'Evaluate and describe ONLY what is in the JSON below (Strong buys 2+ tab only). Do not supplement with general market knowledge.',
     allowLine,
     'Repeat: every (TICK) and every ticker-like symbol in your answer must appear in ALLOWED_TICKERS above.',
     jsonBlock,
@@ -70,8 +71,20 @@ export async function generateConsensusBuysInsights(digest) {
     'End with the last stock block; do not append checklists or repeat these instructions.',
   ].join('\n');
 
+  /** First request to the model: system + user (user embeds jsonBlock). Used for temporary size telemetry. */
+  const firstCallPromptStats = {
+    systemChars: system.length,
+    userChars: user.length,
+    jsonChars: jsonBlock.length,
+    totalFirstCallChars: system.length + user.length,
+  };
+
   if (String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
     console.log('[consensus-buys-ai] prompt sizes', { jsonChars: jsonBlock.length, userChars: user.length });
+  }
+  const promptLog = String(process.env.EXPERTS_CONSENSUS_PROMPT_LOG || '').trim() === '1';
+  if (promptLog) {
+    console.log('[consensus-buys-ai] FIRST_LLM_CALL char counts (temporary telemetry)', firstCallPromptStats);
   }
 
   const maxEnv = Number(process.env.EXPERTS_CONSENSUS_BUYS_MAX_TOKENS);
@@ -204,5 +217,18 @@ export async function generateConsensusBuysInsights(digest) {
     }
   }
 
-  return stripConsensusBuysNarrativeLeadIn(text);
+  /** For pasting into another chat UI — same strings as the first OpenAI-style `system` + `user` messages. */
+  const rawFirstLlmPrompt = promptLog
+    ? {
+        system,
+        user,
+        promptCopyText: `--- SYSTEM ---\n\n${system}\n\n--- USER ---\n\n${user}`,
+      }
+    : undefined;
+
+  return {
+    text: stripConsensusBuysNarrativeLeadIn(text),
+    firstCallPromptStats,
+    rawFirstLlmPrompt,
+  };
 }

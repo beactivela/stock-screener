@@ -91,24 +91,20 @@ export function registerExpertsInsightsRoutes(app) {
         expertWeightsByTicker,
         crossSourceByTicker: crossSourceTickers,
       });
-      const hasConsensus =
-        digest.consensusMultiBuys.length > 0 ||
-        (digest.singleExpertNetBuys?.length ?? 0) > 0 ||
-        digest.consensusSells.length > 0 ||
-        digest.mixedNetZero.length > 0 ||
-        digest.largeBuyPositions.length > 0 ||
-        digest.largeSellPositions.length > 0;
+      /** AI narrative uses Strong buys (2+) only — same rows as the consensus sub-tab. */
+      const hasStrongBuysForAi =
+        digest.consensusMultiBuys.length > 0 || (digest.largeBuyPositions?.length ?? 0) > 0;
 
-      if (!hasConsensus) {
+      if (!hasStrongBuysForAi) {
         return res.json({
           ok: true,
           skipped: true,
           text:
-            'No consensus buy/sell rows in this snapshot (or all filtered out). Try another sync when overlap data populates.',
+            'No Strong buys (2+) rows in this snapshot — the AI summary uses that tab only. Try another sync when overlap data populates.',
         });
       }
 
-      const text = await generateConsensusBuysInsights(digest);
+      const { text, firstCallPromptStats, rawFirstLlmPrompt } = await generateConsensusBuysInsights(digest);
       if (String(process.env.EXPERTS_AI_DEBUG || '').trim() === '1') {
         const words = text.trim().split(/\s+/).filter(Boolean).length;
         console.log('[consensus-buys-ai]', {
@@ -116,7 +112,12 @@ export function registerExpertsInsightsRoutes(app) {
           preview: text.trim().slice(0, 220).replace(/\s+/g, ' '),
         });
       }
-      res.json({ ok: true, text });
+      const payload = { ok: true, text };
+      if (String(process.env.EXPERTS_CONSENSUS_PROMPT_LOG || '').trim() === '1') {
+        payload.promptStats = firstCallPromptStats;
+        payload.rawFirstLlmPrompt = rawFirstLlmPrompt;
+      }
+      res.json(payload);
     } catch (e) {
       res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
     }

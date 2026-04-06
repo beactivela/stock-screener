@@ -1,0 +1,45 @@
+import { createAiPortfolioService } from '../aiPortfolio/service.js'
+
+/**
+ * @param {import('express').Application} app
+ * @param {{ service?: ReturnType<typeof createAiPortfolioService> }} [opts]
+ */
+export function registerAiPortfolioRoutes(app, opts = {}) {
+  const service = opts.service || createAiPortfolioService()
+
+  app.get('/api/ai-portfolio/config', async (_req, res) => {
+    try {
+      const config = await service.getConfig()
+      res.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=60')
+      res.json(config)
+    } catch (error) {
+      res.status(500).json({ error: error?.message || 'Failed to load AI portfolio config.' })
+    }
+  })
+
+  app.get('/api/ai-portfolio/summary', async (_req, res) => {
+    try {
+      const summary = await service.getSummary()
+      res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=45')
+      res.json(summary)
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || 'Failed to load AI portfolio summary.' })
+    }
+  })
+
+  app.post('/api/ai-portfolio/simulate/daily', async (req, res) => {
+    try {
+      const out = await service.runDailyCycle({ asOfDate: req.body?.asOfDate })
+      res.json({ ok: true, ...out })
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || 'Daily AI portfolio run failed.' })
+    }
+  })
+
+  app.get('/api/ai-portfolio/scheduler', (_req, res) => {
+    res.json(service.getSchedulerState())
+  })
+
+  return service
+}
+
