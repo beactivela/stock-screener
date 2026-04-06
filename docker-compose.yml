@@ -7,7 +7,7 @@
 #
 #   docker compose up -d --build
 #
-# App container is deployed by Dokploy from Git (see docker-compose.dokploy.yml). This file keeps Traefik + Kuma.
+# Production Traefik + Uptime Kuma + app: see docker-compose.dokploy.yml (Dokploy). This file is optional/local legacy.
 # Optional Watchtower (GHCR pull) — off by default; enable with:
 #   COMPOSE_PROFILES=watchtower docker compose --profile watchtower up -d
 #
