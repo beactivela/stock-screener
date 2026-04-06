@@ -7,8 +7,9 @@
 #
 #   docker compose up -d --build
 #
-# Optional auto-pull when GHCR :latest digest changes (label-scoped):
-#   docker compose --profile watchtower up -d
+# App container is deployed by Dokploy from Git (see docker-compose.dokploy.yml). This file keeps Traefik + Kuma.
+# Optional Watchtower (GHCR pull) — off by default; enable with:
+#   COMPOSE_PROFILES=watchtower docker compose --profile watchtower up -d
 #
 # Uptime Kuma (same Compose stack): dashboard on host KUMA_PORT (default 3001). From Kuma’s UI add a monitor
 #   URL: http://stock-screener:3000/api/health  (Docker DNS; bypasses Traefik). Public: https://stocks.scaleagent.org/api/health
@@ -61,7 +62,9 @@ services:
       - default
       - dokploy-network
 
+  # Local / manual app build only — not started by default (Dokploy runs production).
   stock-screener:
+    profiles: ["legacy"]
     build: .
     image: stock-screener:latest
     container_name: stock-screener
@@ -88,6 +91,7 @@ services:
 
   watchtower:
     profiles: ["watchtower"]
+    # Not on default path; use profile watchtower explicitly if you need GHCR auto-pull.
     image: containrrr/watchtower:latest
     container_name: stock-screener-watchtower
     restart: unless-stopped
