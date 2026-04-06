@@ -59,6 +59,10 @@ services:
     image: stock-screener:latest
     container_name: stock-screener
     restart: unless-stopped
+    # Dokploy writes `.env` here from the compose “Environment” field; without this, only the
+    # three keys below are injected — SUPABASE_* and other secrets never reach the container.
+    env_file:
+      - .env
     ports:
       - "${HOST_PORT:-8080}:3000"
     environment:
