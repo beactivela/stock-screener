@@ -59,8 +59,6 @@ services:
     image: stock-screener:latest
     container_name: stock-screener
     restart: unless-stopped
-    depends_on:
-      - traefik
     ports:
       - "${HOST_PORT:-8080}:3000"
     environment:
