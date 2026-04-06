@@ -1,0 +1,40 @@
+# Dokploy-only stack: app container only (Traefik + Kuma + Watchtower stay on the host compose).
+# Dokploy runs: docker compose -p <appName> -f ./docker-compose.dokploy.yml up -d --build
+# Env vars come from Dokploy’s compose “Environment” (written as .env beside this file at deploy time).
+# Reuses existing Docker volume + networks from the main stack so routing and data stay consistent.
+
+services:
+  stock-screener:
+    build: .
+    image: stock-screener:latest
+    container_name: stock-screener
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      CRON_ALLOW_EXPERTS_BROWSER_SYNC: "1"
+    volumes:
+      - screener-data:/app/data
+    networks:
+      - stock-screener-net
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=stock-screener-net"
+      - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST:?Set TRAEFIK_HOST in Dokploy env}`)"
+      - "traefik.http.routers.stock-screener.entrypoints=websecure"
+      - "traefik.http.routers.stock-screener.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stock-screener.loadbalancer.server.port=3000"
+
+networks:
+  stock-screener-net:
+    external: true
+  dokploy-network:
+    external: true
+
+volumes:
+  screener-data:
+    external: true
+    name: stock-screener_screener-data
