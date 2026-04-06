@@ -21,7 +21,9 @@ services:
       - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
     command:
       - --log.level=INFO
-      - --api.dashboard=false
+      # Dokploy UI (/dashboard/traefik) talks to Traefik’s API on :8080 (same Docker network only).
+      - --api.dashboard=true
+      - --api.insecure=true
       - --ping=true
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
