@@ -21,7 +21,9 @@ services:
       - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
     command:
       - --log.level=INFO
-      - --api.dashboard=false
+      # Dokploy UI (/dashboard/traefik) talks to Traefik’s API on :8080 (same Docker network only).
+      - --api.dashboard=true
+      - --api.insecure=true
       - --ping=true
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -59,6 +61,10 @@ services:
     restart: unless-stopped
     depends_on:
       - traefik
+    # Dokploy writes `.env` here from the compose “Environment” field; without this, only the
+    # three keys below are injected — SUPABASE_* and other secrets never reach the container.
+    env_file:
+      - .env
     ports:
       - "${HOST_PORT:-8080}:3000"
     environment:
