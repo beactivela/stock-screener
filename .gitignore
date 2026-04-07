@@ -3,7 +3,8 @@ dist
 .env
 *.log
 .DS_Store
-data/
+# Runtime / local data at repo root only (do not use bare `data/` — that ignores src/data/)
+/data/
 .venv-tradingagents/
 
 # Local clone of karpathy/autoresearch (optional; not tracked)

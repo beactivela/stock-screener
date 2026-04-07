@@ -243,7 +243,10 @@ export default function AiPortfolio() {
           </section>
 
           <section className="space-y-4">
-            {managerRows.map((row) => (
+            {managerRows.map((row) => {
+              const unrealizedTotalUsd = row.data.positions.reduce((s, p) => s + p.unrealizedPnlUsd, 0)
+              const realizedPnlUsd = row.data.runningPnlUsd - unrealizedTotalUsd
+              return (
               <div key={row.id} className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="text-base font-semibold text-slate-100">{row.label} portfolio</h3>
@@ -287,8 +290,8 @@ export default function AiPortfolio() {
                             <td className={`px-3 py-2 ${position.unrealizedPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                               {usd(position.unrealizedPnlUsd)}
                             </td>
-                            <td className={`px-3 py-2 ${row.data.runningPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                              {usd(row.data.runningPnlUsd - row.data.unrealizedPnlUsd)}
+                            <td className={`px-3 py-2 ${realizedPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                              {usd(realizedPnlUsd)}
                             </td>
                             <td className={`px-3 py-2 ${row.data.runningPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                               {usd(row.data.runningPnlUsd)}
@@ -305,7 +308,8 @@ export default function AiPortfolio() {
                   </table>
                 </div>
               </div>
-            ))}
+              )
+            })}
           </section>
         </>
       )}

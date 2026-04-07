@@ -30,7 +30,37 @@ import {
   type BlendedLeaderboardEntry,
   type BlendedSortKey,
 } from '../utils/blendedLeaderboardSort'
-import { CONGRESS_TRADES_LEADERBOARD } from '../data/congressTradesLeaderboard'
+import {
+  CONGRESS_TRADES_LEADERBOARD,
+  type CongressTradesLeaderboardRow,
+} from '../data/congressTradesLeaderboard'
+
+/** Quiver `recentTrades` row shape (subset used in UI). */
+type QuiverCongressTrade = {
+  transaction_date?: string | null
+  symbol?: string | null
+  transaction_type?: string | null
+  amount_range?: string | null
+}
+
+type CongressDisplayRow =
+  | {
+      kind: 'quiver'
+      rank: number
+      name: string
+      perf1y: number | null
+      perf3y: number | null
+      perf5y: number | null
+      perf10y: number | null
+      trades: QuiverCongressTrade[]
+    }
+  | {
+      kind: 'static'
+      rank: number
+      name: string
+      perf1yLabel: string
+      trades: readonly []
+    }
 
 interface ExpertWeight {
   investorSlug: string
@@ -840,7 +870,7 @@ export default function StockcircleExperts() {
   )
 
   /** Quiver-backed congress metrics when sync has run; else curated static list. */
-  const congressDisplayRows = useMemo(() => {
+  const congressDisplayRows = useMemo((): CongressDisplayRow[] => {
     const qm = data?.quiverCongress?.members
     if (qm && qm.length > 0) {
       const sorted = [...qm].sort((a, b) => {
@@ -862,7 +892,7 @@ export default function StockcircleExperts() {
         trades: m.recentTrades ?? [],
       }))
     }
-    return CONGRESS_TRADES_LEADERBOARD.map((r) => ({
+    return CONGRESS_TRADES_LEADERBOARD.map((r: CongressTradesLeaderboardRow) => ({
       kind: 'static' as const,
       rank: r.rank,
       name: r.name,
@@ -1619,7 +1649,7 @@ export default function StockcircleExperts() {
                     </tr>
                   </thead>
                   <tbody>
-                    {congressDisplayRows.map((row) => (
+                    {congressDisplayRows.map((row: CongressDisplayRow) => (
                       <tr
                         key={row.kind === 'quiver' ? `q-${row.name}-${row.rank}` : `s-${row.rank}`}
                         className="border-t border-slate-800/80 hover:bg-slate-800/25"
@@ -1633,7 +1663,7 @@ export default function StockcircleExperts() {
                                 Recent trades (90d): {row.trades.length}
                               </summary>
                               <ul className="mt-1.5 max-h-40 overflow-y-auto list-disc pl-4 text-slate-400 space-y-0.5">
-                                {row.trades.slice(0, 20).map((t, j) => (
+                                {row.trades.slice(0, 20).map((t: QuiverCongressTrade, j: number) => (
                                   <li key={`${t.symbol ?? 'x'}-${t.transaction_date ?? j}-${j}`}>
                                     {t.transaction_date?.slice(0, 10) ?? '—'} · {t.symbol ?? '—'} ·{' '}
                                     {t.transaction_type ?? '—'}
