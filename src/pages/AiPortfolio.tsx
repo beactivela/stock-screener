@@ -48,6 +48,23 @@ type SummaryResponse = {
   managers: Record<string, ManagerSummary>
 }
 
+async function parseJsonSafe<T>(response: Response): Promise<T | null> {
+  try {
+    return (await response.json()) as T
+  } catch {
+    return null
+  }
+}
+
+async function extractResponseError(response: Response, fallback: string) {
+  const json = await parseJsonSafe<{ error?: string; message?: string }>(response)
+  if (json?.error) return json.error
+  if (json?.message) return json.message
+  const text = await response.text().catch(() => '')
+  if (text && text.trim()) return `${fallback}: ${text.slice(0, 240)}`
+  return `${fallback} (HTTP ${response.status})`
+}
+
 function usd(n: number | null | undefined) {
   const value = Number(n)
   if (!Number.isFinite(value)) return '—'
@@ -81,10 +98,14 @@ export default function AiPortfolio() {
         fetch(`${API_BASE}/api/ai-portfolio/config`, { cache: 'no-store' }),
         fetch(`${API_BASE}/api/ai-portfolio/summary`, { cache: 'no-store' }),
       ])
-      const cfg = (await cfgRes.json()) as ConfigResponse
-      const sum = (await sumRes.json()) as SummaryResponse
-      if (!cfgRes.ok) throw new Error('Failed to load AI Portfolio config.')
-      if (!sumRes.ok || !sum?.ok) throw new Error('Failed to load AI Portfolio summary.')
+      const cfg = await parseJsonSafe<ConfigResponse>(cfgRes)
+      const sum = await parseJsonSafe<SummaryResponse>(sumRes)
+      if (!cfgRes.ok || !cfg) {
+        throw new Error(await extractResponseError(cfgRes, 'Failed to load AI Portfolio config'))
+      }
+      if (!sumRes.ok || !sum?.ok) {
+        throw new Error(await extractResponseError(sumRes, 'Failed to load AI Portfolio summary'))
+      }
       setConfig(cfg)
       setSummary(sum)
     } catch (e) {
@@ -131,8 +152,11 @@ export default function AiPortfolio() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       })
-      const body = await response.json()
-      if (!response.ok || !body?.ok) throw new Error(body?.error || 'Daily run failed.')
+      const body = await parseJsonSafe<{ ok?: boolean; error?: string }>(response)
+      if (!response.ok || !body?.ok) {
+        const err = body?.error || (await extractResponseError(response, 'Daily run failed'))
+        throw new Error(err)
+      }
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Daily run failed.')
