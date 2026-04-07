@@ -375,26 +375,3 @@ export async function loadCurrentRegime() {
   }
   return out;
 }
-
-/**
- * Load 5-year backtest analysis (full history + metrics) for SPY and QQQ.
- * @returns {Promise<{ spy: object | null, qqq: object | null }>}
- */
-export async function loadRegimeBacktest() {
-  const out = { spy: null, qqq: null };
-  if (isSupabaseConfigured()) {
-    const supabase = getSupabase();
-    for (const key of ['SPY', 'QQQ']) {
-      const { data } = await supabase.from('regime_backtest').select('*').eq('ticker', key).single();
-      if (data?.backtest_json) out[key.toLowerCase()] = data.backtest_json;
-    }
-    if (out.spy || out.qqq) return out;
-  }
-  for (const key of ['spy', 'qqq']) {
-    const p = path.join(REGIME_DIR, `backtest_${key}.json`);
-    if (fs.existsSync(p)) {
-      try { out[key] = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) {}
-    }
-  }
-  return out;
-}

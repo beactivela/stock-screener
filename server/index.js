@@ -23,7 +23,6 @@ import {
 } from './http/registerCoreScanCronBarsMarketRoutes.js';
 import { registerLearningRoutes } from './http/registerLearningRoutes.js';
 import { registerOpus45Routes } from './http/registerOpus45Routes.js';
-import { registerRegimeRoutes } from './http/registerRegimeRoutes.js';
 import { registerTradesRoutes } from './http/registerTradesRoutes.js';
 import { registerExitLearningRoutes } from './http/registerExitLearningRoutes.js';
 import {
@@ -32,7 +31,6 @@ import {
 } from './http/registerAgentsRoutes.js';
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
 import { registerTradingAgentsRoutes } from './http/registerTradingAgentsRoutes.js';
-import { registerAtlasRoutes } from './http/registerAtlasRoutes.js';
 import { registerAiPortfolioRoutes } from './http/registerAiPortfolioRoutes.js';
 import { registerStockcircleRoutes } from './http/registerStockcircleRoutes.js';
 import { registerWhalewisdomRoutes } from './http/registerWhalewisdomRoutes.js';
@@ -82,11 +80,9 @@ if (process.env.SCHEDULE_SCAN === '1') {
 }
 
 registerOpus45Routes(app);
-registerRegimeRoutes(app);
 registerTradesRoutes(app);
 registerExitLearningRoutes(app);
 registerTradingAgentsRoutes(app);
-registerAtlasRoutes(app);
 const aiPortfolioService = registerAiPortfolioRoutes(app);
 registerAgentsRoutesBeforeHeartbeat(app);
 registerMarcusNewsRoutes(app);

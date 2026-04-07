@@ -106,22 +106,10 @@ export default function Layout({ children }: LayoutProps) {
               Industry
             </Link>
             <Link
-              to="/regime"
-              className={`text-sm ${location.pathname === '/regime' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              Regime
-            </Link>
-            <Link
               to="/tradingagents"
               className={`text-sm ${location.pathname === '/tradingagents' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >
               TradingAgents
-            </Link>
-            <Link
-              to="/atlas"
-              className={`text-sm ${location.pathname === '/atlas' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              ATLAS
             </Link>
             <Link
               to="/ai-portfolio"
