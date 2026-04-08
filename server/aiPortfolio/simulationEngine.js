@@ -28,7 +28,55 @@ function defaultManagerState(managerId) {
     positions: [],
     recentTrades: [],
     rejectedTrades: [],
+    /** @type {null | Record<string, unknown>} */
+    lastLlmInsight: null,
   }
+}
+
+/**
+ * @param {unknown} result
+ * @returns {{ suggestion: object, llm: object | null, usage: object | null }}
+ */
+export function normalizeSuggestPayload(result) {
+  if (result && typeof result === 'object' && result.suggestion && typeof result.suggestion === 'object') {
+    return {
+      suggestion: result.suggestion,
+      llm: result.llm && typeof result.llm === 'object' ? result.llm : null,
+      usage: result.usage && typeof result.usage === 'object' ? result.usage : null,
+    }
+  }
+  return {
+    suggestion: result && typeof result === 'object' ? result : { action: 'no_trade', reason: 'invalid' },
+    llm: null,
+    usage: null,
+  }
+}
+
+/** Merge this run's OpenRouter spend into `state.openRouterDailyCosts` (by calendar date, sums multiple runs/day). */
+function mergeOpenRouterDailyCost(state, date, addedTotalUsd, addedByManager) {
+  const add = Number(addedTotalUsd) || 0
+  const keys = Object.keys(addedByManager || {}).filter((k) => (Number(addedByManager[k]) || 0) > 0)
+  if (add <= 0 && keys.length === 0) return
+
+  const arr = Array.isArray(state.openRouterDailyCosts) ? [...state.openRouterDailyCosts] : []
+  const i = arr.findIndex((x) => x && x.date === date)
+  const prev = i >= 0 ? arr[i] : null
+  const prevBy =
+    prev?.byManager && typeof prev.byManager === 'object' && !Array.isArray(prev.byManager)
+      ? { ...prev.byManager }
+      : {}
+  for (const [k, v] of Object.entries(addedByManager || {})) {
+    const n = Number(v) || 0
+    if (n <= 0) continue
+    prevBy[k] = roundUsd((Number(prevBy[k]) || 0) + n)
+  }
+  const newTotal = roundUsd((prev ? Number(prev.costUsd) || 0 : 0) + add)
+  const row = { date, costUsd: newTotal, byManager: prevBy }
+  if (i >= 0) arr[i] = row
+  else arr.push(row)
+  arr.sort((a, b) => String(a.date).localeCompare(String(b.date)))
+  while (arr.length > 420) arr.shift()
+  state.openRouterDailyCosts = arr
 }
 
 export function createInitialAiPortfolioState({ asOfDate }) {
@@ -50,6 +98,8 @@ export function createInitialAiPortfolioState({ asOfDate }) {
     managers,
     equityDaily: [],
     runs: [],
+    /** @type {Array<{ date: string, costUsd: number, byManager: Record<string, number> }>} */
+    openRouterDailyCosts: [],
   }
 }
 
@@ -278,15 +328,70 @@ function recordAcceptedTrade(managerState, candidate, markUsd, asOfDate) {
   managerState.recentTrades = managerState.recentTrades.slice(0, 100)
 }
 
+function findPositionForExit(managerState, suggestion) {
+  const positions = Array.isArray(managerState.positions) ? managerState.positions : []
+  if (suggestion.exitPositionId) {
+    return positions.find((p) => p.id === suggestion.exitPositionId) || null
+  }
+  const t = String(suggestion.exitTicker || '').toUpperCase()
+  if (!t) return null
+  const matches = positions.filter((p) => String(p.ticker || '').toUpperCase() === t)
+  if (matches.length === 0) return null
+  if (matches.length === 1) return matches[0]
+  const sym = suggestion.exitContractSymbol ? String(suggestion.exitContractSymbol).trim() : ''
+  if (!sym) return null
+  return matches.find((p) => String(p.contractSymbol || '') === sym) || null
+}
+
+/**
+ * Close one position at `markUsd` (per-share for stock; per-contract premium for options).
+ * Call only after `updatePortfolioMarks` so `unrealizedPnlUsd` is current.
+ */
+function applyPositionExit(managerState, pos, markUsd) {
+  const mark = roundUsd(Number(markUsd) || 0)
+  const qty = Number(pos.quantity) || 0
+  const strategy = String(pos.strategy || '').toLowerCase()
+  const inst = String(pos.instrumentType || '').toLowerCase()
+  const realizedDelta = roundUsd(Number(pos.unrealizedPnlUsd) || 0)
+
+  if (inst === 'stock') {
+    managerState.cashUsd = roundUsd((managerState.cashUsd || 0) + qty * mark)
+  } else if (strategy === 'long_call' || strategy === 'leap_call') {
+    managerState.cashUsd = roundUsd((managerState.cashUsd || 0) + qty * mark * 100)
+  } else if (strategy === 'cash_secured_put' || strategy === 'bull_put_spread') {
+    const buyback = roundUsd(qty * mark * 100)
+    managerState.cashUsd = roundUsd((managerState.cashUsd || 0) - buyback + (Number(pos.reservedUsd) || 0))
+  } else {
+    return { ok: false, message: `unsupported strategy for exit: ${strategy}` }
+  }
+
+  managerState.realizedPnlUsd = roundUsd((managerState.realizedPnlUsd || 0) + realizedDelta)
+  const idx = managerState.positions.indexOf(pos)
+  if (idx >= 0) managerState.positions.splice(idx, 1)
+  managerState.recentTrades.unshift({
+    at: isoNow(),
+    ticker: pos.ticker,
+    strategy: pos.strategy,
+    quantity: qty,
+    markUsd: mark,
+    status: 'closed',
+  })
+  managerState.recentTrades = managerState.recentTrades.slice(0, 100)
+  return { ok: true }
+}
+
 function managerSummaryRow(managerState, benchmark) {
   return {
     equityUsd: managerState.equityUsd,
     runningPnlUsd: managerState.runningPnlUsd,
     deployedUsd: managerState.deployedUsd,
+    /** Ledger cash (includes collateral pools; see availableCashUsd for deployable). */
+    cashUsd: managerState.cashUsd,
     availableCashUsd: managerState.availableCashUsd,
     positions: managerState.positions,
     recentTrades: managerState.recentTrades,
     rejectedTrades: managerState.rejectedTrades,
+    lastLlmInsight: managerState.lastLlmInsight || null,
     benchmark,
   }
 }
@@ -297,8 +402,15 @@ export async function runAiPortfolioDailyCycle({
   suggestEntry,
   getStockMark,
   getOptionMark,
+  /** @type {(p: { managerId: string }) => void | Promise<void>} */
+  onManagerLlmStart,
+  /** @type {(p: { managerId: string, suggestion: object, llm: object | null }) => void | Promise<void>} */
+  onManagerLlmComplete,
+  /** @type {(p: { managerId: string, insight: Record<string, unknown> }) => void | Promise<void>} */
+  onManagerIterationEnd,
 }) {
   const next = clone(state || createInitialAiPortfolioState({ asOfDate }))
+  if (!Array.isArray(next.openRouterDailyCosts)) next.openRouterDailyCosts = []
   const currentDate = asOfDate || new Date().toISOString().slice(0, 10)
   const runId = `ai_portfolio_${Date.now()}`
 
@@ -311,6 +423,10 @@ export async function runAiPortfolioDailyCycle({
       next.benchmark.startPrice = Number(spyMarkResult.mark)
     }
   }
+
+  let runOpenRouterUsd = 0
+  /** @type {Record<string, number>} */
+  const runOpenRouterByManager = {}
 
   for (const managerId of AI_PORTFOLIO_MANAGER_IDS) {
     const managerState = next.managers[managerId] || defaultManagerState(managerId)
@@ -334,17 +450,185 @@ export async function runAiPortfolioDailyCycle({
     }
     updatePortfolioMarks({ portfolio: managerState, stockMarksByTicker, optionMarksByContract })
 
-    const suggestion = await suggestEntry({
+    await onManagerLlmStart?.({ managerId })
+    const suggestRaw = await suggestEntry({
       managerId,
       asOfDate: currentDate,
       managerState: clone(managerState),
     })
-    if (!suggestion || suggestion.action === 'no_trade') continue
+    const { suggestion: suggestionIn, llm, usage } = normalizeSuggestPayload(suggestRaw)
+    const suggestion = { ...suggestionIn }
+    if (suggestion._hold) delete suggestion._hold
+
+    const callCost = usage?.costUsd != null && Number.isFinite(Number(usage.costUsd)) ? Number(usage.costUsd) : null
+    if (callCost != null && callCost > 0) {
+      runOpenRouterUsd += callCost
+      runOpenRouterByManager[managerId] = (runOpenRouterByManager[managerId] || 0) + callCost
+    }
+
+    await onManagerLlmComplete?.({ managerId, suggestion, llm })
+
+    let openedNewPosition = false
+    let executionNote = ''
+
+    if (!suggestion || suggestion.action === 'no_trade') {
+      executionNote =
+        llm?.actionIntent === 'hold'
+          ? 'Model chose hold — no new entry; existing positions unchanged by this run.'
+          : llm?.actionIntent === 'error'
+            ? `Model call failed or returned invalid JSON. ${llm?.errorMessage || ''}`.trim()
+            : llm?.actionIntent === 'exit_invalid'
+              ? 'Model chose exit but the payload was incomplete (use exitPositionId or exitTicker; for options add exitContractSymbol if several lines share a ticker).'
+              : suggestion?.reason === 'exit_missing_target'
+                ? 'Model chose exit but did not specify which line to close.'
+                : 'Model passed on a new entry for today (no_trade / risk off).'
+      managerState.lastLlmInsight = {
+        asOfDate: currentDate,
+        thesis: llm?.thesis || '',
+        portfolioReview: llm?.portfolioReview || '',
+        entryThesis: llm?.entryThesis || '',
+        entryConviction: llm?.entryConviction || '',
+        rawText: llm?.rawText || '',
+        positionStance: llm?.positionStance || '',
+        actionIntent: llm?.actionIntent || 'pass',
+        model: llm?.model || '',
+        parseOk: llm?.parseOk !== false,
+        openedNewPosition: false,
+        executionNote,
+        errorMessage: llm?.errorMessage || null,
+        costUsd: llm?.costUsd ?? null,
+      }
+      await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
+      continue
+    }
+
+    if (suggestion.action === 'exit') {
+      const pos = findPositionForExit(managerState, suggestion)
+      if (!pos) {
+        executionNote =
+          'Rejected: exit — no matching open position for exitPositionId / exitTicker (for options use exitContractSymbol when multiple lines share a ticker).'
+        managerState.lastLlmInsight = {
+          asOfDate: currentDate,
+          thesis: llm?.thesis || '',
+          portfolioReview: llm?.portfolioReview || '',
+          entryThesis: llm?.entryThesis || '',
+          entryConviction: llm?.entryConviction || '',
+          rawText: llm?.rawText || '',
+          positionStance: llm?.positionStance || '',
+          actionIntent: llm?.actionIntent || 'exit',
+          model: llm?.model || '',
+          parseOk: llm?.parseOk !== false,
+          openedNewPosition: false,
+          executionNote,
+          errorMessage: llm?.errorMessage || null,
+          costUsd: llm?.costUsd ?? null,
+        }
+        await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
+        continue
+      }
+
+      let exitMark = null
+      if (pos.instrumentType === 'option' && pos.contractSymbol) {
+        const om = await getOptionMark({ ticker: pos.ticker, contractSymbol: pos.contractSymbol })
+        exitMark = om?.ok ? Number(om.mark) : null
+      } else {
+        const sm = await getStockMark(pos.ticker)
+        exitMark = sm?.ok ? Number(sm.mark) : null
+      }
+      if (!exitMark || exitMark <= 0) {
+        executionNote = 'Rejected: could not load a live mark to close the position.'
+        managerState.lastLlmInsight = {
+          asOfDate: currentDate,
+          thesis: llm?.thesis || '',
+          portfolioReview: llm?.portfolioReview || '',
+          entryThesis: llm?.entryThesis || '',
+          entryConviction: llm?.entryConviction || '',
+          rawText: llm?.rawText || '',
+          positionStance: llm?.positionStance || '',
+          actionIntent: llm?.actionIntent || 'exit',
+          model: llm?.model || '',
+          parseOk: llm?.parseOk !== false,
+          openedNewPosition: false,
+          executionNote,
+          errorMessage: llm?.errorMessage || null,
+          costUsd: llm?.costUsd ?? null,
+        }
+        await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
+        continue
+      }
+
+      const exitRes = applyPositionExit(managerState, pos, exitMark)
+      if (!exitRes.ok) {
+        executionNote = `Rejected: ${exitRes.message || 'could not close position'}.`
+        managerState.lastLlmInsight = {
+          asOfDate: currentDate,
+          thesis: llm?.thesis || '',
+          portfolioReview: llm?.portfolioReview || '',
+          entryThesis: llm?.entryThesis || '',
+          entryConviction: llm?.entryConviction || '',
+          rawText: llm?.rawText || '',
+          positionStance: llm?.positionStance || '',
+          actionIntent: llm?.actionIntent || 'exit',
+          model: llm?.model || '',
+          parseOk: llm?.parseOk !== false,
+          openedNewPosition: false,
+          executionNote,
+          errorMessage: llm?.errorMessage || null,
+          costUsd: llm?.costUsd ?? null,
+        }
+        await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
+        continue
+      }
+
+      if (pos.instrumentType === 'option' && pos.contractSymbol) {
+        delete optionMarksByContract[pos.contractSymbol]
+      }
+      updatePortfolioMarks({ portfolio: managerState, stockMarksByTicker, optionMarksByContract })
+      executionNote = `Closed ${pos.ticker} (${pos.strategy}) at modeled mark.`
+      managerState.lastLlmInsight = {
+        asOfDate: currentDate,
+        thesis: llm?.thesis || '',
+        portfolioReview: llm?.portfolioReview || '',
+        entryThesis: llm?.entryThesis || '',
+        entryConviction: llm?.entryConviction || '',
+        rawText: llm?.rawText || '',
+        positionStance: llm?.positionStance || '',
+        actionIntent: llm?.actionIntent || 'exit',
+        model: llm?.model || '',
+        parseOk: llm?.parseOk !== false,
+        openedNewPosition: false,
+        executionNote,
+        errorMessage: llm?.errorMessage || null,
+        costUsd: llm?.costUsd ?? null,
+      }
+      await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
+      continue
+    }
 
     const ticker = String(suggestion.ticker || '').toUpperCase()
-    if (!ticker) continue
+    if (!ticker) {
+      executionNote = 'Rejected: model returned enter without a valid ticker.'
+      managerState.lastLlmInsight = {
+        asOfDate: currentDate,
+        thesis: llm?.thesis || '',
+        portfolioReview: llm?.portfolioReview || '',
+        entryThesis: llm?.entryThesis || '',
+        entryConviction: llm?.entryConviction || '',
+        rawText: llm?.rawText || '',
+        positionStance: llm?.positionStance || '',
+        actionIntent: llm?.actionIntent || 'enter',
+        model: llm?.model || '',
+        parseOk: llm?.parseOk !== false,
+        openedNewPosition: false,
+        executionNote,
+        costUsd: llm?.costUsd ?? null,
+      }
+      await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
+      continue
+    }
     const stockMark = await getStockMark(ticker)
     if (!stockMark?.ok || !Number.isFinite(stockMark.mark) || Number(stockMark.mark) <= 0) {
+      executionNote = 'Rejected: could not load a live Yahoo mark for the proposed ticker.'
       managerState.rejectedTrades.unshift({
         at: isoNow(),
         ticker,
@@ -352,6 +636,22 @@ export async function runAiPortfolioDailyCycle({
         violations: [{ code: 'NO_MARK', message: 'Could not resolve live mark for ticker.' }],
       })
       managerState.rejectedTrades = managerState.rejectedTrades.slice(0, 50)
+      managerState.lastLlmInsight = {
+        asOfDate: currentDate,
+        thesis: llm?.thesis || '',
+        portfolioReview: llm?.portfolioReview || '',
+        entryThesis: llm?.entryThesis || '',
+        entryConviction: llm?.entryConviction || '',
+        rawText: llm?.rawText || '',
+        positionStance: llm?.positionStance || '',
+        actionIntent: llm?.actionIntent || 'enter',
+        model: llm?.model || '',
+        parseOk: llm?.parseOk !== false,
+        openedNewPosition: false,
+        executionNote,
+        costUsd: llm?.costUsd ?? null,
+      }
+      await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
       continue
     }
 
@@ -381,7 +681,10 @@ export async function runAiPortfolioDailyCycle({
         optionMarksByContract[candidate.contractSymbol] = Number(optionMark.mark)
       }
     }
-    if (!candidate.quantity || candidate.quantity <= 0) {
+    if (!candidate || !candidate.quantity || candidate.quantity <= 0) {
+      executionNote = !candidate
+        ? 'Rejected: could not build a stock/option candidate from the model fields (check strategy & marks).'
+        : 'Rejected: position size computed to zero under 10% / 2% / cash rules.'
       managerState.rejectedTrades.unshift({
         at: isoNow(),
         ticker,
@@ -389,6 +692,22 @@ export async function runAiPortfolioDailyCycle({
         violations: [{ code: 'SIZE_ZERO', message: 'No valid position size under risk rules.' }],
       })
       managerState.rejectedTrades = managerState.rejectedTrades.slice(0, 50)
+      managerState.lastLlmInsight = {
+        asOfDate: currentDate,
+        thesis: llm?.thesis || '',
+        portfolioReview: llm?.portfolioReview || '',
+        entryThesis: llm?.entryThesis || '',
+        entryConviction: llm?.entryConviction || '',
+        rawText: llm?.rawText || '',
+        positionStance: llm?.positionStance || '',
+        actionIntent: llm?.actionIntent || 'enter',
+        model: llm?.model || '',
+        parseOk: llm?.parseOk !== false,
+        openedNewPosition: false,
+        executionNote,
+        costUsd: llm?.costUsd ?? null,
+      }
+      await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
       continue
     }
 
@@ -400,12 +719,50 @@ export async function runAiPortfolioDailyCycle({
     const evaluation = evaluateEntryRules({ portfolio: snapshot, candidate })
     if (!evaluation.ok) {
       recordRejectedTrade(managerState, candidate, evaluation)
+      const v0 = evaluation.violations?.[0]
+      executionNote = `Rejected by risk engine: ${v0 ? `${v0.code} — ${v0.message}` : 'rule violation'}`
+      managerState.lastLlmInsight = {
+        asOfDate: currentDate,
+        thesis: llm?.thesis || '',
+        portfolioReview: llm?.portfolioReview || '',
+        entryThesis: llm?.entryThesis || '',
+        entryConviction: llm?.entryConviction || '',
+        rawText: llm?.rawText || '',
+        positionStance: llm?.positionStance || '',
+        actionIntent: llm?.actionIntent || 'enter',
+        model: llm?.model || '',
+        parseOk: llm?.parseOk !== false,
+        openedNewPosition: false,
+        executionNote,
+        costUsd: llm?.costUsd ?? null,
+      }
+      await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
       continue
     }
 
     recordAcceptedTrade(managerState, candidate, fillMarkUsd, currentDate)
+    openedNewPosition = true
+    executionNote = `Filled new ${candidate.instrumentType} ${candidate.strategy} on ${ticker} (qty ${candidate.quantity}).`
     updatePortfolioMarks({ portfolio: managerState, stockMarksByTicker, optionMarksByContract })
+    managerState.lastLlmInsight = {
+      asOfDate: currentDate,
+      thesis: llm?.thesis || '',
+      portfolioReview: llm?.portfolioReview || '',
+      entryThesis: llm?.entryThesis || '',
+      entryConviction: llm?.entryConviction || '',
+      rawText: llm?.rawText || '',
+      positionStance: llm?.positionStance || '',
+      actionIntent: llm?.actionIntent || 'enter',
+      model: llm?.model || '',
+      parseOk: llm?.parseOk !== false,
+      openedNewPosition,
+      executionNote,
+      costUsd: llm?.costUsd ?? null,
+    }
+    await onManagerIterationEnd?.({ managerId, insight: managerState.lastLlmInsight })
   }
+
+  mergeOpenRouterDailyCost(next, currentDate, runOpenRouterUsd, runOpenRouterByManager)
 
   const summaryManagers = {}
   for (const managerId of AI_PORTFOLIO_MANAGER_IDS) {
@@ -445,6 +802,7 @@ export async function runAiPortfolioDailyCycle({
       asOfDate: currentDate,
       benchmark: next.benchmark,
       managers: summaryManagers,
+      openRouterDailyCosts: next.openRouterDailyCosts || [],
     },
   }
 }
@@ -468,6 +826,7 @@ export function buildAiPortfolioSummary(state) {
     benchmark: safe.benchmark,
     managers,
     equityDaily: safe.equityDaily || [],
+    openRouterDailyCosts: safe.openRouterDailyCosts || [],
   }
 }
 

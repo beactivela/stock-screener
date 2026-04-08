@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { getSupabase, isSupabaseConfigured } from '../supabase.js'
+import { getManagerModelMap } from './ollamaManagers.js'
 import { createInitialAiPortfolioState } from './simulationEngine.js'
 import { AI_PORTFOLIO_MANAGER_LABELS } from './types.js'
 
@@ -67,10 +68,11 @@ export function createAiPortfolioStore() {
 
     const runId = runInsert.data?.id || null
     const managers = state?.managers || {}
+    const modelMap = getManagerModelMap()
     const managerRows = Object.keys(managers).map((id) => ({
       id,
       display_name: AI_PORTFOLIO_MANAGER_LABELS[id] || id,
-      model_name: String(process.env[`AI_PORTFOLIO_MODEL_${id.toUpperCase()}`] || id),
+      model_name: modelMap[id] || id,
       updated_at: new Date().toISOString(),
     }))
     if (managerRows.length) {

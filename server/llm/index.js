@@ -167,8 +167,31 @@ function openRouterDefaultHeaders() {
 }
 
 /**
- * @param {{ provider: string, model: string, system?: string, messages?: unknown[], maxTokens?: number, temperature?: number, reasoningFallback?: boolean, returnFinishReason?: boolean }} opts
- * @returns {Promise<string | { text: string, finishReason: string | null }>}
+ * OpenRouter extends the OpenAI usage object with `cost` (USD charged). See usage accounting docs.
+ * @param {unknown} response
+ * @returns {{ costUsd: number | null, promptTokens: number | null, completionTokens: number | null, totalTokens: number | null } | null}
+ */
+export function extractOpenRouterUsageFromResponse(response) {
+  const u = response?.usage;
+  if (!u || typeof u !== 'object') return null;
+  const costRaw = u.cost ?? u.total_cost;
+  const costUsd =
+    typeof costRaw === 'number' && Number.isFinite(costRaw)
+      ? costRaw
+      : typeof costRaw === 'string' && costRaw.trim() !== ''
+        ? Number(costRaw)
+        : null;
+  return {
+    costUsd: costUsd != null && Number.isFinite(costUsd) ? costUsd : null,
+    promptTokens: typeof u.prompt_tokens === 'number' ? u.prompt_tokens : null,
+    completionTokens: typeof u.completion_tokens === 'number' ? u.completion_tokens : null,
+    totalTokens: typeof u.total_tokens === 'number' ? u.total_tokens : null,
+  };
+}
+
+/**
+ * @param {{ provider: string, model: string, system?: string, messages?: unknown[], maxTokens?: number, temperature?: number, reasoningFallback?: boolean, returnFinishReason?: boolean, returnOpenRouterUsage?: boolean }} opts
+ * @returns {Promise<string | { text: string, finishReason: string | null, openRouterUsage?: object | null }>}
  */
 export async function generateLlmReply({
   provider,
@@ -181,6 +204,8 @@ export async function generateLlmReply({
   reasoningFallback = true,
   /** When true, return `{ text, finishReason }` so callers can continue on `length` / max_tokens. */
   returnFinishReason = false,
+  /** When true (OpenRouter only), return `{ text, finishReason, openRouterUsage }` with billed USD when the API provides it. */
+  returnOpenRouterUsage = false,
 }) {
   const normalizedProvider = normalizeProvider(provider);
   const cleanMessages = normalizeMessages(messages);
@@ -344,7 +369,15 @@ export async function generateLlmReply({
 
     const text =
       assistantTextFromChatMessage(msg, { reasoningFallback }) || 'No response.';
-    return pack(text, choice?.finish_reason ?? null);
+    const finishReason = choice?.finish_reason ?? null;
+    if (returnOpenRouterUsage) {
+      return {
+        text,
+        finishReason,
+        openRouterUsage: extractOpenRouterUsageFromResponse(response),
+      };
+    }
+    return pack(text, finishReason);
   }
 
   throw new Error(`Unsupported LLM provider: ${provider}`);

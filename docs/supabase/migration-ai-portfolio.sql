@@ -106,6 +106,6 @@ VALUES
   ('claude', 'Claude', 'anthropic/claude-3.7-sonnet'),
   ('gpt', 'GPT', 'openai/gpt-4.1'),
   ('gemini', 'Gemini', 'google/gemini-2.5-pro'),
-  ('deepseek', 'DeepSeek', 'deepseek/deepseek-r1')
+  ('deepseek', 'DeepSeek', 'deepseek/deepseek-v3.2')
 ON CONFLICT (id) DO NOTHING;
 

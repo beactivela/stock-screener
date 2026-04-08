@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-04-07T02:26:35.083Z",
+  "updatedAt": "2026-04-08T02:04:39.916Z",
   "transcripts": {
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/012557e6-4a95-4daa-ab3e-6d67d81b3e3f/012557e6-4a95-4daa-ab3e-6d67d81b3e3f.jsonl": {
       "mtimeMs": 1771567235064.4788,
@@ -169,6 +169,10 @@
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/285d03c4-ff6c-4009-872e-f780ae7aeb42/285d03c4-ff6c-4009-872e-f780ae7aeb42.jsonl": {
       "mtimeMs": 1771713424122.0005,
       "sizeBytes": 2351
+    },
+    "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/29b59558-d01b-4115-a497-c2a43da8e614/29b59558-d01b-4115-a497-c2a43da8e614.jsonl": {
+      "mtimeMs": 1775532815949.0127,
+      "sizeBytes": 15585
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/2a3b371b-a4d1-4fe1-8ab7-e38330102e93/2a3b371b-a4d1-4fe1-8ab7-e38330102e93.jsonl": {
       "mtimeMs": 1771907201236.9717,
@@ -606,6 +610,10 @@
       "mtimeMs": 1774759266179.6338,
       "sizeBytes": 6465
     },
+    "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/80c0bec9-b509-4cd7-b21c-c7cc98b5f013/80c0bec9-b509-4cd7-b21c-c7cc98b5f013.jsonl": {
+      "mtimeMs": 1775532811236.3237,
+      "sizeBytes": 13209
+    },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/81d7204c-7253-4fcf-a581-7bb9cef39f57/81d7204c-7253-4fcf-a581-7bb9cef39f57.jsonl": {
       "mtimeMs": 1771825885865.3044,
       "sizeBytes": 35214
@@ -663,8 +671,8 @@
       "sizeBytes": 35094
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/8fcea481-72b2-49d8-bb39-5a7131adbfcc/8fcea481-72b2-49d8-bb39-5a7131adbfcc.jsonl": {
-      "mtimeMs": 1775528468816.538,
-      "sizeBytes": 181950
+      "mtimeMs": 1775613848779.0059,
+      "sizeBytes": 182826
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/8fcea481-72b2-49d8-bb39-5a7131adbfcc/subagents/2b9dc5e7-7675-4818-97a0-c4bc37be8d13.jsonl": {
       "mtimeMs": 1775444960778.7126,
@@ -779,12 +787,12 @@
       "sizeBytes": 905
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/a57c6d1b-ba6a-4146-b65d-cc81696071e9/a57c6d1b-ba6a-4146-b65d-cc81696071e9.jsonl": {
-      "mtimeMs": 1775528755728.7605,
-      "sizeBytes": 8551
+      "mtimeMs": 1775533175754.1577,
+      "sizeBytes": 57209
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/a57c6d1b-ba6a-4146-b65d-cc81696071e9/subagents/0e20a1ce-4864-4010-9a21-49de41442ca4.jsonl": {
-      "mtimeMs": 1775528770546.3433,
-      "sizeBytes": 3200
+      "mtimeMs": 1775528798592.651,
+      "sizeBytes": 13299
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/a70ec452-1721-4fcc-8780-ba4017d20e60/a70ec452-1721-4fcc-8780-ba4017d20e60.jsonl": {
       "mtimeMs": 1772944052113.833,
@@ -971,8 +979,12 @@
       "sizeBytes": 27484
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d2081c8f-503d-429e-99f9-e0d24277b014/d2081c8f-503d-429e-99f9-e0d24277b014.jsonl": {
-      "mtimeMs": 1775527992554.8782,
-      "sizeBytes": 20325
+      "mtimeMs": 1775613830873.7542,
+      "sizeBytes": 23678
+    },
+    "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d2081c8f-503d-429e-99f9-e0d24277b014/subagents/7c036e52-be90-425f-bd38-1a6fb861d09b.jsonl": {
+      "mtimeMs": 1775613866287.4277,
+      "sizeBytes": 3961
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d21e4388-c08c-4dac-9854-899fcf0991cf/d21e4388-c08c-4dac-9854-899fcf0991cf.jsonl": {
       "mtimeMs": 1774227356241.1228,

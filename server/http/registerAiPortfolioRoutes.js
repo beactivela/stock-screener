@@ -36,6 +36,17 @@ export function registerAiPortfolioRoutes(app, opts = {}) {
     }
   })
 
+  /** SSE: per-manager thinking + OpenRouter payload + execution note (see `runDailyCycleSse`). */
+  app.post('/api/ai-portfolio/simulate/daily-stream', async (req, res) => {
+    try {
+      await service.runDailyCycleSse(res, { asOfDate: req.body?.asOfDate })
+    } catch (error) {
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: error?.message || 'Daily stream failed.' })
+      }
+    }
+  })
+
   app.get('/api/ai-portfolio/scheduler', (_req, res) => {
     res.json(service.getSchedulerState())
   })
