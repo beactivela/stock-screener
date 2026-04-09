@@ -580,7 +580,7 @@ export default function StockcircleExperts() {
         } catch {
           if (!cancelled) {
             setErr(
-              `Bad response (HTTP ${res.status}): ${text.trim().slice(0, 280) || res.statusText || 'not JSON'}. If you use Vite alone, run the API on port 3001 (\`npm run dev:server\`) or use \`npm run dev\` (Express + Vite on 5173).`
+              `Bad response (HTTP ${res.status}): ${text.trim().slice(0, 280) || res.statusText || 'not JSON'}. If you use Vite alone, run the API on port 3001 (\`npm run dev:server\`) or use \`npm run dev\` (Express + Vite on 5174).`
             )
           }
           return

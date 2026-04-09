@@ -2,14 +2,14 @@
 /**
  * Verifies fundamentals fetch, cache, and display flow.
  * Run: node scripts/verify-fundamentals.js
- * Requires server (npm run dev → 5173, or npm run server → 3001). Override with BASE_URL.
+ * Requires server (npm run dev → 5174, or npm run server → 3001). Override with BASE_URL.
  */
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASE_URL = process.env.BASE_URL || 'http://localhost:5173';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:5174';
 const DATA_DIR = path.join(process.cwd(), 'data');
 const FUNDAMENTALS_FILE = path.join(DATA_DIR, 'fundamentals.json');
 

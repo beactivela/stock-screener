@@ -682,7 +682,7 @@ export default function Dashboard() {
           <p className="text-amber-200/80 text-sm mt-1">
             {typeof window !== 'undefined' && !window.location.hostname.includes('localhost')
               ? <>Deployed app: add a <code className="bg-amber-900/50 px-1 rounded">data/</code> snapshot to the repo for read-only data, or set <code className="bg-amber-900/50 px-1 rounded">VITE_API_URL</code> to an external server for scans.</>
-              : <>Run the app: <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5173</code>, then refresh.</>
+              : <>Run the app: <code className="bg-amber-900/50 px-1 rounded">npm run dev</code> at <code className="bg-amber-900/50 px-1 rounded">http://localhost:5174</code>, then refresh.</>
             }
           </p>
         </div>

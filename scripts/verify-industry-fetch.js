@@ -2,9 +2,9 @@
 /**
  * Verifies industry fetch: calls POST /api/industry-trend/fetch and waits for completion.
  * Run: node scripts/verify-industry-fetch.js
- * Requires server (npm run dev → 5173, or npm run server → 3001). Override with BASE_URL.
+ * Requires server (npm run dev → 5174, or npm run server → 3001). Override with BASE_URL.
  */
-const BASE = process.env.BASE_URL || 'http://localhost:5173';
+const BASE = process.env.BASE_URL || 'http://localhost:5174';
 
 async function main() {
   console.log('Calling POST /api/industry-trend/fetch...');

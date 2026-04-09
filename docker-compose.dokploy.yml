@@ -1,6 +1,7 @@
 # Single Dokploy stack: Traefik + Uptime Kuma + app (replaces separate host `docker-compose` for infra).
 # Dokploy: docker compose -p <appName> -f ./docker-compose.dokploy.yml up -d --build
 # Env from Dokploy compose Environment (mirrors former host .env for TRAEFIK_HOST, ACME_EMAIL, HOST_PORT, KUMA_PORT).
+# KUMA_PORT default 3002 (host) → 3001 (container): avoids clashing with local `npm run dev:server` on 3001.
 # Volumes are external so we keep existing data from the old `stock-screener` Compose project names.
 
 services:
@@ -46,7 +47,7 @@ services:
     container_name: uptime-kuma
     restart: unless-stopped
     ports:
-      - "${KUMA_PORT:-3001}:3001"
+      - "${KUMA_PORT:-3002}:3001"
     volumes:
       - uptime-kuma-data:/app/data
     labels:

@@ -161,7 +161,7 @@ export function assistantTextFromChatMessage(message, options = {}) {
 
 function openRouterDefaultHeaders() {
   return {
-    'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://127.0.0.1:5173',
+    'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://127.0.0.1:5174',
     'X-Title': process.env.OPENROUTER_APP_TITLE || 'stock-screener',
   };
 }

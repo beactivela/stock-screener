@@ -1,7 +1,7 @@
 /**
  * Express server: API + frontend (Vite in dev, static dist in prod). Caches API data to flat JSON files.
  * Loads .env from project root. Ticker list + industry from TradingView; OHLC bars from Yahoo (TradingView has no bar API).
- * Dev: npm run dev → one process on 5173 (API + Vite HMR). Prod: npm run serve (build + serve on PORT).
+ * Dev: npm run dev → one process on 5174 (API + Vite HMR). Prod: npm run serve (build + serve on PORT).
  */
 
 import dotenv from 'dotenv';
@@ -37,6 +37,7 @@ import { registerWhalewisdomRoutes } from './http/registerWhalewisdomRoutes.js';
 import { registerExpertsSyncRoutes } from './http/registerExpertsSyncRoutes.js';
 import { registerExpertsSummaryRoutes } from './http/registerExpertsSummaryRoutes.js';
 import { registerExpertsInsightsRoutes } from './http/registerExpertsInsightsRoutes.js';
+import { registerAiHedgeFundFmpRoutes } from './http/registerAiHedgeFundFmpRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -47,6 +48,7 @@ app.use(cors());
 app.use(express.json());
 
 registerHealthRoute(app);
+registerAiHedgeFundFmpRoutes(app);
 
 registerDeployRoutes(app);
 

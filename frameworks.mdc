@@ -3,7 +3,16 @@
 ### Runtime
 - **Node**: ESM project (`"type": "module"`). Local dev currently runs on Node 22.x.
 - **Server**: Express (`server/index.js`) serves `/api/*` endpoints.
-- **Client**: Vite + React (`src/`), same-origin in local dev (`npm run dev` runs Express on port 5173).
+- **Client**: Vite + React (`src/`), same-origin in local dev (`npm run dev` runs Express on port 5174).
+
+### Local dev ports (no overlap by default)
+| Port | What |
+|------|------|
+| **5174** | Stock screener: `npm run dev` (Express + Vite middleware on one process). Do **not** also run standalone `vite` — it also binds **5174** per `vite.config.ts`. |
+| **3001** | API-only: `npm run dev:server` (for scripts or split dev: use with `vite` so the UI proxies `/api` → 3001). |
+| **5175** | Bundled **ai-hedge-fund** UI (`ai-hedge-fund/app/frontend`), separate from the screener. |
+| **8000** | AI Hedge Fund FastAPI (`uvicorn` when you run that stack). |
+| **3001** (Docker) | Uptime Kuma maps host `KUMA_PORT` (default **3001**) — conflicts with `dev:server` on the same host. Set e.g. `KUMA_PORT=3002` in `.env` if you run both. |
 
 ### Frontend
 - **Framework**: React 18 + React Router

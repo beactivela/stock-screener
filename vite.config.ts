@@ -16,9 +16,10 @@ export default defineConfig({
     },
     chunkSizeWarningLimit: 500,
   },
-  // In dev: either run "npm run dev" (Express+Vite on 5173) or "npm run dev:server" + "vite" (proxy /api → 3001).
+  // In dev: (1) `npm run dev` → Express+Vite on 5174 (do not start standalone `vite` — same port).
+  // (2) Split: `npm run dev:server` (3001) + `vite` (5174, proxy /api → 3001).
   server: {
-    port: 5173,
+    port: 5174,
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

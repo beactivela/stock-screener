@@ -2,11 +2,11 @@
 
 ## Runtime model (single port)
 
-- **Development:** One process. Run `npm run dev` → Express listens on **port 5173**, with Vite dev middleware for the React app (HMR). The same origin serves both the UI and `/api/*`; no separate backend URL or proxy.
+- **Development:** One process. Run `npm run dev` → Express listens on **port 5174**, with Vite dev middleware for the React app (HMR). The same origin serves both the UI and `/api/*`; no separate backend URL or proxy.
 - **Production:** `npm run build` then `npm run serve` → Express serves the built static app from `dist/` and the same API routes.
 - **Optional:** `npm run server` runs the API only (default port 3001) for scripts or external clients; use `BASE_URL=http://localhost:3001` in scripts if needed.
 
-**Single URL in dev:** `http://localhost:5173` (app) and `http://localhost:5173/api/...` (API).
+**Single URL in dev:** `http://localhost:5174` (app) and `http://localhost:5174/api/...` (API).
 
 ---
 
@@ -513,7 +513,7 @@ SCAN COMPLETED
 ## Technology Stack
 
 ### Runtime
-- **Dev:** Single process — Express (port 5173) + Vite middleware (HMR). One command: `npm run dev`.
+- **Dev:** Single process — Express (port 5174) + Vite middleware (HMR). One command: `npm run dev`.
 - **Prod:** Express serves `dist/` + API. Commands: `npm run build` then `npm run serve`.
 - **Scripts / API-only:** `npm run server` (Express only, default port 3001).
 
@@ -547,7 +547,7 @@ SCAN COMPLETED
 - **Cache:** All caches (bars, fundamentals, industry, opus45 signals, etc.) are persisted in the DB, not in JSON files.
 
 ### Deployment
-- **Development:** `npm run dev` — single process on **http://localhost:5173** (Express API + Vite HMR; app and `/api` on same origin).
+- **Development:** `npm run dev` — single process on **http://localhost:5174** (Express API + Vite HMR; app and `/api` on same origin).
 - **Production:** Build `npm run build`, then serve with `npm run serve` (static + API from same server).
 - **Docker / VPS:** Build the image (`docker compose up -d --build`). Express serves `dist/` and `/api/*` on one port (see [docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)). Persistence is Supabase plus optional `/app/data` volume. Optional **VITE_API_URL** only if the UI must call a different API host (normally leave unset for same-origin). **Host cron** on the VPS should call **`POST /api/cron/refresh-bars`** (Yahoo → **`bars_cache`**) before **`POST /api/cron/run-scan`**; verify over SSH with **`/api/cron/status`** and **`/var/log/stock-screener-cron.log`** (see deploy doc).
 

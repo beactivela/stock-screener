@@ -27,7 +27,7 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
    - **Supabase security:** The server should use **`SUPABASE_SERVICE_KEY`** (service role). Row Level Security is enabled on all `public` tables so the **anon** API key cannot read app data. New databases: apply `docs/supabase/schema.sql` (and learning migrations if needed), then run **`docs/supabase/migration-rls-and-api-hardening.sql`** once. Details: [docs/supabase/README.md](./docs/supabase/README.md).
 
 3. **Run**
-   - **Single server (app + API):** `npm run dev` — one process at **http://localhost:5173**. The app and all `/api/*` routes are served from the same origin (no separate backend URL).
+   - **Single server (app + API):** `npm run dev` — one process at **http://localhost:5174**. The app and all `/api/*` routes are served from the same origin (no separate backend URL).
    - **One-off scan (no server):** `npm run scan` — writes results to the database (Supabase).
 
 4. **24-hour scan**
@@ -40,7 +40,7 @@ Web app that finds stocks meeting **Mark Minervini’s VCP (Volatility Contracti
 
 ## API
 
-Served from the same origin in dev (`http://localhost:5173/api/...`). Key routes:
+Served from the same origin in dev (`http://localhost:5174/api/...`). Key routes:
 
 - `GET /api/scan-results` — last scan payload (scannedAt, results, totalTickers, vcpBullishCount).
 - `POST /api/scan` — start a background scan (throttled).

@@ -11,7 +11,8 @@
 # Optional Watchtower (GHCR pull) — off by default; enable with:
 #   COMPOSE_PROFILES=watchtower docker compose --profile watchtower up -d
 #
-# Uptime Kuma (same Compose stack): dashboard on host KUMA_PORT (default 3001). From Kuma’s UI add a monitor
+# Uptime Kuma (same Compose stack): dashboard on host KUMA_PORT (default 3002 → container 3001). Avoids clashing with
+#   local `npm run dev:server` which uses host 3001. From Kuma’s UI add a monitor
 #   URL: http://stock-screener:3000/api/health  (Docker DNS; bypasses Traefik). Public: https://stocks.scaleagent.org/api/health
 #
 networks:
@@ -111,7 +112,7 @@ services:
     container_name: uptime-kuma
     restart: unless-stopped
     ports:
-      - "${KUMA_PORT:-3001}:3001"
+      - "${KUMA_PORT:-3002}:3001"
     volumes:
       - uptime-kuma-data:/app/data
     labels:

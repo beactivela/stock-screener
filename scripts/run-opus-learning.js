@@ -22,7 +22,7 @@
  *   node scripts/run-opus-learning.js --scan=2025-01-15      # Use specific scan date (prospective)
  *   node scripts/run-opus-learning.js --days=60              # 60-day forward (prospective)
  *
- * API base: http://localhost:5173 (dev) or http://localhost:3001 (server)
+ * API base: http://localhost:5174 (dev) or http://localhost:3001 (server)
  */
 
 import dotenv from 'dotenv';
@@ -33,7 +33,7 @@ import { listScanSnapshots } from '../server/backtest.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
-const API_BASE = process.env.API_BASE || 'http://localhost:5173';
+const API_BASE = process.env.API_BASE || 'http://localhost:5174';
 
 async function fetchJson(url, options = {}) {
   const { timeout: timeoutMs = 0, ...fetchOptions } = options;

@@ -18,6 +18,7 @@ const MarketIndexDetail = lazy(() => import('./pages/MarketIndexDetail'))
 const StockcircleExperts = lazy(() => import('./pages/StockcircleExperts'))
 const StockcircleExpertDetail = lazy(() => import('./pages/StockcircleExpertDetail'))
 const WhalewisdomFilerDetail = lazy(() => import('./pages/WhalewisdomFilerDetail'))
+const AiHedgeFund = lazy(() => import('./pages/AiHedgeFund'))
 
 function PageFallback() {
   return (
@@ -41,6 +42,7 @@ export default function App() {
                 <Route path="/agents" element={<Agents />} />
                 <Route path="/tradingagents" element={<TradingAgentsPage />} />
                 <Route path="/ai-portfolio" element={<AiPortfolio />} />
+                <Route path="/ai-hedge-fund" element={<AiHedgeFund />} />
                 <Route path="/stock/:ticker" element={<StockDetail />} />
                 <Route path="/market-index/:ticker" element={<MarketIndexDetail />} />
                 <Route path="/style" element={<Style />} />
