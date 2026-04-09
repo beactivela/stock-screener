@@ -24,6 +24,15 @@ describe('registerAiPortfolioRoutes', () => {
         async runDailyCycle() {
           return { ok: true, runId: 'run_1' }
         },
+        /** Minimal SSE stub so the stream route is exercised like production Express. */
+        async runDailyCycleSse(res) {
+          res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-cache, no-transform')
+          if (typeof res.flushHeaders === 'function') res.flushHeaders()
+          res.write(`event: start\ndata: ${JSON.stringify({ asOfDate: '2026-04-07' })}\n\n`)
+          res.write(`event: complete\ndata: ${JSON.stringify({ ok: true, runId: 'run_sse' })}\n\n`)
+          res.end()
+        },
       },
     })
     server = http.createServer(app)
@@ -65,6 +74,18 @@ describe('registerAiPortfolioRoutes', () => {
     assert.equal(response.status, 200)
     assert.equal(body.ok, true)
     assert.equal(body.runId, 'run_1')
+  })
+
+  it('POST /api/ai-portfolio/simulate/daily-stream returns SSE framing', async () => {
+    const response = await fetch(`${baseUrl}/api/ai-portfolio/simulate/daily-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({}),
+    })
+    assert.equal(response.status, 200)
+    const text = await response.text()
+    assert.ok(text.includes('event: start'))
+    assert.ok(text.includes('event: complete'))
   })
 })
 

@@ -226,6 +226,35 @@ export default function AiPortfolio() {
     [openRouterCostRows],
   )
 
+  /**
+   * Blocking daily run (older API). Production was missing `simulate/daily-stream` until server redeploy;
+   * this path keeps the button working if the UI ships before the Node routes update.
+   */
+  const runDailyBlockingJson = async () => {
+    const response = await fetch(`${API_BASE}/api/ai-portfolio/simulate/daily`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+
+    if (response.status === 409) {
+      const body = await parseJsonSafe<{ error?: string }>(response)
+      throw new Error(body?.error || 'A daily run is already in progress on the server.')
+    }
+
+    if (!response.ok) {
+      throw new Error(await extractResponseError(response, 'Daily run failed'))
+    }
+
+    const body = await parseJsonSafe<{ ok?: boolean; error?: string }>(response)
+    if (body && body.ok === false) {
+      throw new Error(body.error || 'Daily run failed')
+    }
+
+    await load()
+    setLiveByManager({})
+  }
+
   const runDaily = async () => {
     setRunning(true)
     setError(null)
@@ -239,6 +268,12 @@ export default function AiPortfolio() {
         },
         body: JSON.stringify({}),
       })
+
+      // Older Express stacks only registered POST /simulate/daily (no SSE). Avoid parsing HTML as SSE.
+      if (response.status === 404 || response.status === 405) {
+        await runDailyBlockingJson()
+        return
+      }
 
       if (response.status === 409) {
         const body = await parseJsonSafe<{ error?: string }>(response)
