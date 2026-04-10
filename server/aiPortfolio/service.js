@@ -28,14 +28,132 @@ function todayDate() {
   return new Date().toISOString().slice(0, 10)
 }
 
-export function createAiPortfolioService() {
-  const store = createAiPortfolioStore()
+const AI_PORTFOLIO_DEFAULT_CHECKPOINT_TIMES = ['09:00', '11:00', '13:00', '14:30']
+const AI_PORTFOLIO_DEFAULT_TIMEZONE = 'America/Chicago'
+
+const zonedFormatterCache = new Map()
+
+function getZonedFormatter(timeZone) {
+  const key = String(timeZone || AI_PORTFOLIO_DEFAULT_TIMEZONE)
+  if (!zonedFormatterCache.has(key)) {
+    zonedFormatterCache.set(
+      key,
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: key,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }),
+    )
+  }
+  return zonedFormatterCache.get(key)
+}
+
+/**
+ * Parse a comma separated HH:MM list to normalized checkpoint slots.
+ * @param {string | undefined | null} value
+ * @returns {Array<{ hour: number, minute: number, label: string }>}
+ */
+export function parseMarketCheckpointSlots(value) {
+  const raw = String(value || '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+  const seed = raw.length ? raw : AI_PORTFOLIO_DEFAULT_CHECKPOINT_TIMES
+  const unique = new Set()
+  const slots = []
+  for (const token of seed) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(token)
+    if (!m) continue
+    const hour = Number(m[1])
+    const minute = Number(m[2])
+    if (!Number.isInteger(hour) || !Number.isInteger(minute)) continue
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) continue
+    const label = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    if (unique.has(label)) continue
+    unique.add(label)
+    slots.push({ hour, minute, label })
+  }
+  slots.sort((a, b) => a.hour - b.hour || a.minute - b.minute)
+  return slots.length
+    ? slots
+    : AI_PORTFOLIO_DEFAULT_CHECKPOINT_TIMES.map((label) => {
+        const [h, m] = label.split(':').map(Number)
+        return { hour: h, minute: m, label }
+      })
+}
+
+/**
+ * @param {Date} date
+ * @param {string} timeZone
+ */
+export function getZonedDateParts(date, timeZone = AI_PORTFOLIO_DEFAULT_TIMEZONE) {
+  const parts = getZonedFormatter(timeZone).formatToParts(date)
+  const map = Object.fromEntries(parts.filter((p) => p.type !== 'literal').map((p) => [p.type, p.value]))
+  const year = Number(map.year)
+  const month = Number(map.month)
+  const day = Number(map.day)
+  const hour = Number(map.hour)
+  const minute = Number(map.minute)
+  const second = Number(map.second)
+  return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    dateKey: `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+  }
+}
+
+export function getActiveCheckpointLabel(now, slots, timeZone = AI_PORTFOLIO_DEFAULT_TIMEZONE) {
+  const p = getZonedDateParts(now, timeZone)
+  const found = (slots || []).find((slot) => slot.hour === p.hour && slot.minute === p.minute)
+  return found?.label || null
+}
+
+export function computeNextCheckpointIso(now, slots, timeZone = AI_PORTFOLIO_DEFAULT_TIMEZONE) {
+  if (!Array.isArray(slots) || !slots.length) return null
+  const probe = new Date(now.getTime())
+  probe.setUTCSeconds(0, 0)
+  probe.setUTCMinutes(probe.getUTCMinutes() + 1)
+  for (let i = 0; i < 60 * 24 * 8; i += 1) {
+    const p = getZonedDateParts(probe, timeZone)
+    const match = slots.some((slot) => slot.hour === p.hour && slot.minute === p.minute)
+    if (match) return probe.toISOString()
+    probe.setUTCMinutes(probe.getUTCMinutes() + 1)
+  }
+  return null
+}
+
+export function createAiPortfolioService(opts = {}) {
+  const store = opts.store || createAiPortfolioStore()
+  const nowFn = opts.now || (() => new Date())
+  const setIntervalFn = opts.setInterval || setInterval
+  const clearIntervalFn = opts.clearInterval || clearInterval
+  const checkpointTimeZone = String(
+    opts.checkpointTimeZone || process.env.AI_PORTFOLIO_SCHEDULE_TIMEZONE || AI_PORTFOLIO_DEFAULT_TIMEZONE,
+  )
+  const checkpointSlots = parseMarketCheckpointSlots(
+    opts.checkpointTimes || process.env.AI_PORTFOLIO_SCHEDULE_TIMES,
+  )
+  const scheduleTickMs = Math.max(30000, Number(process.env.AI_PORTFOLIO_SCHEDULE_TICK_MS) || 60000)
+
   let schedulerState = {
     enabled: String(process.env.AI_PORTFOLIO_SCHEDULE_ENABLED || '').trim() === '1',
     running: false,
     lastRunAt: null,
+    lastRunCheckpoint: null,
     nextRunAt: null,
-    intervalMs: Math.max(60000, Number(process.env.AI_PORTFOLIO_SCHEDULE_INTERVAL_MS) || 24 * 60 * 60 * 1000),
+    timeZone: checkpointTimeZone,
+    checkpointTimes: checkpointSlots.map((slot) => slot.label),
+    intervalMs: scheduleTickMs,
+    executedCheckpointKeys: [],
     timerId: null,
   }
   let activeRun = null
@@ -203,24 +321,53 @@ export function createAiPortfolioService() {
   }
 
   function scheduleNextTick() {
-    schedulerState.nextRunAt = new Date(Date.now() + schedulerState.intervalMs).toISOString()
+    schedulerState.nextRunAt = computeNextCheckpointIso(nowFn(), checkpointSlots, checkpointTimeZone)
+  }
+
+  function markCheckpointExecuted(checkpointKey) {
+    schedulerState.executedCheckpointKeys = [...schedulerState.executedCheckpointKeys, checkpointKey].slice(-64)
+  }
+
+  async function runScheduledCheckpointIfDue(now = nowFn()) {
+    const label = getActiveCheckpointLabel(now, checkpointSlots, checkpointTimeZone)
+    if (!label) {
+      scheduleNextTick()
+      return
+    }
+    const zoned = getZonedDateParts(now, checkpointTimeZone)
+    const checkpointKey = `${zoned.dateKey}@${label}`
+    if (schedulerState.executedCheckpointKeys.includes(checkpointKey)) {
+      scheduleNextTick()
+      return
+    }
+    markCheckpointExecuted(checkpointKey)
+    schedulerState.lastRunCheckpoint = checkpointKey
+    try {
+      await runDailyCycle({ asOfDate: zoned.dateKey })
+    } catch (error) {
+      console.error('[ai-portfolio] scheduled checkpoint failed:', error?.message || error)
+    } finally {
+      scheduleNextTick()
+    }
   }
 
   function startScheduler() {
     if (schedulerState.timerId) return
     schedulerState.enabled = true
     scheduleNextTick()
-    schedulerState.timerId = setInterval(() => {
-      scheduleNextTick()
-      runDailyCycle({ asOfDate: todayDate() }).catch((error) => {
-        console.error('[ai-portfolio] scheduled run failed:', error?.message || error)
+    schedulerState.timerId = setIntervalFn(() => {
+      runScheduledCheckpointIfDue(nowFn()).catch((error) => {
+        console.error('[ai-portfolio] scheduler tick failed:', error?.message || error)
       })
     }, schedulerState.intervalMs)
+    runScheduledCheckpointIfDue(nowFn()).catch((error) => {
+      console.error('[ai-portfolio] scheduler bootstrap tick failed:', error?.message || error)
+    })
   }
 
   function stopScheduler() {
     if (schedulerState.timerId) {
-      clearInterval(schedulerState.timerId)
+      clearIntervalFn(schedulerState.timerId)
       schedulerState.timerId = null
     }
     schedulerState.enabled = false
@@ -232,7 +379,10 @@ export function createAiPortfolioService() {
       enabled: schedulerState.enabled,
       running: schedulerState.running,
       lastRunAt: schedulerState.lastRunAt,
+      lastRunCheckpoint: schedulerState.lastRunCheckpoint,
       nextRunAt: schedulerState.nextRunAt,
+      timeZone: schedulerState.timeZone,
+      checkpointTimes: schedulerState.checkpointTimes,
       intervalMs: schedulerState.intervalMs,
     }
   }
