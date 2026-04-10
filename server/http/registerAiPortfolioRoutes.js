@@ -27,6 +27,16 @@ export function registerAiPortfolioRoutes(app, opts = {}) {
     }
   })
 
+  app.get('/api/ai-portfolio/ledger', async (_req, res) => {
+    try {
+      const ledger = await service.getLedger()
+      res.setHeader('Cache-Control', 'private, max-age=15, stale-while-revalidate=45')
+      res.json({ ok: true, ...ledger })
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || 'Failed to load AI Portfolio ledger.' })
+    }
+  })
+
   app.post('/api/ai-portfolio/simulate/daily', async (req, res) => {
     try {
       const out = await service.runDailyCycle({ asOfDate: req.body?.asOfDate })

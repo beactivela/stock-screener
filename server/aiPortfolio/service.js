@@ -49,6 +49,10 @@ export function createAiPortfolioService() {
     return buildAiPortfolioSummary(state)
   }
 
+  async function getLedger() {
+    return store.loadLedger()
+  }
+
   async function executeDailyCycle({
     asOfDate,
     onManagerLlmStart,
@@ -238,6 +242,7 @@ export function createAiPortfolioService() {
   return {
     getConfig,
     getSummary,
+    getLedger,
     runDailyCycle,
     runDailyCycleSse,
     startScheduler,

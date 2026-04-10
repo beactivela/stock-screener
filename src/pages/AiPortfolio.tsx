@@ -28,6 +28,7 @@ type PositionRow = {
   entryPriceUsd: number
   markUsd: number
   unrealizedPnlUsd: number
+  openedAt?: string
   dataFreshness?: 'live' | 'stale' | 'approx'
 }
 
@@ -86,6 +87,27 @@ type SummaryResponse = {
   openRouterDailyCosts?: Array<{ date: string; costUsd: number; byManager?: Record<string, number> }>
 }
 
+type LedgerRow = {
+  positionId?: string | null
+  ticker: string | null
+  strategy: string | null
+  instrumentType: string
+  side: string
+  status: string
+  quantity: number | null
+  markUsd: number | null
+  notionalUsd: number | null
+  realizedPnlUsd: number | null
+  entryAt: string | null
+  exitAt: string | null
+}
+
+type LedgerResponse = {
+  ok: boolean
+  asOfDate: string | null
+  managers: Record<string, LedgerRow[]>
+}
+
 async function parseJsonSafe<T>(response: Response): Promise<T | null> {
   try {
     return (await response.json()) as T
@@ -113,6 +135,13 @@ function pct(n: number | null | undefined) {
   const value = Number(n)
   if (!Number.isFinite(value)) return '—'
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+function shortDate(value: string | null | undefined) {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  return d.toLocaleDateString()
 }
 
 function freshnessBadgeClass(v?: string) {
@@ -147,6 +176,7 @@ export default function AiPortfolio() {
   const [error, setError] = useState<string | null>(null)
   const [config, setConfig] = useState<ConfigResponse | null>(null)
   const [summary, setSummary] = useState<SummaryResponse | null>(null)
+  const [ledger, setLedger] = useState<LedgerResponse | null>(null)
   /** Per-manager OpenRouter stream state while a daily run is in flight. */
   const [liveByManager, setLiveByManager] = useState<Record<string, LiveManagerRun>>({})
 
@@ -154,20 +184,26 @@ export default function AiPortfolio() {
     setError(null)
     setLoading(true)
     try {
-      const [cfgRes, sumRes] = await Promise.all([
+      const [cfgRes, sumRes, ledRes] = await Promise.all([
         fetch(`${API_BASE}/api/ai-portfolio/config`, { cache: 'no-store' }),
         fetch(`${API_BASE}/api/ai-portfolio/summary`, { cache: 'no-store' }),
+        fetch(`${API_BASE}/api/ai-portfolio/ledger`, { cache: 'no-store' }),
       ])
       const cfg = await parseJsonSafe<ConfigResponse>(cfgRes)
       const sum = await parseJsonSafe<SummaryResponse>(sumRes)
+      const led = await parseJsonSafe<LedgerResponse>(ledRes)
       if (!cfgRes.ok || !cfg) {
         throw new Error(await extractResponseError(cfgRes, 'Failed to load AI Portfolio config'))
       }
       if (!sumRes.ok || !sum?.ok) {
         throw new Error(await extractResponseError(sumRes, 'Failed to load AI Portfolio summary'))
       }
+      if (!ledRes.ok || !led?.ok) {
+        throw new Error(await extractResponseError(ledRes, 'Failed to load AI Portfolio ledger'))
+      }
       setConfig(cfg)
       setSummary(sum)
+      setLedger(led)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load AI Portfolio.')
     } finally {
@@ -225,6 +261,23 @@ export default function AiPortfolio() {
     () => openRouterCostRows.reduce((s, r) => s + (Number(r.costUsd) || 0), 0),
     [openRouterCostRows],
   )
+
+  const portfolioTotals = useMemo(() => {
+    const totals = managerRows.reduce(
+      (acc, row) => {
+        acc.equityUsd += Number(row.data?.equityUsd) || 0
+        acc.deployedUsd += Number(row.data?.deployedUsd) || 0
+        acc.runningPnlUsd += Number(row.data?.runningPnlUsd) || 0
+        acc.cashUsd += Number(row.data?.cashUsd ?? row.data?.availableCashUsd) || 0
+        return acc
+      },
+      { equityUsd: 0, deployedUsd: 0, runningPnlUsd: 0, cashUsd: 0 },
+    )
+    const startPerManager = Number(config?.startingCapitalUsd) || 0
+    const startingTotalUsd = startPerManager * managerRows.length
+    const returnPct = startingTotalUsd > 0 ? (totals.runningPnlUsd / startingTotalUsd) * 100 : null
+    return { ...totals, startingTotalUsd, returnPct }
+  }, [managerRows, config?.startingCapitalUsd])
 
   /**
    * Blocking daily run (older API). Production was missing `simulate/daily-stream` until server redeploy;
@@ -389,9 +442,16 @@ export default function AiPortfolio() {
         <div className="text-sm text-slate-400">Loading AI Portfolio…</div>
       ) : (
         <>
-          <div className="grid gap-4 md:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="As of date" value={summary?.asOfDate || '—'} />
             <MetricCard label="Benchmark" value={summary?.benchmark?.ticker || config?.benchmarkTicker || 'SPY'} />
+            <MetricCard label="Total portfolio value" value={usd(portfolioTotals.equityUsd)} />
+            <MetricCard
+              label="Total running P/L"
+              value={`${usd(portfolioTotals.runningPnlUsd)} (${pct(portfolioTotals.returnPct)})`}
+            />
+            <MetricCard label="Total deployed value" value={usd(portfolioTotals.deployedUsd)} />
+            <MetricCard label="Total cash" value={usd(portfolioTotals.cashUsd)} />
             <MetricCard label="Best manager" value={bestRow ? `${bestRow.label} (${pct(bestRow.data.benchmark?.outperformancePct)})` : '—'} />
             <MetricCard label="Worst manager" value={worstRow ? `${worstRow.label} (${pct(worstRow.data.benchmark?.outperformancePct)})` : '—'} />
           </div>
@@ -453,6 +513,7 @@ export default function AiPortfolio() {
             {managerRows.map((row) => {
               const unrealizedTotalUsd = row.data.positions.reduce((s, p) => s + p.unrealizedPnlUsd, 0)
               const realizedPnlUsd = row.data.runningPnlUsd - unrealizedTotalUsd
+              const managerLedger = ledger?.managers?.[row.id] || []
               return (
               <div key={row.id} className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -482,12 +543,62 @@ export default function AiPortfolio() {
                   running={running}
                 />
 
+                <div className="space-y-2">
+                  <h4 className="text-xs uppercase tracking-wide text-slate-400">
+                    Running trade log ({managerLedger.length})
+                  </h4>
+                  <div className="overflow-x-auto rounded-lg border border-slate-700/80">
+                    <table className="w-full text-sm text-left">
+                      <thead>
+                        <tr className="border-b border-slate-700 bg-slate-900/60 text-xs uppercase tracking-wide text-slate-500">
+                          <th className="px-3 py-2 font-medium">Symbol</th>
+                          <th className="px-3 py-2 font-medium">Strategy</th>
+                          <th className="px-3 py-2 font-medium">Entry date</th>
+                          <th className="px-3 py-2 font-medium">Exit date</th>
+                          <th className="px-3 py-2 font-medium">Amount</th>
+                          <th className="px-3 py-2 font-medium">Realized P/L</th>
+                          <th className="px-3 py-2 font-medium">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {managerLedger.length === 0 ? (
+                          <tr>
+                            <td className="px-3 py-3 text-slate-500" colSpan={7}>
+                              No trade ledger rows yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          managerLedger.map((trade, idx) => (
+                            <tr
+                              key={`${trade.positionId || trade.ticker || 'trade'}-${trade.entryAt || idx}-${idx}`}
+                              className="border-b border-slate-700/50 last:border-b-0"
+                            >
+                              <td className="px-3 py-2 text-slate-100 font-medium">{trade.ticker || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{trade.strategy || trade.instrumentType || '—'}</td>
+                              <td className="px-3 py-2 text-slate-300">{shortDate(trade.entryAt)}</td>
+                              <td className="px-3 py-2 text-slate-300">{shortDate(trade.exitAt)}</td>
+                              <td className="px-3 py-2 text-slate-300">{usd(trade.notionalUsd)}</td>
+                              <td className={`px-3 py-2 ${(Number(trade.realizedPnlUsd) || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                {usd(trade.realizedPnlUsd)}
+                              </td>
+                              <td className="px-3 py-2 text-slate-300 uppercase text-xs">
+                                {trade.exitAt ? 'closed' : 'open'}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 <div className="overflow-x-auto rounded-lg border border-slate-700/80">
                   <table className="w-full text-sm text-left">
                     <thead>
                       <tr className="border-b border-slate-700 bg-slate-900/60 text-xs uppercase tracking-wide text-slate-500">
                         <th className="px-3 py-2 font-medium">Symbol / contract</th>
                         <th className="px-3 py-2 font-medium">Side / strategy</th>
+                        <th className="px-3 py-2 font-medium">Entry date</th>
                         <th className="px-3 py-2 font-medium">Qty</th>
                         <th className="px-3 py-2 font-medium">Avg cost</th>
                         <th className="px-3 py-2 font-medium">Mark</th>
@@ -500,7 +611,7 @@ export default function AiPortfolio() {
                     <tbody>
                       {row.data.positions.length === 0 ? (
                         <tr>
-                          <td className="px-3 py-3 text-slate-500" colSpan={9}>
+                          <td className="px-3 py-3 text-slate-500" colSpan={10}>
                             No open positions.
                           </td>
                         </tr>
@@ -509,6 +620,7 @@ export default function AiPortfolio() {
                           <tr key={position.id} className="border-b border-slate-700/50 last:border-b-0">
                             <td className="px-3 py-2 text-slate-100 font-medium">{position.ticker}</td>
                             <td className="px-3 py-2 text-slate-300">Long · {position.strategy}</td>
+                            <td className="px-3 py-2 text-slate-300">{shortDate(position.openedAt)}</td>
                             <td className="px-3 py-2 text-slate-300">{position.quantity}</td>
                             <td className="px-3 py-2 text-slate-300">{usd(position.entryPriceUsd)}</td>
                             <td className="px-3 py-2 text-slate-300">{usd(position.markUsd)}</td>

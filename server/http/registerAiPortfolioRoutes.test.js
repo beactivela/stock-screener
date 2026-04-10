@@ -21,6 +21,23 @@ describe('registerAiPortfolioRoutes', () => {
         async getSummary() {
           return { ok: true, managers: { claude: { equityUsd: 50000 } } }
         },
+        async getLedger() {
+          return {
+            asOfDate: '2026-04-07',
+            managers: {
+              claude: [
+                {
+                  ticker: 'AAPL',
+                  status: 'filled',
+                  entryAt: '2026-04-07',
+                  exitAt: null,
+                  notionalUsd: 5000,
+                  realizedPnlUsd: 0,
+                },
+              ],
+            },
+          }
+        },
         async runDailyCycle() {
           return { ok: true, runId: 'run_1' }
         },
@@ -62,6 +79,15 @@ describe('registerAiPortfolioRoutes', () => {
     assert.equal(response.status, 200)
     assert.equal(body.ok, true)
     assert.equal(body.managers.claude.equityUsd, 50000)
+  })
+
+  it('GET /api/ai-portfolio/ledger returns trade ledger payload', async () => {
+    const response = await fetch(`${baseUrl}/api/ai-portfolio/ledger`)
+    const body = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(body.ok, true)
+    assert.equal(body.managers.claude[0].ticker, 'AAPL')
+    assert.equal(body.managers.claude[0].entryAt, '2026-04-07')
   })
 
   it('POST /api/ai-portfolio/simulate/daily runs daily cycle', async () => {

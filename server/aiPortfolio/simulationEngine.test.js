@@ -109,6 +109,15 @@ describe('aiPortfolio simulation engine', () => {
     const claude = afterExit.state.managers.claude
     assert.equal(claude.positions.length, 0)
     assert.equal(claude.recentTrades[0]?.status, 'closed')
+    assert.ok(typeof claude.recentTrades[0]?.entryAt === 'string')
+    assert.ok(typeof claude.recentTrades[0]?.exitAt === 'string')
+    assert.ok(typeof claude.recentTrades[0]?.realizedPnlUsd === 'number')
+    assert.ok(typeof claude.recentTrades[0]?.notionalUsd === 'number')
+    assert.ok(typeof claude.recentTrades[0]?.positionId === 'string')
+    assert.ok(typeof claude.recentTrades[1]?.entryAt === 'string')
+    assert.equal(claude.recentTrades[1]?.exitAt, null)
+    assert.ok(typeof claude.recentTrades[1]?.notionalUsd === 'number')
+    assert.ok(typeof claude.recentTrades[1]?.positionId === 'string')
     assert.ok(Number(claude.realizedPnlUsd) !== 0 || Number(claude.cashUsd) > 0)
   })
 
@@ -132,6 +141,46 @@ describe('aiPortfolio simulation engine', () => {
     const insight = result.state.managers.claude.lastLlmInsight
     assert.ok(String(insight?.executionNote || '').includes('no matching'))
     assert.equal(result.state.managers.claude.positions.length, 0)
+  })
+
+  it('does not use stock marks to value option positions when option marks are missing', async () => {
+    const initial = createInitialAiPortfolioState({ asOfDate: '2026-04-06' })
+    initial.managers.claude.positions.push({
+      id: 'long_call-aapl-1',
+      ticker: 'AAPL',
+      underlying: 'AAPL',
+      instrumentType: 'option',
+      strategy: 'long_call',
+      quantity: 1,
+      entryPriceUsd: 5,
+      entryCreditUsd: 0,
+      contractSymbol: 'AAPL260417C00150000',
+      markUsd: 5,
+      exposureUsd: 500,
+      maxLossUsd: 500,
+      reservedUsd: 0,
+      openedAt: '2026-04-06',
+      pricingMode: 'live',
+      dataFreshness: 'live',
+      unrealizedPnlUsd: 0,
+    })
+
+    const out = await runAiPortfolioDailyCycle({
+      state: initial,
+      asOfDate: '2026-04-07',
+      suggestEntry: async () => ({ action: 'no_trade' }),
+      getStockMark: async (ticker) => {
+        if (ticker === 'SPY') return { ok: true, mark: 510, asOf: '2026-04-07T20:00:00Z' }
+        // If this is incorrectly used for option mark fallback, unrealized P/L will explode.
+        return { ok: true, mark: 450, asOf: '2026-04-07T20:00:00Z' }
+      },
+      getOptionMark: async () => ({ ok: false, error: 'stale_contract' }),
+    })
+
+    const option = out.state.managers.claude.positions[0]
+    assert.equal(option.markUsd, 5)
+    assert.equal(option.unrealizedPnlUsd, 0)
+    assert.equal(out.state.managers.claude.runningPnlUsd, 0)
   })
 })
 

@@ -1,70 +1,108 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
 import { getSupabase, isSupabaseConfigured } from '../supabase.js'
 import { getManagerModelMap } from './ollamaManagers.js'
 import { createInitialAiPortfolioState } from './simulationEngine.js'
 import { AI_PORTFOLIO_MANAGER_LABELS } from './types.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = path.join(__dirname, '..', '..')
-const DATA_DIR = path.join(REPO_ROOT, 'data')
-const FALLBACK_STATE_FILE = path.join(DATA_DIR, 'ai-portfolio-state.json')
+export function createAiPortfolioStore(opts = {}) {
+  const supabase = opts.supabaseClient || (isSupabaseConfigured() ? getSupabase() : null)
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
-}
-
-function readFallbackState() {
-  ensureDataDir()
-  if (!fs.existsSync(FALLBACK_STATE_FILE)) return null
-  try {
-    const raw = fs.readFileSync(FALLBACK_STATE_FILE, 'utf8')
-    return JSON.parse(raw)
-  } catch {
-    return null
+  function assertSupabase() {
+    if (!supabase) {
+      throw new Error(
+        'AI Portfolio requires Supabase (SUPABASE_URL + SUPABASE_SERVICE_KEY). Local fallback is disabled.',
+      )
+    }
+    return supabase
   }
-}
 
-function writeFallbackState(state) {
-  ensureDataDir()
-  fs.writeFileSync(FALLBACK_STATE_FILE, JSON.stringify(state, null, 2))
-}
+  async function loadLatestCompletedRun() {
+    const db = assertSupabase()
+    const { data, error } = await db
+      .from('ai_portfolio_runs')
+      .select('id, run_date, finished_at, state_json')
+      .eq('status', 'completed')
+      .order('finished_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) throw new Error(`Failed to load AI Portfolio run state: ${error.message}`)
+    return data || null
+  }
 
-export function createAiPortfolioStore() {
-  const supabase = isSupabaseConfigured() ? getSupabase() : null
+  function normalizeTradeForLedger(trade, managerId, fallbackDate) {
+    if (!trade || typeof trade !== 'object') return null
+    const statusRaw = String(trade.status || '').toLowerCase()
+    const sideRaw = String(trade.side || '').toLowerCase()
+    const ticker = trade.ticker ? String(trade.ticker) : null
+    const strategy = trade.strategy ? String(trade.strategy) : null
+    const instrumentType = trade.instrumentType ? String(trade.instrumentType) : 'stock'
+    const quantity = Number(trade.quantity)
+    const markUsd = Number(trade.markUsd)
+    const notionalUsd = Number(trade.notionalUsd)
+    const realizedPnlUsd = Number(trade.realizedPnlUsd)
+    const entryAt = trade.entryAt || trade.openedAt || trade.at || fallbackDate || null
+    const exitAt = trade.exitAt || (statusRaw === 'closed' ? trade.at || fallbackDate || null : null)
+    const positionId = trade.positionId || null
+
+    const side = sideRaw || (statusRaw === 'closed' ? 'sell' : statusRaw === 'filled' ? 'buy' : 'skip')
+    const status = side === 'reject' ? 'rejected' : side === 'skip' ? 'skipped' : 'filled'
+
+    return {
+      managerId,
+      positionId,
+      ticker,
+      strategy,
+      instrumentType,
+      side,
+      status,
+      quantity: Number.isFinite(quantity) ? quantity : null,
+      markUsd: Number.isFinite(markUsd) ? markUsd : null,
+      notionalUsd: Number.isFinite(notionalUsd) ? notionalUsd : null,
+      realizedPnlUsd: Number.isFinite(realizedPnlUsd) ? realizedPnlUsd : null,
+      entryAt,
+      exitAt,
+    }
+  }
 
   async function loadState() {
-    if (supabase) {
-      const { data } = await supabase
-        .from('ai_portfolio_runs')
-        .select('state_json')
-        .eq('status', 'completed')
-        .order('finished_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-      if (data?.state_json) return data.state_json
+    const latest = await loadLatestCompletedRun()
+    return latest?.state_json || createInitialAiPortfolioState({ asOfDate: null })
+  }
+
+  async function loadLedger() {
+    const latest = await loadLatestCompletedRun()
+    const state = latest?.state_json || null
+    const managers = state?.managers && typeof state.managers === 'object' ? state.managers : {}
+    const out = {}
+    for (const [managerId, managerState] of Object.entries(managers)) {
+      const recentTrades = Array.isArray(managerState?.recentTrades) ? managerState.recentTrades : []
+      out[managerId] = recentTrades
+        .map((trade) => normalizeTradeForLedger(trade, managerId, state?.lastRunDate || null))
+        .filter(Boolean)
     }
-    return readFallbackState() || createInitialAiPortfolioState({ asOfDate: null })
+    return {
+      asOfDate: state?.lastRunDate || null,
+      managers: out,
+    }
   }
 
   async function saveState({ state, asOfDate, status = 'completed', errorMessage = null }) {
-    writeFallbackState(state)
-    if (!supabase) return
+    const db = assertSupabase()
 
-    const runInsert = await supabase
+    const runInsert = await db
       .from('ai_portfolio_runs')
       .insert({
-      run_date: asOfDate || null,
-      started_at: new Date().toISOString(),
-      finished_at: new Date().toISOString(),
-      status,
-      error_message: errorMessage,
-      state_json: state,
+        run_date: asOfDate || null,
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+        status,
+        error_message: errorMessage,
+        state_json: state,
       })
       .select('id')
       .single()
+    if (runInsert.error) {
+      throw new Error(`Failed to save AI Portfolio run state: ${runInsert.error.message}`)
+    }
 
     const runId = runInsert.data?.id || null
     const managers = state?.managers || {}
@@ -76,7 +114,10 @@ export function createAiPortfolioStore() {
       updated_at: new Date().toISOString(),
     }))
     if (managerRows.length) {
-      await supabase.from('ai_portfolio_managers').upsert(managerRows, { onConflict: 'id' })
+      const managerInsert = await db.from('ai_portfolio_managers').upsert(managerRows, { onConflict: 'id' })
+      if (managerInsert.error) {
+        throw new Error(`Failed to upsert AI Portfolio managers: ${managerInsert.error.message}`)
+      }
     }
 
     if (!runId || status !== 'completed') return
@@ -116,18 +157,23 @@ export function createAiPortfolioStore() {
       }
 
       for (const trade of recentTrades) {
+        const mapped = normalizeTradeForLedger(trade, managerId, asOfDate || state?.lastRunDate || null)
+        if (!mapped) continue
         tradesRows.push({
           manager_id: managerId,
           run_id: runId,
-          ticker: trade.ticker || null,
-          strategy: trade.strategy || null,
-          instrument_type: trade.instrumentType || 'stock',
-          side: trade.side || (trade.status === 'filled' ? 'buy' : 'skip'),
-          quantity: Number(trade.quantity) || null,
-          fill_price_usd: Number(trade.markUsd) || null,
-          notional_usd: Number(trade.notionalUsd) || null,
-          realized_pnl_usd: Number(trade.realizedPnlUsd) || null,
-          status: trade.status === 'filled' ? 'filled' : 'skipped',
+          position_id: mapped.positionId,
+          ticker: mapped.ticker,
+          strategy: mapped.strategy,
+          instrument_type: mapped.instrumentType,
+          side: mapped.side,
+          quantity: mapped.quantity,
+          fill_price_usd: mapped.markUsd,
+          notional_usd: mapped.notionalUsd,
+          realized_pnl_usd: mapped.realizedPnlUsd,
+          status: mapped.status,
+          entry_at: mapped.entryAt || null,
+          exit_at: mapped.exitAt || null,
           notes: null,
         })
       }
@@ -137,6 +183,7 @@ export function createAiPortfolioStore() {
           run_id: runId,
           ticker: trade.ticker || null,
           strategy: trade.strategy || null,
+          position_id: null,
           instrument_type: 'stock',
           side: 'reject',
           quantity: null,
@@ -144,6 +191,8 @@ export function createAiPortfolioStore() {
           notional_usd: null,
           realized_pnl_usd: null,
           status: 'rejected',
+          entry_at: trade.at || null,
+          exit_at: null,
           violations_json: trade.violations || [],
           notes: trade.metrics ? JSON.stringify(trade.metrics) : null,
         })
@@ -163,17 +212,31 @@ export function createAiPortfolioStore() {
       })
     }
 
-    if (positionsRows.length) await supabase.from('ai_portfolio_positions').insert(positionsRows)
-    if (tradesRows.length) await supabase.from('ai_portfolio_trades').insert(tradesRows)
+    if (positionsRows.length) {
+      const positionsInsert = await db.from('ai_portfolio_positions').insert(positionsRows)
+      if (positionsInsert.error) {
+        throw new Error(`Failed to insert AI Portfolio positions: ${positionsInsert.error.message}`)
+      }
+    }
+    if (tradesRows.length) {
+      const tradesInsert = await db.from('ai_portfolio_trades').insert(tradesRows)
+      if (tradesInsert.error) {
+        throw new Error(`Failed to insert AI Portfolio trades: ${tradesInsert.error.message}`)
+      }
+    }
     if (equityRows.length) {
-      await supabase
+      const equityInsert = await db
         .from('ai_portfolio_equity_daily')
         .upsert(equityRows, { onConflict: 'date,manager_id' })
+      if (equityInsert.error) {
+        throw new Error(`Failed to upsert AI Portfolio daily equity: ${equityInsert.error.message}`)
+      }
     }
   }
 
   return {
     loadState,
+    loadLedger,
     saveState,
   }
 }

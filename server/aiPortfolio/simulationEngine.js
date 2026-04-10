@@ -111,10 +111,17 @@ function updatePortfolioMarks({
   let unrealized = 0
   let deployed = 0
   for (const position of portfolio.positions) {
-    let mark = Number(stockMarksByTicker[position.ticker]) || Number(position.entryPriceUsd) || 0
-    if (position.instrumentType === 'option' && position.contractSymbol) {
-      const optionMark = Number(optionMarksByContract[position.contractSymbol])
-      if (Number.isFinite(optionMark) && optionMark > 0) mark = optionMark
+    let mark = 0
+    if (position.instrumentType === 'option') {
+      // Never value options off the underlying stock mark: keep prior/entry premium
+      // when a fresh contract quote is unavailable.
+      mark = Number(position.markUsd) || Number(position.entryPriceUsd) || 0
+      if (position.contractSymbol) {
+        const optionMark = Number(optionMarksByContract[position.contractSymbol])
+        if (Number.isFinite(optionMark) && optionMark > 0) mark = optionMark
+      }
+    } else {
+      mark = Number(stockMarksByTicker[position.ticker]) || Number(position.entryPriceUsd) || 0
     }
     position.markUsd = roundUsd(mark)
     if (position.instrumentType === 'stock') {
@@ -143,6 +150,27 @@ function updatePortfolioMarks({
   portfolio.equityUsd = roundUsd(AI_PORTFOLIO_STARTING_CAPITAL_USD + portfolio.runningPnlUsd)
   portfolio.deployedUsd = roundUsd(deployed)
   portfolio.availableCashUsd = roundUsd((portfolio.cashUsd || 0) - reservedUsd)
+}
+
+function computeEntryNotionalUsd(candidate, markUsd) {
+  const qty = Number(candidate?.quantity) || 0
+  const mark = Number(markUsd) || 0
+  const instrumentType = String(candidate?.instrumentType || 'stock').toLowerCase()
+  const strategy = String(candidate?.strategy || '').toLowerCase()
+  if (instrumentType === 'stock') return roundUsd(qty * mark)
+  if (strategy === 'cash_secured_put' || strategy === 'bull_put_spread') {
+    const credit = Number(candidate?.entryCreditUsd || mark) || 0
+    return roundUsd(qty * credit * 100)
+  }
+  return roundUsd(qty * mark * 100)
+}
+
+function computeExitNotionalUsd(position, markUsd) {
+  const qty = Number(position?.quantity) || 0
+  const mark = Number(markUsd) || 0
+  const instrumentType = String(position?.instrumentType || 'stock').toLowerCase()
+  if (instrumentType === 'stock') return roundUsd(qty * mark)
+  return roundUsd(qty * mark * 100)
 }
 
 function buildStockCandidate({
@@ -297,8 +325,9 @@ function recordRejectedTrade(managerState, candidate, evaluation) {
 }
 
 function recordAcceptedTrade(managerState, candidate, markUsd, asOfDate) {
+  const positionId = `${candidate.strategy}-${candidate.ticker}-${Date.now()}`
   managerState.positions.push({
-    id: `${candidate.strategy}-${candidate.ticker}-${Date.now()}`,
+    id: positionId,
     ticker: candidate.ticker,
     underlying: candidate.underlying,
     instrumentType: candidate.instrumentType,
@@ -319,10 +348,17 @@ function recordAcceptedTrade(managerState, candidate, markUsd, asOfDate) {
   managerState.cashUsd = roundUsd((managerState.cashUsd || 0) - (candidate.cashRequiredUsd || 0))
   managerState.recentTrades.unshift({
     at: isoNow(),
+    entryAt: asOfDate || null,
+    exitAt: null,
+    positionId,
     ticker: candidate.ticker,
     strategy: candidate.strategy,
+    instrumentType: candidate.instrumentType || 'stock',
+    side: 'buy',
     quantity: candidate.quantity,
     markUsd: roundUsd(markUsd),
+    notionalUsd: computeEntryNotionalUsd(candidate, markUsd),
+    realizedPnlUsd: 0,
     status: 'filled',
   })
   managerState.recentTrades = managerState.recentTrades.slice(0, 100)
@@ -353,6 +389,7 @@ function applyPositionExit(managerState, pos, markUsd) {
   const strategy = String(pos.strategy || '').toLowerCase()
   const inst = String(pos.instrumentType || '').toLowerCase()
   const realizedDelta = roundUsd(Number(pos.unrealizedPnlUsd) || 0)
+  const exitAt = isoNow()
 
   if (inst === 'stock') {
     managerState.cashUsd = roundUsd((managerState.cashUsd || 0) + qty * mark)
@@ -369,11 +406,18 @@ function applyPositionExit(managerState, pos, markUsd) {
   const idx = managerState.positions.indexOf(pos)
   if (idx >= 0) managerState.positions.splice(idx, 1)
   managerState.recentTrades.unshift({
-    at: isoNow(),
+    at: exitAt,
+    entryAt: pos.openedAt || null,
+    exitAt,
+    positionId: pos.id || null,
     ticker: pos.ticker,
     strategy: pos.strategy,
+    instrumentType: pos.instrumentType || 'stock',
+    side: 'sell',
     quantity: qty,
     markUsd: mark,
+    notionalUsd: computeExitNotionalUsd(pos, mark),
+    realizedPnlUsd: realizedDelta,
     status: 'closed',
   })
   managerState.recentTrades = managerState.recentTrades.slice(0, 100)
