@@ -67,11 +67,11 @@ test('breadth rating includes mapped market exposure percentages', () => {
     })),
     [
       { score: 1, label: 'Strong Negative', exposureLabel: 'Bearish', exposurePercentage: 20 },
-      { score: 2, label: 'Negative', exposureLabel: 'Bearish', exposurePercentage: 20 },
+      { score: 2, label: 'Negative', exposureLabel: 'Bearish', exposurePercentage: 30 },
       { score: 3, label: 'Neutral Negative', exposureLabel: 'Neutral', exposurePercentage: 40 },
-      { score: 4, label: 'Neutral', exposureLabel: 'Neutral', exposurePercentage: 40 },
-      { score: 5, label: 'Neutral Positive', exposureLabel: 'Semi Bullish', exposurePercentage: 70 },
-      { score: 6, label: 'Bullish', exposureLabel: 'Bullish', exposurePercentage: 80 },
+      { score: 4, label: 'Neutral', exposureLabel: 'Neutral', exposurePercentage: 50 },
+      { score: 5, label: 'Neutral Positive', exposureLabel: 'Semi Bullish', exposurePercentage: 60 },
+      { score: 6, label: 'Bullish', exposureLabel: 'Bullish', exposurePercentage: 70 },
       { score: 7, label: 'Strong Bullish', exposureLabel: 'Bullish', exposurePercentage: 80 },
     ],
   )
@@ -83,6 +83,6 @@ test('getBreadthTrendRatingFromAngle returns market exposure details', () => {
     label: 'Neutral',
     angle: 0,
     exposureLabel: 'Neutral',
-    exposurePercentage: 40,
+    exposurePercentage: 50,
   })
 })

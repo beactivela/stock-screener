@@ -32,6 +32,7 @@ import {
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
 import { registerTradingAgentsRoutes } from './http/registerTradingAgentsRoutes.js';
 import { registerAiPortfolioRoutes } from './http/registerAiPortfolioRoutes.js';
+import { registerOptionsBacktestRoutes } from './http/registerOptionsBacktestRoutes.js';
 import { registerStockcircleRoutes } from './http/registerStockcircleRoutes.js';
 import { registerWhalewisdomRoutes } from './http/registerWhalewisdomRoutes.js';
 import { registerExpertsSyncRoutes } from './http/registerExpertsSyncRoutes.js';
@@ -86,6 +87,7 @@ registerTradesRoutes(app);
 registerExitLearningRoutes(app);
 registerTradingAgentsRoutes(app);
 const aiPortfolioService = registerAiPortfolioRoutes(app);
+registerOptionsBacktestRoutes(app);
 registerAgentsRoutesBeforeHeartbeat(app);
 registerMarcusNewsRoutes(app);
 

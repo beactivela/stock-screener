@@ -111,6 +111,12 @@ export default function Layout({ children }: LayoutProps) {
               TradingAgents
             </Link>
             <Link
+              to="/backtesting"
+              className={`text-sm ${location.pathname === '/backtesting' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Backtesting
+            </Link>
+            <Link
               to="/ai-portfolio"
               className={`text-sm ${location.pathname === '/ai-portfolio' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >

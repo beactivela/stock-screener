@@ -14,7 +14,7 @@ export interface BreadthTrendRating {
   label: BreadthTrendLabel
   angle: number | null
   exposureLabel: MarketExposureLabel
-  exposurePercentage: 20 | 40 | 70 | 80
+  exposurePercentage: 20 | 30 | 40 | 50 | 60 | 70 | 80
 }
 
 export interface BreadthTrendSegment {
@@ -23,7 +23,7 @@ export interface BreadthTrendSegment {
   shortLabel: string
   className: string
   exposureLabel: MarketExposureLabel
-  exposurePercentage: 20 | 40 | 70 | 80
+  exposurePercentage: 20 | 30 | 40 | 50 | 60 | 70 | 80
 }
 
 export const BREADTH_TREND_SEGMENTS: BreadthTrendSegment[]

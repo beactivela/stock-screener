@@ -22,6 +22,31 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 const { Client } = pg;
 
+function resolveSqlFiles(argv = []) {
+  const defaultSchema = path.join(__dirname, '..', 'docs', 'supabase', 'schema.sql');
+  const fileArgs = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--file' || arg === '-f') {
+      const next = argv[i + 1];
+      if (!next) {
+        console.error('Missing value after --file');
+        process.exit(1);
+      }
+      fileArgs.push(next);
+      i += 1;
+      continue;
+    }
+    fileArgs.push(arg);
+  }
+
+  if (fileArgs.length === 0) return [defaultSchema];
+
+  return fileArgs.map((filePath) => (
+    path.isAbsolute(filePath) ? filePath : path.join(__dirname, '..', filePath)
+  ));
+}
+
 function getConnectionConfig() {
   const projectRef = process.env.SUPABASE_PROJECT_REF || 'ksnneoomyrvmzukwxmqg';
   const password = (
@@ -33,14 +58,24 @@ function getConnectionConfig() {
   if (password) {
     // Build URI with encoded password (handles @, #, : etc in password)
     const uri = `postgresql://postgres:${encodeURIComponent(password)}@db.${projectRef}.supabase.co:5432/postgres`;
-    return { connectionString: uri, ssl: { rejectUnauthorized: false } };
+    return {
+      connectionString: uri,
+      ssl: { rejectUnauthorized: false },
+      password,
+      projectRef,
+    };
   }
   const url = process.env.DATABASE_URL?.trim();
   if (url) {
     const normalized = url.startsWith('postgres://') ? 'postgresql://' + url.slice(11) : url;
     try {
       new URL(normalized);
-      return { connectionString: normalized, ssl: { rejectUnauthorized: false } };
+      return {
+        connectionString: normalized,
+        ssl: { rejectUnauthorized: false },
+        password: process.env.SUPABASE_DB_PASSWORD?.trim() || null,
+        projectRef,
+      };
     } catch (e) {
       console.error(
         'DATABASE_URL is invalid. If your password has special chars (@ # : /), use explicit vars instead:\n' +
@@ -51,6 +86,48 @@ function getConnectionConfig() {
     }
   }
   return null;
+}
+
+async function connectWithFallback(Client, config) {
+  const attempts = [
+    { type: 'direct', config },
+  ];
+
+  if (config.password && config.projectRef) {
+    const poolerHosts = [
+      process.env.SUPABASE_POOLER_HOST,
+      'aws-0-us-east-1.pooler.supabase.com',
+      'aws-0-us-west-1.pooler.supabase.com',
+      'aws-0-us-west-2.pooler.supabase.com',
+    ].filter(Boolean);
+    for (const host of poolerHosts) {
+      attempts.push({
+        type: `pooler:${host}`,
+        config: {
+          host,
+          port: Number(process.env.SUPABASE_POOLER_PORT) || 6543,
+          user: `postgres.${config.projectRef}`,
+          password: config.password,
+          database: 'postgres',
+          ssl: { rejectUnauthorized: false },
+          connectionTimeoutMillis: 5000,
+        },
+      });
+    }
+  }
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    const client = new Client(attempt.config);
+    try {
+      await client.connect();
+      return { client, mode: attempt.type };
+    } catch (error) {
+      lastError = error;
+      try { await client.end(); } catch {}
+    }
+  }
+  throw lastError || new Error('Could not connect to Supabase Postgres.');
 }
 
 async function main() {
@@ -65,15 +142,19 @@ async function main() {
     process.exit(1);
   }
 
-  const schemaPath = path.join(__dirname, '..', 'docs', 'supabase', 'schema.sql');
-  const sql = fs.readFileSync(schemaPath, 'utf8');
+  const sqlFiles = resolveSqlFiles(process.argv.slice(2));
 
-  const client = new Client(config);
+  let client;
   try {
-    await client.connect();
-    console.log('Connected to Supabase Postgres.');
-    await client.query(sql);
-    console.log('Schema applied successfully. Tables created.');
+    const connection = await connectWithFallback(Client, config);
+    client = connection.client;
+    console.log(`Connected to Supabase Postgres via ${connection.mode}.`);
+    for (const sqlFile of sqlFiles) {
+      const sql = fs.readFileSync(sqlFile, 'utf8');
+      await client.query(sql);
+      console.log(`Applied SQL file: ${path.relative(path.join(__dirname, '..'), sqlFile)}`);
+    }
+    console.log('Migration SQL applied successfully.');
   } catch (e) {
     console.error('Migration failed:', e.message);
     if (e.code === 'ERR_INVALID_URL') {
@@ -84,7 +165,7 @@ async function main() {
     }
     process.exit(1);
   } finally {
-    await client.end();
+    if (client) await client.end();
   }
 }
 

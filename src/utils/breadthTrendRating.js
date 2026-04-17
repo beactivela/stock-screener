@@ -14,7 +14,7 @@ import { calculateMA50Angle } from './marketRegime.js'
  *   label: BreadthTrendLabel
  *   angle: number | null
  *   exposureLabel: MarketExposureLabel
- *   exposurePercentage: 20 | 40 | 70 | 80
+ *   exposurePercentage: 20 | 30 | 40 | 50 | 60 | 70 | 80
  * }} BreadthTrendRating
  */
 
@@ -25,7 +25,7 @@ import { calculateMA50Angle } from './marketRegime.js'
  *   shortLabel: string
  *   className: string
  *   exposureLabel: MarketExposureLabel
- *   exposurePercentage: 20 | 40 | 70 | 80
+ *   exposurePercentage: 20 | 30 | 40 | 50 | 60 | 70 | 80
  * }} BreadthTrendSegment
  */
 
@@ -33,12 +33,15 @@ import { calculateMA50Angle } from './marketRegime.js'
  * Map the more granular 1-7 breadth score to the simpler exposure buckets the UI shows.
  *
  * @param {1 | 2 | 3 | 4 | 5 | 6 | 7} score
- * @returns {{ exposureLabel: MarketExposureLabel, exposurePercentage: 20 | 40 | 70 | 80 }}
+ * @returns {{ exposureLabel: MarketExposureLabel, exposurePercentage: 20 | 30 | 40 | 50 | 60 | 70 | 80 }}
  */
 export function getMarketExposureForBreadthScore(score) {
-  if (score >= 6) return { exposureLabel: 'Bullish', exposurePercentage: 80 }
-  if (score === 5) return { exposureLabel: 'Semi Bullish', exposurePercentage: 70 }
-  if (score >= 3) return { exposureLabel: 'Neutral', exposurePercentage: 40 }
+  if (score === 7) return { exposureLabel: 'Bullish', exposurePercentage: 80 }
+  if (score === 6) return { exposureLabel: 'Bullish', exposurePercentage: 70 }
+  if (score === 5) return { exposureLabel: 'Semi Bullish', exposurePercentage: 60 }
+  if (score === 4) return { exposureLabel: 'Neutral', exposurePercentage: 50 }
+  if (score === 3) return { exposureLabel: 'Neutral', exposurePercentage: 40 }
+  if (score === 2) return { exposureLabel: 'Bearish', exposurePercentage: 30 }
   return { exposureLabel: 'Bearish', exposurePercentage: 20 }
 }
 

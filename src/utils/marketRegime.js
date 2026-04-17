@@ -10,8 +10,7 @@
  * Classify regime from 50 moving average angle.
  *
  * Simplified classification based on 50 MA trend:
- * - Risk ON: angle > 20° (strong uptrend)
- * - Cautious: angle < 20° and > 5° (weak uptrend)
+ * - Risk ON: angle > 5° (uptrend)
  * - Risk OFF: angle ≤ 5° (flat or declining)
  *
  * @param {{
@@ -47,8 +46,7 @@ export function classifyMovingAverageRegime(params) {
   const angle = calculateMA50Angle(ma50Values)
 
   // Apply simplified regime rules
-  if (angle > 20) return 'Risk ON'
-  if (angle > 5 && angle <= 20) return 'Cautious'
+  if (angle > 5) return 'Risk ON'
   return 'Risk OFF' // angle <= 5
 }
 

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert'
 import { classifyMovingAverageRegime } from './marketRegime.js'
 
-describe('marketRegime helper - simplified 3-state classification', () => {
+describe('marketRegime helper - simplified MA50 angle classification', () => {
   it('classifies Risk ON when 50 MA angle > 20 degrees', () => {
     // Strong upward slope
     const recentMa50 = [100, 102, 104, 106, 108, 110, 112, 114, 116, 118]
@@ -12,12 +12,12 @@ describe('marketRegime helper - simplified 3-state classification', () => {
     )
   })
 
-  it('classifies Cautious when 50 MA angle > 5 and <= 20 degrees', () => {
+  it('classifies Risk ON when 50 MA angle > 5 and <= 20 degrees', () => {
     // Moderate upward slope (3% gain)
     const recentMa50 = [100, 100.33, 100.66, 101, 101.33, 101.66, 102, 102.33, 102.66, 103]
     assert.equal(
       classifyMovingAverageRegime({ ma50: 103, recentMa50 }),
-      'Cautious'
+      'Risk ON'
     )
   })
 
