@@ -28,6 +28,7 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/package-lock.json ./package-lock.json
 COPY --from=builder /app/dist ./dist
 COPY server ./server
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
 # TradingAgents (Python): same layout as local `npm run install:tradingagents` — venv at /app/.venv-tradingagents
 # Build context must include submodule: `git submodule update --init --recursive` before `docker compose build`.
@@ -50,12 +51,13 @@ RUN test -f vendor/TradingAgents/pyproject.toml || (echo "ERROR: vendor/TradingA
 RUN mkdir -p data/bars eval_results \
   && groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 999 --gid nodejs nodejs \
+  && chmod +x /app/docker-entrypoint.sh \
   && chown -R nodejs:nodejs /app
 
-USER nodejs
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "server/index.js"]

@@ -1,13 +1,15 @@
-# Stock screener on Hostinger VPS (or any Docker host)
-# ─────────────────────────────────────────────────────
-# Traefik: bridge network + published 80/443, Docker provider, exposedbydefault=false.
-# Set TRAEFIK_HOST in the project .env (Compose interpolates labels at parse time — same file as ACME_EMAIL).
+# Stock screener app stack on Hostinger VPS (or any Docker host)
+# ──────────────────────────────────────────────────────────────
+# This stack expects a shared/external Traefik to already be running for the host.
+# Create one shared Docker network (example): `docker network create traefik-public`
+# then set TRAEFIK_DOCKER_NETWORK=traefik-public in .env if you use a different name.
+# Set TRAEFIK_HOST in the project .env for Compose label interpolation.
 # Production: stocks.scaleagent.org → set TRAEFIK_HOST=stocks.scaleagent.org in .env on the server.
-# Published HOST_PORT is optional (localhost/cron); Traefik reaches the container on port 3000.
+# Published HOST_PORT remains useful for localhost/cron; Traefik reaches the container on port 3000.
 #
 #   docker compose up -d --build
 #
-# Production Traefik + Uptime Kuma + app: see docker-compose.dokploy.yml (Dokploy). This file is optional/local legacy.
+# Dokploy production app stack: see docker-compose.dokploy.yml.
 # Optional Watchtower (GHCR pull) — off by default; enable with:
 #   COMPOSE_PROFILES=watchtower docker compose --profile watchtower up -d
 #
@@ -18,54 +20,13 @@
 networks:
   default:
     name: stock-screener-net
-  # Dokploy’s Swarm overlay (attachable). Traefik joins this so file-based routes can use http://dokploy:3000.
-  # On a host without Dokploy: `docker network create dokploy-network` and `mkdir -p /etc/dokploy/traefik/dynamic`.
-  dokploy-network:
+  # Shared reverse-proxy network. External Traefik must join the same network.
+  traefik-public:
     external: true
+    name: ${TRAEFIK_DOCKER_NETWORK:-traefik-public}
 
 services:
-  # Reverse proxy + Let’s Encrypt. Without this, TRAEFIK_* labels on stock-screener do nothing and nothing binds :80/:443.
-  # Also loads /etc/dokploy/traefik/dynamic/*.yml (Dokploy UI) and must share dokploy-network with the dokploy service.
-  traefik:
-    # v3.6+ negotiates Docker API with the daemon (Docker 29+ requires API 1.44+; v3.3 pinned 1.24 and broke the provider).
-    image: traefik:v3.6
-    container_name: traefik
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      TZ: UTC
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik-acme:/letsencrypt
-      # Dokploy writes router rules here; without this mount + file provider, https://dokploy.* is never registered.
-      - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
-    command:
-      - --log.level=INFO
-      - --api.dashboard=false
-      - --ping=true
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=stock-screener-net
-      - --providers.file.directory=/etc/dokploy/traefik/dynamic
-      - --providers.file.watch=true
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in .env for Let’s Encrypt}
-      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-    networks:
-      - default
-      - dokploy-network
-
-  # Local / manual app build only — not started by default (Dokploy runs production).
   stock-screener:
-    profiles: ["legacy"]
     build: .
     image: stock-screener:latest
     container_name: stock-screener
@@ -81,11 +42,14 @@ services:
       CRON_ALLOW_EXPERTS_BROWSER_SYNC: "1"
     volumes:
       - screener-data:/app/data
+    networks:
+      - default
+      - traefik-public
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "traefik.enable=true"
-      # Pin backend attachment so Traefik does not pick the wrong IP when multiple networks exist.
-      - "traefik.docker.network=stock-screener-net"
+      # Pin backend attachment so shared Traefik chooses the cross-stack proxy network.
+      - "traefik.docker.network=${TRAEFIK_DOCKER_NETWORK:-traefik-public}"
       # Host rule + TLS: must be set in project .env for Compose interpolation (not only inside the container).
       - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST:?Set TRAEFIK_HOST in .env}`)"
       - "traefik.http.routers.stock-screener.entrypoints=websecure"
@@ -122,4 +86,3 @@ services:
 volumes:
   screener-data:
   uptime-kuma-data:
-  traefik-acme:

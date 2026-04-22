@@ -22,7 +22,8 @@ Set in **`.env`** on the server (never commit):
 - **`SUPABASE_URL`** — project URL  
 - **`SUPABASE_SERVICE_KEY`** — **required** service role key for this app. It bypasses RLS so scans and cache writes work. The **anon** key is not sufficient: all `public` tables use RLS with no anon policies (see `docs/supabase/migration-rls-and-api-hardening.sql`). To use anon from a client you would need to add explicit RLS policies yourself.
 - **`CRON_SECRET`** — long random string; required in **production** for `POST /api/cron/scan` and `POST /api/cron/run-scan` to work at all (unauthenticated cron is disabled when `NODE_ENV=production`).
-- **`TRAEFIK_HOST`** — hostname in Traefik’s `Host(\`name\`)` router rule on the `stock-screener` service (TLS via Let’s Encrypt). **Production:** `stocks.scaleagent.org`. **DNS** (A/AAAA) for that name must point at the VPS. There is no Traefik static file in this repo—only these Compose labels; your central Traefik must use the Docker provider and the same network as this stack (or host routing) so it can reach the container on port **3000**.
+- **`TRAEFIK_HOST`** — hostname in Traefik’s `Host(\`name\`)` router rule on the `stock-screener` service (TLS via Let’s Encrypt). **Production:** `stocks.scaleagent.org`. **DNS** (A/AAAA) for that name must point at the VPS.
+- **`TRAEFIK_DOCKER_NETWORK`** — shared Docker network name used by your external Traefik and this app stack. Default: `traefik-public`.
 - **`HOST_PORT`** — host port mapped to container **3000** (default `8080`). Use a **free** port if **3001** / **8080** are already used (e.g. by other stacks on the same VPS).
 
 Optional:
@@ -164,13 +165,25 @@ sudo ufw enable
 
 ## 4. HTTPS + domain (for users and Supabase HTTP triggers)
 
-### Traefik + HTTPS
+### Shared Traefik + HTTPS
 
-**This repo ships a `traefik` service** in `docker-compose.yml` (Docker provider, `exposedbydefault=false`, TLS-ALPN Let’s Encrypt). You need **nothing else** for a working reverse proxy unless you prefer your own.
+This repo now assumes **Traefik is shared infrastructure** that runs outside the app stack. The app compose only publishes labels and joins Traefik’s shared network.
 
-1. Set **`TRAEFIK_HOST=stocks.scaleagent.org`** and **`ACME_EMAIL=…`** (Let’s Encrypt contact) in **`.env`** on the server. DNS **A** (or AAAA) for `stocks.scaleagent.org` → this VPS.
-2. **`docker compose up -d`** (with GHCR override if you use it) so **Traefik** and **stock-screener** start on **`stock-screener-net`**. Traefik binds **80** and **443** on the host.
-3. Smoke test:
+1. Create the shared Docker network once on the host:
+
+   ```bash
+   docker network create traefik-public
+   ```
+
+2. Start your shared Traefik stack separately. A minimal example lives at **[`deploy/traefik-compose.example.yml`](../deploy/traefik-compose.example.yml)**.
+3. Set **`TRAEFIK_HOST=stocks.scaleagent.org`** in the app **`.env`**. If your shared network is not `traefik-public`, also set **`TRAEFIK_DOCKER_NETWORK=...`**.
+4. Start the app stack:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+5. Smoke test:
 
    ```bash
    curl -sS "https://stocks.scaleagent.org/api/health"
@@ -180,10 +193,6 @@ sudo ufw enable
    Expect `{"ok":true,...}`.
 
 Keep **`HOST_PORT`** (e.g. **8090**) for **localhost** / cron and **`CRON_BASE_URL`** in `scripts/trigger-scheduled-scan.sh`.
-
-### External Traefik (already on the host)
-
-If another stack already owns **80/443**, either **disable** the bundled `traefik` service in Compose or avoid duplicate port bindings. The stock-screener app still needs **`TRAEFIK_HOST`** + labels so the **external** Traefik can route to container port **3000** on a shared Docker network.
 
 ### Without Traefik: Caddy or Nginx
 

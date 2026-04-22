@@ -53,7 +53,7 @@ Full API and data flow: see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Deploy (production)
 
-**Docker on a VPS** is the supported setup: one container serves the Vite build and Express `/api/*` on the same origin. Full steps: **[docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)** (`SUPABASE_*`, `CRON_SECRET`, Traefik, `HOST_PORT`). **Public app:** [https://stocks.scaleagent.org](https://stocks.scaleagent.org) (set **`TRAEFIK_HOST=stocks.scaleagent.org`** in server `.env`; Traefik routes via Docker labels in **`docker-compose.yml`**).
+**Docker on a VPS** is the supported setup: one container serves the Vite build and Express `/api/*` on the same origin. Full steps: **[docs/DEPLOY_HOSTINGER_VPS.md](./docs/DEPLOY_HOSTINGER_VPS.md)** (`SUPABASE_*`, `CRON_SECRET`, shared Traefik, `HOST_PORT`). **Public app:** [https://stocks.scaleagent.org](https://stocks.scaleagent.org) (set **`TRAEFIK_HOST=stocks.scaleagent.org`** in server `.env`; your shared Traefik routes via Docker labels in **`docker-compose.yml`**).
 
 ### Scheduled Yahoo bars + daily scan (host cron)
 

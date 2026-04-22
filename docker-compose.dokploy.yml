@@ -5,43 +5,6 @@
 # Volumes are external so we keep existing data from the old `stock-screener` Compose project names.
 
 services:
-  traefik:
-    image: traefik:v3.6
-    container_name: traefik
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      TZ: UTC
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik-acme:/letsencrypt
-      - /etc/dokploy/traefik/dynamic:/etc/dokploy/traefik/dynamic:ro
-    command:
-      - --log.level=INFO
-      # Dokploy UI (/dashboard/traefik) talks to Traefik’s API on :8080 (same Docker network only).
-      - --api.dashboard=true
-      - --api.insecure=true
-      - --ping=true
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=stock-screener-net
-      - --providers.file.directory=/etc/dokploy/traefik/dynamic
-      - --providers.file.watch=true
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-      - --entrypoints.web.http.redirections.entrypoint.to=websecure
-      - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in Dokploy env}
-      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-    networks:
-      - stock-screener-net
-      - dokploy-network
-
   uptime-kuma:
     image: louislam/uptime-kuma:1
     container_name: uptime-kuma
@@ -60,8 +23,6 @@ services:
     image: stock-screener:latest
     container_name: stock-screener
     restart: unless-stopped
-    depends_on:
-      - traefik
     # Dokploy writes `.env` here from the compose “Environment” field; without this, only the
     # three keys below are injected — SUPABASE_* and other secrets never reach the container.
     env_file:
@@ -79,7 +40,8 @@ services:
       - dokploy-network
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=stock-screener-net"
+      # Dokploy's shared Traefik joins dokploy-network, so advertise that network for routing.
+      - "traefik.docker.network=dokploy-network"
       - "traefik.http.routers.stock-screener.rule=Host(`${TRAEFIK_HOST:?Set TRAEFIK_HOST in Dokploy env}`)"
       - "traefik.http.routers.stock-screener.entrypoints=websecure"
       - "traefik.http.routers.stock-screener.tls.certresolver=letsencrypt"
@@ -92,9 +54,6 @@ networks:
     external: true
 
 volumes:
-  traefik-acme:
-    external: true
-    name: stock-screener_traefik-acme
   uptime-kuma-data:
     external: true
     name: stock-screener_uptime-kuma-data
