@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-04-27T02:33:08.863Z",
+  "updatedAt": "2026-04-29T03:17:36.911Z",
   "transcripts": {
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/012557e6-4a95-4daa-ab3e-6d67d81b3e3f/012557e6-4a95-4daa-ab3e-6d67d81b3e3f.jsonl": {
       "mtimeMs": 1771567235064.4788,
@@ -99,7 +99,7 @@
       "sizeBytes": 19668
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/12e0f577-7eac-42ba-a6f2-ad9320e22b70/12e0f577-7eac-42ba-a6f2-ad9320e22b70.jsonl": {
-      "mtimeMs": 1777178977149.349,
+      "mtimeMs": 1777265207998.1099,
       "sizeBytes": 21131
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/13370a3d-0669-4989-960f-364c6f254c01/13370a3d-0669-4989-960f-364c6f254c01.jsonl": {
@@ -205,6 +205,14 @@
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/1ecfb204-5989-4a77-8fa5-02b40baf0cc4/1ecfb204-5989-4a77-8fa5-02b40baf0cc4.jsonl": {
       "mtimeMs": 1775353001354.3733,
       "sizeBytes": 47066
+    },
+    "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/1fc0186b-bf44-4788-878f-614aaea0d9a1/1fc0186b-bf44-4788-878f-614aaea0d9a1.jsonl": {
+      "mtimeMs": 1777432583768.3303,
+      "sizeBytes": 61379
+    },
+    "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/1fc0186b-bf44-4788-878f-614aaea0d9a1/subagents/019380aa-61c4-40e5-b6c6-6778fa1412fd.jsonl": {
+      "mtimeMs": 1777432629641.4973,
+      "sizeBytes": 3466
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/1fffebac-3fe1-40bf-aafe-cb7350a50f1e/1fffebac-3fe1-40bf-aafe-cb7350a50f1e.jsonl": {
       "mtimeMs": 1774229582711.037,
@@ -411,7 +419,7 @@
       "sizeBytes": 4601
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/48a3aaba-f463-4634-bd1d-267db67db5e7/48a3aaba-f463-4634-bd1d-267db67db5e7.jsonl": {
-      "mtimeMs": 1777179567567.5667,
+      "mtimeMs": 1777265769353.915,
       "sizeBytes": 42193
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/4a0a5341-19e4-495b-8617-3474756b739c/4a0a5341-19e4-495b-8617-3474756b739c.jsonl": {
@@ -1119,8 +1127,8 @@
       "sizeBytes": 25632
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d2ce88e4-afa0-4987-8cc7-c70904d479a6/d2ce88e4-afa0-4987-8cc7-c70904d479a6.jsonl": {
-      "mtimeMs": 1777257108039.968,
-      "sizeBytes": 475027
+      "mtimeMs": 1777258659820.365,
+      "sizeBytes": 486043
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d2ce88e4-afa0-4987-8cc7-c70904d479a6/subagents/056f2fc3-6d74-4d70-b56c-81c3bdc06252.jsonl": {
       "mtimeMs": 1777248991756.9675,
@@ -1171,8 +1179,8 @@
       "sizeBytes": 15670
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d2ce88e4-afa0-4987-8cc7-c70904d479a6/subagents/a7311a5d-e45f-4726-ba77-93d25088a358.jsonl": {
-      "mtimeMs": 1777257146878.5425,
-      "sizeBytes": 2491
+      "mtimeMs": 1777257205722.7488,
+      "sizeBytes": 9285
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d2ce88e4-afa0-4987-8cc7-c70904d479a6/subagents/b5585794-8302-47e7-a5a4-ce5370ad7a21.jsonl": {
       "mtimeMs": 1777248167201.2107,
@@ -1197,6 +1205,10 @@
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d46af3f7-d4ce-44f6-b62f-a31834f87e88/subagents/820ed5b9-1825-4abf-86a7-14464efd91ef.jsonl": {
       "mtimeMs": 1775362719197.0593,
       "sizeBytes": 10880
+    },
+    "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d6be6894-fa9c-42b2-a918-df3519c97cf7/d6be6894-fa9c-42b2-a918-df3519c97cf7.jsonl": {
+      "mtimeMs": 1777259772742.7195,
+      "sizeBytes": 28026
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/d6dd4ca9-c959-4b87-99bd-03f5621bd147/d6dd4ca9-c959-4b87-99bd-03f5621bd147.jsonl": {
       "mtimeMs": 1775361130860.5723,
@@ -1311,7 +1323,7 @@
       "sizeBytes": 465170
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/f5e56e9d-2347-4867-a75b-001c4017a660/f5e56e9d-2347-4867-a75b-001c4017a660.jsonl": {
-      "mtimeMs": 1777179048770.496,
+      "mtimeMs": 1777265234463.5974,
       "sizeBytes": 42240
     },
     "/Users/brianchannell/.cursor/projects/Users-brianchannell-Documents-GitHub-stock-screener/agent-transcripts/f5e56e9d-2347-4867-a75b-001c4017a660/subagents/05cbbf5c-35f7-4370-a0dd-53ba88b4ed82.jsonl": {
