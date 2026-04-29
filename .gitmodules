@@ -1,6 +1,3 @@
-[submodule "vendor/TradingAgents"]
-	path = vendor/TradingAgents
-	url = https://github.com/beactivela/TradingAgents.git
 [submodule "vendor/atlas-gic"]
 	path = vendor/atlas-gic
 	url = https://github.com/chrisworsey55/atlas-gic.git
