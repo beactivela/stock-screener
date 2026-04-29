@@ -175,6 +175,67 @@ describe('getBarsBatch', () => {
   });
 });
 
+describe('getBars', () => {
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  it('requests an inclusive end date and collapses duplicate daily quotes for the same session', async () => {
+    let receivedOptions = null;
+
+    mock.method(__testing.yahooFinance, 'chart', async (_ticker, options) => {
+      receivedOptions = options;
+      return {
+        quotes: [
+          {
+            date: '2026-04-22T13:30:00.000Z',
+            open: 7102.91,
+            high: 7138.64,
+            low: 7102.91,
+            close: 7137.9,
+            volume: 4_919_460_000,
+          },
+          {
+            date: '2026-04-23T13:30:00.000Z',
+            open: 7118.8,
+            high: 7147.78,
+            low: 7046.55,
+            close: 7108.4,
+            volume: 3_238_398_000,
+          },
+          {
+            date: '2026-04-23T20:40:29.000Z',
+            open: 7118.8,
+            high: 7147.78,
+            low: 7046.55,
+            close: 7108.4,
+            volume: 3_238_398_000,
+          },
+          {
+            date: '2026-04-24T13:30:00.000Z',
+            open: 7120,
+            high: 7150,
+            low: 7100,
+            close: 7140,
+            volume: 3_100_000_000,
+          },
+        ],
+      };
+    });
+
+    const bars = await getBars('^GSPC', '2026-04-22', '2026-04-23', '1d');
+
+    assert.deepEqual(receivedOptions, {
+      period1: '2026-04-22',
+      period2: '2026-04-24',
+      interval: '1d',
+    });
+    assert.equal(bars.length, 2);
+    assert.equal(new Date(bars[1].t).toISOString(), '2026-04-23T20:40:29.000Z');
+    assert.equal(bars[1].c, 7108.4);
+  });
+});
+
 describe('getFundamentals company stats', () => {
   afterEach(() => {
     mock.restoreAll();

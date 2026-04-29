@@ -5,10 +5,6 @@ dist
 .DS_Store
 # Runtime / local data at repo root only (do not use bare `data/` — that ignores src/data/)
 /data/
-.venv-tradingagents/
 
 # Local clone of karpathy/autoresearch (optional; not tracked)
 vendor/autoresearch/
-
-# AI Hedge Fund local SQLite (cloned repo)
-ai-hedge-fund/hedge_fund.db

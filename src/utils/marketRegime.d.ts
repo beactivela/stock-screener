@@ -1,6 +1,7 @@
-export type MarketRegimeLabel = 'Bullish' | 'Mild Bullish' | 'Neutral' | 'Mild Bearish' | 'Bearish'
+export type MarketRegimeLabel = 'Risk ON' | 'Risk OFF'
 
 export function classifyMovingAverageRegime(params: {
+  close?: number | null
   ma10?: number | null
   ma20?: number | null
   ma50?: number | null

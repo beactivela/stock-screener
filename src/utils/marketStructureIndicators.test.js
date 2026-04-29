@@ -6,6 +6,7 @@ import {
   alignBarsByTimestamp,
   alignThreeBarCloses,
   classifyStanceFromPriceVsMa,
+  computePowerTrendSignal,
   formatStructureSubtitle,
 } from './marketStructureIndicators.ts'
 
@@ -73,4 +74,65 @@ test('alignThreeBarCloses requires timestamps present in all three', () => {
   assert.deepEqual(out.gspc, [2])
   assert.deepEqual(out.qqq, [20])
   assert.deepEqual(out.spy, [200])
+})
+
+test('computePowerTrendSignal triggers on sustained bullish alignment', () => {
+  const bars = Array.from({ length: 80 }, (_, i) => {
+    const close = 100 + i * 1.2
+    return {
+      t: Date.UTC(2026, 0, i + 1),
+      o: close - 2,
+      h: close + 1,
+      l: close - 0.2,
+      c: close,
+    }
+  })
+
+  const result = computePowerTrendSignal(bars)
+  assert.equal(result.triggered, true)
+  assert.ok(result.daysLowAboveEma21 >= 10)
+  assert.ok(result.daysEma21AboveSma50 >= 5)
+  assert.equal(result.sma50TrendingUp, true)
+  assert.equal(result.closeGreen, true)
+})
+
+test('computePowerTrendSignal uses prior close for green-close confirmation', () => {
+  const bars = Array.from({ length: 80 }, (_, i) => {
+    const close = 100 + i * 1.2
+    return {
+      t: Date.UTC(2026, 0, i + 1),
+      o: close + 1,
+      h: close + 2,
+      l: close - 0.2,
+      c: close,
+    }
+  })
+
+  const result = computePowerTrendSignal(bars)
+  assert.equal(result.closeGreen, true)
+  assert.equal(result.triggered, true)
+})
+
+test('computePowerTrendSignal no longer requires a green latest close', () => {
+  const bars = Array.from({ length: 80 }, (_, i) => {
+    const close = 100 + i * 1.2
+    return {
+      t: Date.UTC(2026, 0, i + 1),
+      o: close - 1,
+      h: close + 2,
+      l: close - 0.2,
+      c: close,
+    }
+  })
+
+  const last = bars[bars.length - 1]
+  const prior = bars[bars.length - 2]
+  last.c = prior.c - 3
+  last.o = last.c + 1
+  last.h = last.c + 2
+  last.l = last.c - 0.2
+
+  const result = computePowerTrendSignal(bars)
+  assert.equal(result.closeGreen, false)
+  assert.equal(result.triggered, true)
 })

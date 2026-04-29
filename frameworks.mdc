@@ -10,8 +10,6 @@
 |------|------|
 | **5174** | Stock screener: `npm run dev` (Express + Vite middleware on one process). Do **not** also run standalone `vite` — it also binds **5174** per `vite.config.ts`. |
 | **3001** | API-only: `npm run dev:server` (for scripts or split dev: use with `vite` so the UI proxies `/api` → 3001). |
-| **5175** | Bundled **ai-hedge-fund** UI (`ai-hedge-fund/app/frontend`), separate from the screener. |
-| **8000** | AI Hedge Fund FastAPI (`uvicorn` when you run that stack). |
 | **3001** (Docker) | Uptime Kuma maps host `KUMA_PORT` (default **3001**) — conflicts with `dev:server` on the same host. Set e.g. `KUMA_PORT=3002` in `.env` if you run both. |
 
 ### Frontend

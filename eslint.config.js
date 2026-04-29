@@ -14,7 +14,6 @@ export default defineConfig([
     'data',
     'test-background-scan.js',
     'verify-industry-accuracy.js',
-    '.venv-tradingagents/**',
     'regime_trading/.venv/**',
     'vendor/**',
   ]),

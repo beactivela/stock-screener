@@ -52,6 +52,10 @@ const TICKER_TO_LABEL: Record<string, string> = {
   '^VIX': 'VIX',
 }
 
+const TICKER_TO_CHART_SYMBOL: Record<string, string> = {
+  '^GSPC': 'ES=F',
+}
+
 const TIMEFRAMES = [
   { label: '6M', days: 180 },
   { label: '1Y', days: 365 },
@@ -72,10 +76,19 @@ function toUnixTime(time: Time | undefined): number | null {
   return typeof time === 'number' ? time : null
 }
 
+function dedupeBarsByUtcDate(rows: Bar[]): Bar[] {
+  const byDate = new Map<string, Bar>()
+  for (const row of rows) {
+    const dateKey = new Date(row.t).toISOString().slice(0, 10)
+    const prior = byDate.get(dateKey)
+    if (!prior || row.t >= prior.t) byDate.set(dateKey, row)
+  }
+  return [...byDate.values()].sort((a, b) => a.t - b.t)
+}
+
 function getRegimeTone(regime: MarketRegimeLabel): string {
-  if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
-  if (regime === 'Neutral') return 'text-yellow-300 bg-yellow-500/15 border-yellow-700/50'
-  return 'text-red-100 bg-red-500/30 border-red-400/70' // Mild Bearish / Bearish: brighter for dark cards
+  if (regime === 'Risk ON') return 'text-emerald-950 bg-emerald-300 border-emerald-100'
+  return 'text-red-100 bg-red-500/30 border-red-400/70'
 }
 
 function formatChange(value: number): string {
@@ -87,6 +100,10 @@ function formatDelta(value: number | null): string {
   if (value == null) return '—'
   const sign = value > 0 ? '+' : ''
   return `${sign}${value}`
+}
+
+function getChartSymbolForTicker(ticker: string): string {
+  return TICKER_TO_CHART_SYMBOL[ticker] ?? ticker
 }
 
 export default function MarketIndexDetail() {
@@ -194,7 +211,7 @@ export default function MarketIndexDetail() {
         {orderedTickers.map((itemTicker) => (
           <MarketIndexChart
             key={itemTicker}
-            ticker={itemTicker}
+            ticker={getChartSymbolForTicker(itemTicker)}
             label={TICKER_TO_LABEL[itemTicker] ?? itemTicker}
             timeframe={timeframe}
             onErrorBack={() => navigate('/')}
@@ -327,7 +344,7 @@ function MarketIndexChart({
         }
         if (payload?.error) throw new Error(payload.error)
         const raw = (payload?.results || []) as Bar[]
-        if (!cancelled) setBars([...raw].sort((a, b) => a.t - b.t))
+        if (!cancelled) setBars(dedupeBarsByUtcDate([...raw].sort((a, b) => a.t - b.t)))
       } catch (e: unknown) {
         if (cancelled) return
         setBars([])
@@ -417,6 +434,7 @@ function MarketIndexChart({
     const lastBar = displayedBars[displayedBars.length - 1]
     const prevBar = displayedBars[displayedBars.length - 2]
     const regime = classifyMovingAverageRegime({
+      close: lastBar?.c ?? null,
       ma10: sma10[sma10.length - 1] ?? null,
       ma20: sma20[sma20.length - 1] ?? null,
       ma50: sma50[sma50.length - 1] ?? null,
@@ -468,7 +486,7 @@ function MarketIndexChart({
       rightPriceScale: {
         borderColor: '#334155',
         scaleMargins: { top: 0.1, bottom: 0.15 },
-        mode: PriceScaleMode.Logarithmic,
+        mode: PriceScaleMode.Normal,
       },
     })
     const candles = chart.addCandlestickSeries({

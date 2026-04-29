@@ -16,6 +16,7 @@ dotenv.config({ path: ROOT_ENV });
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
+import http from 'http';
 import { registerDeployRoutes } from './deployRemote.js';
 import {
   registerHealthRoute,
@@ -30,15 +31,15 @@ import {
   registerAgentsRoutesAfterHeartbeat,
 } from './http/registerAgentsRoutes.js';
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
-import { registerTradingAgentsRoutes } from './http/registerTradingAgentsRoutes.js';
 import { registerAiPortfolioRoutes } from './http/registerAiPortfolioRoutes.js';
 import { registerOptionsBacktestRoutes } from './http/registerOptionsBacktestRoutes.js';
+import { registerOptionsGammaRoutes } from './http/registerOptionsGammaRoutes.js';
+import { registerOptionsOpenInterestRoutes } from './http/registerOptionsOpenInterestRoutes.js';
 import { registerStockcircleRoutes } from './http/registerStockcircleRoutes.js';
 import { registerWhalewisdomRoutes } from './http/registerWhalewisdomRoutes.js';
 import { registerExpertsSyncRoutes } from './http/registerExpertsSyncRoutes.js';
 import { registerExpertsSummaryRoutes } from './http/registerExpertsSummaryRoutes.js';
 import { registerExpertsInsightsRoutes } from './http/registerExpertsInsightsRoutes.js';
-import { registerAiHedgeFundFmpRoutes } from './http/registerAiHedgeFundFmpRoutes.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -49,7 +50,6 @@ app.use(cors());
 app.use(express.json());
 
 registerHealthRoute(app);
-registerAiHedgeFundFmpRoutes(app);
 
 registerDeployRoutes(app);
 
@@ -85,9 +85,10 @@ if (process.env.SCHEDULE_SCAN === '1') {
 registerOpus45Routes(app);
 registerTradesRoutes(app);
 registerExitLearningRoutes(app);
-registerTradingAgentsRoutes(app);
 const aiPortfolioService = registerAiPortfolioRoutes(app);
 registerOptionsBacktestRoutes(app);
+registerOptionsGammaRoutes(app);
+registerOptionsOpenInterestRoutes(app);
 registerAgentsRoutesBeforeHeartbeat(app);
 registerMarcusNewsRoutes(app);
 
@@ -218,12 +219,16 @@ const DIST_DIR = path.join(__dirname, '..', 'dist');
 const isDev = process.env.NODE_ENV === 'development';
 
 async function attachFrontend() {
+  const httpServer = http.createServer(app);
   if (isDev) {
     // Single process: Express serves /api, Vite serves app + HMR on same port
     const { createServer } = await import('vite');
     const vite = await createServer({
       server: {
         middlewareMode: true,
+        hmr: {
+          server: httpServer,
+        },
         watch: {
           // Avoid full-page reload loops when backend jobs update cached data files.
           ignored: ['**/data/**'],
@@ -241,7 +246,7 @@ async function attachFrontend() {
     });
     console.log('Serving static app from dist/');
   }
-  app.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`Stock screener at http://localhost:${PORT}`);
   });
 }

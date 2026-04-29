@@ -1050,7 +1050,7 @@ app.get('/api/bars/:ticker', async (req, res) => {
     }
   }
   // lightweight-charts requires asc by time; Yahoo can return unsorted
-  const sorted = [...bars].sort((a, b) => a.t - b.t);
+  const sorted = dedupeBarsForResponse(bars, interval);
   res.json({ ticker, from: fromStr, to: toStr, interval, results: sorted });
 });
 
@@ -2188,4 +2188,18 @@ export function registerHealthRoute(app) {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, uptime: process.uptime() });
   });
+}
+function dedupeBarsForResponse(bars, interval = '1d') {
+  const rows = Array.isArray(bars) ? bars : [];
+  const useDateKey = interval === '1d';
+  const byKey = new Map();
+  for (const bar of rows) {
+    if (!bar || bar.t == null) continue;
+    const key = useDateKey
+      ? new Date(bar.t).toISOString().slice(0, 10)
+      : String(Number(bar.t));
+    const prior = byKey.get(key);
+    if (!prior || Number(bar.t) >= Number(prior.t)) byKey.set(key, bar);
+  }
+  return [...byKey.values()].sort((a, b) => a.t - b.t);
 }

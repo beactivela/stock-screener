@@ -18,8 +18,6 @@ on:
       - 'index.html'
       - 'public/**'
       - 'vendor/**'
-      - 'scripts/tradingagents/**'
-      - 'requirements-tradingagents.txt'
 
 permissions:
   contents: read

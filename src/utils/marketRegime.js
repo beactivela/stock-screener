@@ -3,51 +3,41 @@
  */
 
 /**
- * @typedef {'Risk ON' | 'Cautious' | 'Risk OFF'} MarketRegimeLabel
+ * @typedef {'Risk ON' | 'Risk OFF'} MarketRegimeLabel
  */
 
 /**
- * Classify regime from 50 moving average angle.
+ * Classify regime from price and moving-average alignment.
  *
- * Simplified classification based on 50 MA trend:
- * - Risk ON: angle > 5° (uptrend)
- * - Risk OFF: angle ≤ 5° (flat or declining)
+ * Simplified classification:
+ * - Risk ON: close > 20 MA and 10 MA > 50 MA
+ * - Risk OFF: otherwise
  *
  * @param {{
+ *   close?: number | null,
  *   ma10?: number | null,
  *   ma20?: number | null,
  *   ma50?: number | null,
- *   recentMa20?: Array<number | null | undefined>,
- *   recentMa50?: Array<number | null | undefined>,
+  *   recentMa20?: Array<number | null | undefined>,
+  *   recentMa50?: Array<number | null | undefined>,
  *   neutralBandPct?: number
  * }} params
  * @returns {MarketRegimeLabel}
  */
 export function classifyMovingAverageRegime(params) {
   const {
+    close,
+    ma10,
+    ma20,
     ma50,
-    recentMa50 = [],
   } = params || {}
 
-  // Need at least 2 points to calculate an angle
-  if (!isFiniteNumber(ma50) || recentMa50.length < 10) {
+  if (!isFiniteNumber(close) || !isFiniteNumber(ma10) || !isFiniteNumber(ma20) || !isFiniteNumber(ma50)) {
     return 'Risk OFF'
   }
 
-  // Calculate the angle of the 50 MA
-  // Use the last 10 periods (approximately 2 weeks of trading days)
-  const ma50Values = recentMa50.slice(-10).filter(isFiniteNumber)
-  
-  if (ma50Values.length < 2) {
-    return 'Risk OFF'
-  }
-
-  // Calculate angle using linear regression slope
-  const angle = calculateMA50Angle(ma50Values)
-
-  // Apply simplified regime rules
-  if (angle > 5) return 'Risk ON'
-  return 'Risk OFF' // angle <= 5
+  if (close > ma20 && ma10 > ma50) return 'Risk ON'
+  return 'Risk OFF'
 }
 
 /**

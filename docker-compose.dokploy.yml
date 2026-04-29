@@ -32,7 +32,9 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-      CRON_ALLOW_EXPERTS_BROWSER_SYNC: "1"
+      # Secure by default in production. Override to 1 only if you intentionally want the public site
+      # to trigger /api/cron/experts-sync without a Bearer secret.
+      CRON_ALLOW_EXPERTS_BROWSER_SYNC: "0"
     volumes:
       - screener-data:/app/data
     networks:

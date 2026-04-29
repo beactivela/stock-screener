@@ -45,6 +45,9 @@ All application data and cache are stored in Supabase. The app reads from and wr
 | `schema.sql` | Core tables (tickers, scans, bars, regime, trades, …) |
 | `learning-schema.sql` | Learning / failure-analysis tables (run after `schema.sql` if you use that stack) |
 | `migration-rls-and-api-hardening.sql` | **Security:** enable RLS on all `public` tables, `security_invoker` views, fix `update_market_conditions` `search_path`. Run **once** per project after schema is in place. |
+| `migration-options-backtest.sql` | Options backtest persistence tables; now enables RLS as part of creation |
+| `migration-options-backtest-rls.sql` | One-time hardening patch for projects where options backtest tables were created before RLS was added |
+| `migration-revoke-public-api-grants.sql` | Optional extra hardening: revoke default `anon`/`authenticated` grants on `public` tables, views, and functions when only `service_role` should access the API |
 | Other `migration-*.sql` | Feature-specific deltas (Opus scores, WFO, archive, etc.) |
 
 Idempotent patterns (`IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`) are used where possible; the RLS migration is safe to re-run for **new tables only** if you repeat the `DO` block—see comments at the bottom of `migration-rls-and-api-hardening.sql`.
@@ -52,6 +55,7 @@ Idempotent patterns (`IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`) are used where
 ## Security notes & linter
 
 - **[Database Linter](https://supabase.com/docs/guides/database/database-linter)** (Dashboard → Advisors): after hardening, you may see **INFO** [RLS enabled but no policy](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy) on each table. That is expected: anon has no access until you add policies.
+- For stricter least-privilege hardening, run `migration-revoke-public-api-grants.sql` to remove the default `anon` / `authenticated` grants entirely. That matches this app's server-only `service_role` access pattern.
 - Never expose **`SUPABASE_SERVICE_KEY`** in the browser or in a public repo. The Vite app does not initialize Supabase; only the Node server uses the client in `server/supabase.js`.
 
 ## Schema overview (data in DB)

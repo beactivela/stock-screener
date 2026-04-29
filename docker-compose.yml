@@ -38,8 +38,9 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-      # Same-origin /experts Sync button without pasting CRON_SECRET; set CRON_ALLOW_EXPERTS_BROWSER_SYNC=0 in .env to require Bearer.
-      CRON_ALLOW_EXPERTS_BROWSER_SYNC: "1"
+      # Secure by default in production. Set CRON_ALLOW_EXPERTS_BROWSER_SYNC=1 in .env only if you explicitly want
+      # same-origin browser POSTs to /api/cron/experts-sync without a Bearer secret.
+      CRON_ALLOW_EXPERTS_BROWSER_SYNC: "0"
     volumes:
       - screener-data:/app/data
     networks:

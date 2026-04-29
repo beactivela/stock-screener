@@ -6,10 +6,14 @@ import { Opus45Marker } from '../utils/opus45Indicators'
 import { AGENT_CHART_LIST, AGENT_CHART_ORDER, AgentSignalHistoryResponse, AgentType, toAgentChartMarkers } from '../utils/agentSignalMarkers'
 import { API_BASE } from '../utils/api'
 import TradingViewWidget from '../components/TradingViewWidget'
+import OptionsOpenInterestRail from '../components/OptionsOpenInterestRail'
+import OptionsStrategyVisualizer from '../components/OptionsStrategyVisualizer'
 import ChartContextMenu from '../components/ChartContextMenu'
 import { buildNewsPrompt } from '../utils/newsPrompt.js'
 import { getIbdGroupRelStrBadge, getIbdRsRatingBadge, getIndustryRankBadge, getScanRsRatingBadge } from '../utils/rsRatingDisplay.js'
 import { getWatchlistItem, removeWatchlistItem, upsertWatchlistItem, type WatchlistItem } from '../utils/watchlistStorage.js'
+import { chooseDefaultExpiration, type OptionsOpenInterestExpiration, type OptionsOpenInterestStrike } from '../utils/optionsOpenInterest'
+import { calculateBearCallSpreadMetrics, type VisualizerStrategyId } from '../utils/optionsStrategy'
 // Trade Journal panel for logging entries and exits
 import TradePanel from '../components/TradePanel'
 
@@ -100,11 +104,56 @@ interface ScanNavItem {
   hasActionableBuy?: boolean
 }
 
+interface GammaLevel {
+  strike: number
+  netGammaUsd: number
+  absGammaUsd: number
+}
+
+interface OptionsGammaResponse {
+  ok: boolean
+  ticker: string
+  spot: number | null
+  asOf: string
+  source: string
+  netGammaUsd: number | null
+  regime: 'long_gamma' | 'short_gamma' | 'neutral'
+  topLevels: GammaLevel[]
+  allLevels: GammaLevel[]
+  monthlyOnly: boolean
+  message?: string | null
+}
+
+interface OptionsOpenInterestResponse {
+  ok: boolean
+  ticker: string
+  spot: number | null
+  asOf: string
+  source: string
+  selectedExpiration: string | null
+  expirations: OptionsOpenInterestExpiration[]
+  strikes: OptionsOpenInterestStrike[]
+  message?: string | null
+}
+
 const TIMEFRAMES = [
   { label: '3M', days: 90 },
   { label: '6M', days: 180 },
   { label: '12M', days: 365 },
 ] as const
+
+const PRICE_CHART_HEIGHT = 600
+const PRICE_CHART_SCALE_MARGINS = { top: 0.12, bottom: 0.08 }
+const RSI_CHART_HEIGHT = 140
+const VCP_CHART_HEIGHT = 100
+const STAGE_2_CHART_HEIGHT = 90
+const INDICATOR_HEADER_HEIGHT = 30
+const CHART_STACK_HEIGHT =
+  PRICE_CHART_HEIGHT +
+  RSI_CHART_HEIGHT +
+  VCP_CHART_HEIGHT +
+  STAGE_2_CHART_HEIGHT +
+  INDICATOR_HEADER_HEIGHT * 3
 
 const INTERVALS = [
   { label: 'Daily', value: '1d' },
@@ -182,6 +231,12 @@ function formatUsdCompact(value: number | null | undefined): string | null {
   return `${sign}$${abs.toFixed(0)}`
 }
 
+function formatGammaUsd(value: number | null | undefined): string {
+  const formatted = formatUsdCompact(value)
+  if (!formatted) return '$0'
+  return value != null && value > 0 ? `+${formatted}` : formatted
+}
+
 function CompanyStatInline({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <span className="inline-flex flex-wrap items-baseline gap-x-1 shrink-0" title={title}>
@@ -224,6 +279,8 @@ export default function StockDetail() {
   // Toggle Relative Strength to Industry line - persists to localStorage, default hidden until checked
   // Opus4.5 Buy Signal Rules accordion: closed by default so "Why this score?" stays prominent
   const [opus45RulesOpen, setOpus45RulesOpen] = useState(false)
+  /** Trade journal lives in a modal so the chart can use full width. */
+  const [tradeJournalOpen, setTradeJournalOpen] = useState(false)
   const [showRsIndustry, setShowRsIndustry] = useState(() => {
     const saved = localStorage.getItem('showRsIndustry')
     return saved === 'true'
@@ -249,6 +306,18 @@ export default function StockDetail() {
   // Opus4.5 signals from server API (single source of truth)
   const [opus45History, setOpus45History] = useState<Opus45HistoryResponse | null>(null)
 
+  // Practical options gamma exposure from Yahoo chains + Black-Scholes gamma.
+  const [optionsGamma, setOptionsGamma] = useState<OptionsGammaResponse | null>(null)
+  const [optionsOpenInterest, setOptionsOpenInterest] = useState<OptionsOpenInterestResponse | null>(null)
+  const [optionsOpenInterestLoading, setOptionsOpenInterestLoading] = useState(false)
+  const [selectedOptionsExpiration, setSelectedOptionsExpiration] = useState<string | null>(null)
+  const [optionStrikeCoordinates, setOptionStrikeCoordinates] = useState<Record<string, number>>({})
+  const [optionsStrategyKind, setOptionsStrategyKind] = useState<VisualizerStrategyId>('put_credit_spread')
+  const [selectedOptionsSpread, setSelectedOptionsSpread] = useState<{
+    shortStrike: number | null
+    longStrike: number | null
+  }>({ shortStrike: null, longStrike: null })
+
   // Signal Agent overlays from server API (per-agent buy signals)
   const [agentSignalHistory, setAgentSignalHistory] = useState<AgentSignalHistoryResponse | null>(null)
   
@@ -259,6 +328,16 @@ export default function StockDetail() {
   const tickerBarRef = useRef<HTMLDivElement>(null)
   // Increment to re-run bars fetch (e.g. after "Retry" when chart data failed to load)
   const [barsRetryKey, setBarsRetryKey] = useState(0)
+
+  // Close trade journal modal on Escape (same idea as other overlay UIs)
+  useEffect(() => {
+    if (!tradeJournalOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTradeJournalOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tradeJournalOpen])
 
   // Fetch scan results for ticker navigation bar (once on mount)
   // Syncs with Dashboard: sorted by score desc, green highlight for actionable buy signals
@@ -423,6 +502,291 @@ export default function StockDetail() {
         console.error('Agent signal history fetch failed:', e)
       })
   }, [ticker])
+
+  // Fetch practical net gamma once per ticker; failures are non-fatal.
+  useEffect(() => {
+    if (!ticker) return
+    let cancelled = false
+    setOptionsGamma(null)
+    fetch(`${API_BASE}/api/options-gamma/${encodeURIComponent(ticker)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((res: OptionsGammaResponse | null) => {
+        if (!cancelled) setOptionsGamma(res)
+      })
+      .catch((e) => {
+        console.error('Options gamma fetch failed:', e)
+        if (!cancelled) {
+          setOptionsGamma({
+            ok: false,
+            ticker,
+            spot: null,
+            asOf: new Date().toISOString(),
+            source: 'yahoo_options_black_scholes',
+            netGammaUsd: null,
+            regime: 'neutral',
+            topLevels: [],
+            allLevels: [],
+            monthlyOnly: false,
+            message: 'No useful gamma data',
+          })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [ticker])
+
+  // Fetch current options open interest by expiration for the right-side strike rail.
+  useEffect(() => {
+    if (!ticker) return
+    let cancelled = false
+    setOptionsOpenInterestLoading(true)
+    const optionsParams = new URLSearchParams({ quotes: '1' })
+    if (selectedOptionsExpiration) optionsParams.set('expiration', selectedOptionsExpiration)
+    fetch(`${API_BASE}/api/options-open-interest/${encodeURIComponent(ticker)}?${optionsParams.toString()}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((res: OptionsOpenInterestResponse | null) => {
+        if (cancelled) return
+        setOptionsOpenInterest(res)
+        const nextSelected = chooseDefaultExpiration(res?.expirations || [], selectedOptionsExpiration)
+        setSelectedOptionsExpiration(nextSelected)
+      })
+      .catch((e) => {
+        console.error('Options open interest fetch failed:', e)
+        if (!cancelled) {
+          setOptionsOpenInterest({
+            ok: false,
+            ticker,
+            spot: null,
+            asOf: new Date().toISOString(),
+            source: 'yahoo_options_open_interest',
+            selectedExpiration: selectedOptionsExpiration,
+            expirations: [],
+            strikes: [],
+            message: 'No useful open interest data',
+          })
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setOptionsOpenInterestLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [ticker, selectedOptionsExpiration])
+
+  useEffect(() => {
+    setSelectedOptionsExpiration(null)
+    setOptionsOpenInterest(null)
+    setOptionsStrategyKind('put_credit_spread')
+    setSelectedOptionsSpread({ shortStrike: null, longStrike: null })
+  }, [ticker])
+
+  const selectedOptionsExpirationMeta = useMemo(() => {
+    const selected = selectedOptionsExpiration || optionsOpenInterest?.selectedExpiration || null
+    return optionsOpenInterest?.expirations.find((expiration) => expiration.date === selected) || null
+  }, [optionsOpenInterest?.expirations, optionsOpenInterest?.selectedExpiration, selectedOptionsExpiration])
+
+  useEffect(() => {
+    if (!optionsOpenInterest?.ok) {
+      setSelectedOptionsSpread((prev) =>
+        prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
+      )
+      return
+    }
+
+    const spot = optionsOpenInterest.spot ?? optionsGamma?.spot ?? null
+
+    if (optionsStrategyKind === 'put_credit_spread') {
+      const pricedPuts = [...optionsOpenInterest.strikes]
+        .filter((row) => row.putOpenInterest > 0 && row.putQuote?.mid != null && row.putQuote.mid > 0)
+        .sort((a, b) => a.strike - b.strike)
+      if (pricedPuts.length < 2) {
+        setSelectedOptionsSpread((prev) =>
+          prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
+        )
+        return
+      }
+
+      const validShort = pricedPuts.some((row) => row.strike === selectedOptionsSpread.shortStrike)
+      const validLong = pricedPuts.some((row) => row.strike === selectedOptionsSpread.longStrike)
+      if (
+        validShort &&
+        validLong &&
+        selectedOptionsSpread.shortStrike != null &&
+        selectedOptionsSpread.longStrike != null &&
+        selectedOptionsSpread.shortStrike > selectedOptionsSpread.longStrike
+      ) {
+        return
+      }
+
+      const shortCandidate =
+        [...pricedPuts].reverse().find((row) => spot == null || row.strike < spot) || pricedPuts[pricedPuts.length - 1]
+      const shortIndex = pricedPuts.findIndex((row) => row.strike === shortCandidate.strike)
+      const longCandidate = pricedPuts[Math.max(0, shortIndex - 1)]
+
+      if (longCandidate && shortCandidate.strike > longCandidate.strike) {
+        setSelectedOptionsSpread({
+          shortStrike: shortCandidate.strike,
+          longStrike: longCandidate.strike,
+        })
+      }
+      return
+    }
+
+    if (optionsStrategyKind === 'bear_put_spread') {
+      const pricedPuts = [...optionsOpenInterest.strikes]
+        .filter((row) => row.putOpenInterest > 0 && row.putQuote?.mid != null && row.putQuote.mid > 0)
+        .sort((a, b) => a.strike - b.strike)
+      if (pricedPuts.length < 2) {
+        setSelectedOptionsSpread((prev) =>
+          prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
+        )
+        return
+      }
+
+      const validShort = pricedPuts.some((row) => row.strike === selectedOptionsSpread.shortStrike)
+      const validLong = pricedPuts.some((row) => row.strike === selectedOptionsSpread.longStrike)
+      if (
+        validShort &&
+        validLong &&
+        selectedOptionsSpread.shortStrike != null &&
+        selectedOptionsSpread.longStrike != null &&
+        selectedOptionsSpread.longStrike > selectedOptionsSpread.shortStrike
+      ) {
+        return
+      }
+
+      const longCandidate =
+        pricedPuts.find((row) => spot == null || row.strike >= spot) || pricedPuts[pricedPuts.length - 1]
+      const longIndex = pricedPuts.findIndex((row) => row.strike === longCandidate.strike)
+      const shortCandidate = pricedPuts[Math.max(0, longIndex - 1)]
+      if (shortCandidate && longCandidate.strike > shortCandidate.strike) {
+        setSelectedOptionsSpread({
+          shortStrike: shortCandidate.strike,
+          longStrike: longCandidate.strike,
+        })
+      }
+      return
+    }
+
+    if (optionsStrategyKind === 'bear_call_spread') {
+      const pricedCalls = [...optionsOpenInterest.strikes]
+        .filter((row) => row.callOpenInterest > 0 && row.callQuote?.mid != null && row.callQuote.mid > 0)
+        .sort((a, b) => a.strike - b.strike)
+      if (pricedCalls.length < 2) {
+        setSelectedOptionsSpread((prev) =>
+          prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
+        )
+        return
+      }
+
+      const sRow = optionsOpenInterest.strikes.find((r) => r.strike === selectedOptionsSpread.shortStrike)
+      const lRow = optionsOpenInterest.strikes.find((r) => r.strike === selectedOptionsSpread.longStrike)
+      if (
+        sRow?.callQuote &&
+        lRow?.callQuote &&
+        selectedOptionsSpread.shortStrike != null &&
+        selectedOptionsSpread.longStrike != null &&
+        selectedOptionsSpread.shortStrike < selectedOptionsSpread.longStrike
+      ) {
+        const m = calculateBearCallSpreadMetrics({
+          shortCall: {
+            strike: sRow.strike,
+            bid: sRow.callQuote.bid,
+            ask: sRow.callQuote.ask,
+            lastPrice: sRow.callQuote.lastPrice,
+          },
+          longCall: {
+            strike: lRow.strike,
+            bid: lRow.callQuote.bid,
+            ask: lRow.callQuote.ask,
+            lastPrice: lRow.callQuote.lastPrice,
+          },
+        })
+        if (m) return
+      }
+
+      let pickedShort: OptionsOpenInterestStrike | null = null
+      let pickedLong: OptionsOpenInterestStrike | null = null
+      for (let i = 0; i < pricedCalls.length - 1; i += 1) {
+        const s = pricedCalls[i]
+        const l = pricedCalls[i + 1]
+        const m = calculateBearCallSpreadMetrics({
+          shortCall: {
+            strike: s.strike,
+            bid: s.callQuote!.bid,
+            ask: s.callQuote!.ask,
+            lastPrice: s.callQuote!.lastPrice,
+          },
+          longCall: {
+            strike: l.strike,
+            bid: l.callQuote!.bid,
+            ask: l.callQuote!.ask,
+            lastPrice: l.callQuote!.lastPrice,
+          },
+        })
+        if (m) {
+          pickedShort = s
+          pickedLong = l
+          break
+        }
+      }
+      if (pickedShort && pickedLong) {
+        setSelectedOptionsSpread({ shortStrike: pickedShort.strike, longStrike: pickedLong.strike })
+      }
+      return
+    }
+
+    if (optionsStrategyKind === 'cash_secured_put') {
+      const pricedPuts = [...optionsOpenInterest.strikes]
+        .filter((row) => row.putOpenInterest > 0 && row.putQuote?.mid != null && row.putQuote.mid > 0)
+        .sort((a, b) => a.strike - b.strike)
+      if (pricedPuts.length === 0) {
+        setSelectedOptionsSpread((prev) =>
+          prev.shortStrike == null ? prev : { shortStrike: null, longStrike: null },
+        )
+        return
+      }
+      if (
+        selectedOptionsSpread.shortStrike != null &&
+        selectedOptionsSpread.longStrike == null &&
+        pricedPuts.some((row) => row.strike === selectedOptionsSpread.shortStrike)
+      ) {
+        return
+      }
+      const belowSpot = pricedPuts.filter((row) => spot == null || row.strike < spot)
+      const pick =
+        belowSpot.length > 0 ? belowSpot[belowSpot.length - 1] : pricedPuts[pricedPuts.length - 1]
+      setSelectedOptionsSpread({ shortStrike: pick.strike, longStrike: null })
+      return
+    }
+
+    const pricedCalls = [...optionsOpenInterest.strikes]
+      .filter((row) => row.callOpenInterest > 0 && row.callQuote?.mid != null && row.callQuote.mid > 0)
+      .sort((a, b) => a.strike - b.strike)
+    if (pricedCalls.length === 0) {
+      setSelectedOptionsSpread((prev) =>
+        prev.longStrike == null && prev.shortStrike == null ? prev : { shortStrike: null, longStrike: null },
+      )
+      return
+    }
+
+    const validCall = pricedCalls.some((row) => row.strike === selectedOptionsSpread.longStrike)
+    if (validCall && selectedOptionsSpread.longStrike != null && selectedOptionsSpread.shortStrike == null) {
+      return
+    }
+
+    const callPick =
+      pricedCalls.find((row) => spot == null || row.strike >= spot) || pricedCalls[pricedCalls.length - 1]
+    setSelectedOptionsSpread({ shortStrike: null, longStrike: callPick.strike })
+  }, [
+    optionsGamma?.spot,
+    optionsOpenInterest,
+    optionsStrategyKind,
+    selectedOptionsSpread.longStrike,
+    selectedOptionsSpread.shortStrike,
+  ])
 
   // When VCP API returns 0 or "not enough bars" and we have no scanResult (e.g. direct URL), fetch latest scan and use this ticker's enhanced score
   useEffect(() => {
@@ -670,6 +1034,23 @@ export default function StockDetail() {
     }
   }, [bars, industryBars, scanFallback, scanResult, scanRsByTicker, ticker, vcp])
 
+  const firstChartPriceRange = useMemo(() => {
+    const visibleBars = candleData
+      .filter((bar) => Number.isFinite(Number(bar.high)) && Number.isFinite(Number(bar.low)))
+      .slice(-Math.max(20, timeframe.days))
+    if (visibleBars.length === 0) return { min: null, max: null }
+
+    const dataMin = Math.min(...visibleBars.map((bar) => Number(bar.low)))
+    const dataMax = Math.max(...visibleBars.map((bar) => Number(bar.high)))
+    const dataRange = Math.max(dataMax - dataMin, 1)
+    const visibleRange = dataRange / Math.max(0.1, 1 - PRICE_CHART_SCALE_MARGINS.top - PRICE_CHART_SCALE_MARGINS.bottom)
+
+    return {
+      min: dataMin - visibleRange * PRICE_CHART_SCALE_MARGINS.bottom,
+      max: dataMax + visibleRange * PRICE_CHART_SCALE_MARGINS.top,
+    }
+  }, [candleData, timeframe.days])
+
   const formatChartTimeToDate = (time: ChartTime | null) => {
     if (!time) return null
     if (typeof time === 'number') return new Date(time * 1000).toISOString().slice(0, 10)
@@ -723,28 +1104,29 @@ export default function StockDetail() {
       stage2ChartInstance.current.remove()
       stage2ChartInstance.current = null
     }
-    const w = chartWrapperRef.current?.clientWidth ?? 0
-    if (w <= 0) return
+    setOptionStrikeCoordinates({})
+    const mainW = chartContainerRef.current?.clientWidth ?? 0
+    if (mainW <= 0) return
 
     // Left price scale so VCP high/low labels appear on the left (not right)
     const mainChart = createChart(chartContainerRef.current, {
       ...CHART_OPTIONS,
-      width: w,
-      height: 380,
-      leftPriceScale: { visible: true, borderColor: '#334155', minimumWidth: 60 },
+      width: mainW,
+      height: PRICE_CHART_HEIGHT,
+      leftPriceScale: { visible: true, borderColor: '#334155', minimumWidth: 60, scaleMargins: PRICE_CHART_SCALE_MARGINS },
       rightPriceScale: { visible: false },
     })
     const rsiChart = createChart(rsiChartRef.current, {
       ...CHART_OPTIONS,
-      width: w,
-      height: 140,
+      width: mainW,
+      height: RSI_CHART_HEIGHT,
       leftPriceScale: { visible: true, borderColor: '#334155', minimumWidth: 60, scaleMargins: { top: 0.1, bottom: 0.1 } },
       rightPriceScale: { visible: false },
     })
     const vcpChart = createChart(vcpChartRef.current, {
       ...CHART_OPTIONS,
-      width: w,
-      height: 100,
+      width: mainW,
+      height: VCP_CHART_HEIGHT,
       leftPriceScale: {
         visible: true,
         borderColor: '#334155',
@@ -756,8 +1138,8 @@ export default function StockDetail() {
     })
     const stage2Chart = createChart(stage2ChartRef.current, {
       ...CHART_OPTIONS,
-      width: w,
-      height: 90,
+      width: mainW,
+      height: STAGE_2_CHART_HEIGHT,
       leftPriceScale: {
         visible: true,
         borderColor: '#334155',
@@ -860,6 +1242,19 @@ export default function StockDetail() {
       const last = pullbacks[pullbacks.length - 1]
       candle.createPriceLine({ price: last.highPrice, color: '#22c55e', lineWidth: 1, lineStyle: 1, title: `VCP high ${last.pct.toFixed(1)}%` })
       candle.createPriceLine({ price: last.lowPrice, color: '#ef4444', lineWidth: 1, lineStyle: 1, title: `VCP low` })
+    }
+
+    if (optionsGamma?.ok && optionsGamma.topLevels.length > 0) {
+      optionsGamma.topLevels.slice(0, 5).forEach((level) => {
+        const positive = level.netGammaUsd >= 0
+        candle.createPriceLine({
+          price: level.strike,
+          color: positive ? '#10b981' : '#fb7185',
+          lineWidth: 1,
+          lineStyle: 1,
+          axisLabelVisible: true,
+        })
+      })
     }
 
     // Relative Strength to Industry on main chart (only when showRsIndustry checked)
@@ -1018,19 +1413,32 @@ export default function StockDetail() {
       stage2Chart.timeScale().setVisibleLogicalRange(logicalRange)
     }
 
+    const updateOptionStrikeCoordinates = () => {
+      const next: Record<string, number> = {}
+      for (const row of optionsOpenInterest?.ok ? optionsOpenInterest.strikes : []) {
+        const coordinate = candle.priceToCoordinate(row.strike)
+        if (coordinate != null && Number.isFinite(coordinate)) {
+          next[String(row.strike)] = coordinate
+        }
+      }
+      setOptionStrikeCoordinates(next)
+    }
+    updateOptionStrikeCoordinates()
+
     chartInstance.current = mainChart
     rsiChartInstance.current = rsiChart
     vcpChartInstance.current = vcpChart
     stage2ChartInstance.current = stage2Chart
 
     const resize = () => {
-      const w = chartWrapperRef.current?.clientWidth ?? 0
-      if (w > 0) {
-        mainChart.applyOptions({ width: w })
-        rsiChart.applyOptions({ width: w })
-        vcpChart.applyOptions({ width: w })
-        stage2Chart.applyOptions({ width: w })
+      const nextMainW = chartContainerRef.current?.clientWidth ?? 0
+      if (nextMainW > 0) mainChart.applyOptions({ width: nextMainW })
+      if (nextMainW > 0) {
+        rsiChart.applyOptions({ width: nextMainW })
+        vcpChart.applyOptions({ width: nextMainW })
+        stage2Chart.applyOptions({ width: nextMainW })
       }
+      updateOptionStrikeCoordinates()
     }
     const ro = new ResizeObserver(resize)
     ro.observe(chartWrapperRef.current!)
@@ -1047,7 +1455,7 @@ export default function StockDetail() {
       vcpChartInstance.current = null
       stage2ChartInstance.current = null
     }
-  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, vcpStage2Data, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry])
+  }, [bars, candleData, ma10Data, ma20Data, ma50Data, ma150Data, volumeData, ma20VolumeData, rsiData, vcpContractionData, vcpStage2Data, rsIndustryData, pullbacks, idealPullbackBarTimes, volumePriceBreakoutTimes, agentSignalHistory, agentVisibility, showRsIndustry, optionsGamma, optionsOpenInterest])
 
   // Adjust visible range when timeframe changes (zoom in/out while keeping all 12 months of data loaded)
   useEffect(() => {
@@ -1342,6 +1750,27 @@ export default function StockDetail() {
                   Lance {displayVcp.lancePreTrade.score}
                 </span>
               )}
+            {optionsGamma && (
+              <span
+                className={`px-2 py-1 rounded text-sm font-medium ${
+                  optionsGamma.ok && optionsGamma.regime === 'long_gamma'
+                    ? 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/25'
+                    : optionsGamma.ok && optionsGamma.regime === 'short_gamma'
+                      ? 'bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/25'
+                      : 'bg-slate-800 text-slate-400 ring-1 ring-slate-700'
+                }`}
+                title={
+                  optionsGamma.ok
+                    ? `Practical net gamma ${formatGammaUsd(optionsGamma.netGammaUsd)}${optionsGamma.monthlyOnly ? ' - monthly expirations' : ' - 7-180 DTE expirations'}`
+                    : optionsGamma.message || 'No useful gamma data'
+                }
+              >
+                {optionsGamma.ok && optionsGamma.regime === 'long_gamma' && 'Long gamma'}
+                {optionsGamma.ok && optionsGamma.regime === 'short_gamma' && 'Short gamma'}
+                {optionsGamma.ok && optionsGamma.regime === 'neutral' && 'Neutral gamma'}
+                {!optionsGamma.ok && 'No useful gamma data'}
+              </span>
+            )}
             <button
               type="button"
               onClick={handleToggleWatchlist}
@@ -1520,10 +1949,9 @@ export default function StockDetail() {
         </div>
       )}
 
-      {/* Main content area: Chart + Trade Panel side by side — placed just below ticker row, above Opus 4.5 Signal */}
-      <div className="flex gap-4">
-        {/* Chart Section (main area) */}
-        <div className="flex-1 min-w-0">
+      {/* Main chart (full width). Trade journal opens from the toolbar button in a modal. */}
+      <div>
+        <div className="min-w-0">
           {bars.length === 0 && displayVcp && (
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <p className="text-amber-400/90 text-sm">
@@ -1539,9 +1967,21 @@ export default function StockDetail() {
             </div>
           )}
           <div className="flex flex-wrap items-center justify-between gap-4 mb-2">
-            <h2 className="text-lg font-medium text-slate-200">
-              {`${INTERVALS.find((i) => i.value === interval)?.label ?? 'Daily'} chart`}
-            </h2>
+            <div className="flex flex-wrap items-center gap-3 min-w-0">
+              <h2 className="text-lg font-medium text-slate-200">
+                {`${INTERVALS.find((i) => i.value === interval)?.label ?? 'Daily'} chart`}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setTradeJournalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800/90 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700 hover:border-slate-500"
+                aria-haspopup="dialog"
+                aria-expanded={tradeJournalOpen ? 'true' : 'false'}
+              >
+                <span aria-hidden>📝</span>
+                Trade journal
+              </button>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex gap-1">
                 {INTERVALS.map((i) => (
@@ -1629,72 +2069,109 @@ export default function StockDetail() {
           </div>
         <div
           ref={chartWrapperRef}
-          className="rounded-xl border border-slate-800 overflow-hidden"
+          className="grid overflow-hidden rounded-xl border border-slate-800 xl:grid-cols-[minmax(0,1fr)_250px_300px]"
           onContextMenu={(e) => {
             e.preventDefault()
             openContextMenuAt(e.clientX, e.clientY, lastHoverTimeRef.current)
           }}
         >
-          <div className="relative">
-            <div ref={chartContainerRef} style={{ height: 380 }} />
-            <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-slate-700/50 shadow-lg flex flex-wrap items-center gap-2">
-              <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">10 MA</span>
-              <span className="text-blue-400 text-base">━</span> <span className="text-slate-300">20 MA</span>
-              <span className="text-purple-400 text-base">━</span> <span className="text-slate-300">50 MA</span>
-              <span className="text-pink-400 text-base">━</span> <span className="text-slate-300">150 MA</span>
-              {showRsIndustry && rsIndustryData.length > 0 && (
-                <>
-                  <span className="text-slate-600">│</span>
-                  <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">Relative Strength to Industry</span>
-                </>
-              )}
-              {visibleAgentLegend.length > 0 && (
-                <>
-                  <span className="text-slate-600">│</span>
-                  {visibleAgentLegend.map((agent) => (
-                    <span key={agent.agentType} className="flex items-center gap-1">
-                      <span className={`text-base ${agent.legendClass}`}>●</span>
-                      <span className="text-slate-300">{agent.label}</span>
-                    </span>
-                  ))}
-                </>
-              )}
-            </div>
-            {fundamentals?.industry && rsIndustryData.length === 0 && (
-              <div className="absolute bottom-2 left-2 bg-amber-900/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-amber-200 pointer-events-none">
-                Relative Strength to Industry: run &quot;Fetch all industries&quot; on the Industry page to load.
-              </div>
-            )}
-          </div>
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-cyan-400 bg-slate-900/50">RSI (14) - Relative Strength Index</div>
+          <div className="min-w-0">
             <div className="relative">
-              <div ref={rsiChartRef} style={{ height: 140 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-cyan-400 font-medium pointer-events-none border border-cyan-500/50 shadow-lg">
-                RSI (14) • Overbought &gt;70 • Oversold &lt;30
+              <div ref={chartContainerRef} style={{ height: PRICE_CHART_HEIGHT }} />
+              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs font-medium pointer-events-none border border-slate-700/50 shadow-lg flex flex-wrap items-center gap-2">
+                <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">10 MA</span>
+                <span className="text-blue-400 text-base">━</span> <span className="text-slate-300">20 MA</span>
+                <span className="text-purple-400 text-base">━</span> <span className="text-slate-300">50 MA</span>
+                <span className="text-pink-400 text-base">━</span> <span className="text-slate-300">150 MA</span>
+                {showRsIndustry && rsIndustryData.length > 0 && (
+                  <>
+                    <span className="text-slate-600">│</span>
+                    <span className="text-amber-400 text-base">━</span> <span className="text-slate-300">Relative Strength to Industry</span>
+                  </>
+                )}
+                {visibleAgentLegend.length > 0 && (
+                  <>
+                    <span className="text-slate-600">│</span>
+                    {visibleAgentLegend.map((agent) => (
+                      <span key={agent.agentType} className="flex items-center gap-1">
+                        <span className={`text-base ${agent.legendClass}`}>●</span>
+                        <span className="text-slate-300">{agent.label}</span>
+                      </span>
+                    ))}
+                  </>
+                )}
+              </div>
+              {fundamentals?.industry && rsIndustryData.length === 0 && (
+                <div className="absolute bottom-2 left-2 bg-amber-900/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-amber-200 pointer-events-none">
+                  Relative Strength to Industry: run &quot;Fetch all industries&quot; on the Industry page to load.
+                </div>
+              )}
+            </div>
+            <div className="border-t border-slate-800">
+              <div className="px-3 py-1.5 text-xs font-semibold text-cyan-400 bg-slate-900/50">RSI (14) - Relative Strength Index</div>
+              <div className="relative">
+                <div ref={rsiChartRef} style={{ height: RSI_CHART_HEIGHT }} />
+                <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-cyan-400 font-medium pointer-events-none border border-cyan-500/50 shadow-lg">
+                  RSI (14) • Overbought &gt;70 • Oversold &lt;30
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-purple-400 bg-slate-900/50">VCP Contraction - Volatility Compression Pattern</div>
-            <div className="relative">
-              <div ref={vcpChartRef} style={{ height: 100 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-purple-400 font-medium pointer-events-none border border-purple-500/50 shadow-lg">
-                VCP Score (consecutive smaller pullbacks)
+            <div className="border-t border-slate-800">
+              <div className="px-3 py-1.5 text-xs font-semibold text-purple-400 bg-slate-900/50">VCP Contraction - Volatility Compression Pattern</div>
+              <div className="relative">
+                <div ref={vcpChartRef} style={{ height: VCP_CHART_HEIGHT }} />
+                <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-purple-400 font-medium pointer-events-none border border-purple-500/50 shadow-lg">
+                  VCP Score (consecutive smaller pullbacks)
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-800">
+              <div className="px-3 py-1.5 text-xs font-semibold text-emerald-400 bg-slate-900/50">VCP Stage 2 - Strict Minervini Filter</div>
+              <div className="relative">
+                <div ref={stage2ChartRef} style={{ height: STAGE_2_CHART_HEIGHT }} />
+                <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-emerald-400 font-medium pointer-events-none border border-emerald-500/50 shadow-lg">
+                  Pass = price above rising 50/150 MA + higher highs/lows + current RS ≥ 80
+                </div>
               </div>
             </div>
           </div>
-          <div className="border-t border-slate-800">
-            <div className="px-3 py-1.5 text-xs font-semibold text-emerald-400 bg-slate-900/50">VCP Stage 2 - Strict Minervini Filter</div>
-            <div className="relative">
-              <div ref={stage2ChartRef} style={{ height: 90 }} />
-              <div className="absolute top-2 left-2 bg-slate-900/95 backdrop-blur-sm px-3 py-1.5 rounded text-xs text-emerald-400 font-medium pointer-events-none border border-emerald-500/50 shadow-lg">
-                Pass = price above rising 50/150 MA + higher highs/lows + current RS ≥ 80
-              </div>
-            </div>
-          </div>
-          </div>
+          <OptionsOpenInterestRail
+            expirations={optionsOpenInterest?.expirations || []}
+            selectedExpiration={selectedOptionsExpiration || optionsOpenInterest?.selectedExpiration || null}
+            strikes={optionsOpenInterest?.ok ? optionsOpenInterest.strikes : []}
+            spot={optionsOpenInterest?.spot ?? optionsGamma?.spot ?? null}
+            pricePaneHeight={PRICE_CHART_HEIGHT}
+            fullHeight={CHART_STACK_HEIGHT}
+            strikeCoordinates={optionStrikeCoordinates}
+            priceMin={firstChartPriceRange.min}
+            priceMax={firstChartPriceRange.max}
+            loading={optionsOpenInterestLoading}
+            message={optionsOpenInterest?.message || null}
+            onExpirationChange={setSelectedOptionsExpiration}
+            strategyKind={optionsStrategyKind}
+            strategyShortStrike={selectedOptionsSpread.shortStrike}
+            strategyLongStrike={selectedOptionsSpread.longStrike}
+            onStrategyStrikeChange={setSelectedOptionsSpread}
+          />
+          <OptionsStrategyVisualizer
+            strategyKind={optionsStrategyKind}
+            onStrategyKindChange={(next) => {
+              setOptionsStrategyKind(next)
+              setSelectedOptionsSpread({ shortStrike: null, longStrike: null })
+            }}
+            selectedExpiration={selectedOptionsExpirationMeta}
+            strikes={optionsOpenInterest?.ok ? optionsOpenInterest.strikes : []}
+            spot={optionsOpenInterest?.spot ?? optionsGamma?.spot ?? null}
+            pricePaneHeight={PRICE_CHART_HEIGHT}
+            fullHeight={CHART_STACK_HEIGHT}
+            strikeCoordinates={optionStrikeCoordinates}
+            priceMin={firstChartPriceRange.min}
+            priceMax={firstChartPriceRange.max}
+            shortStrike={selectedOptionsSpread.shortStrike}
+            longStrike={selectedOptionsSpread.longStrike}
+          />
         </div>
 
         <ChartContextMenu
@@ -1720,31 +2197,6 @@ export default function StockDetail() {
             },
           ]}
         />
-
-        {/* Trade Journal Side Panel - visible on large screens */}
-        <div className="w-80 shrink-0 hidden lg:block">
-          <TradePanel
-            ticker={ticker || ''}
-            companyName={companyName}
-            currentPrice={displayVcp?.lastClose || null}
-            metrics={{
-              sma10: displayVcp?.sma10 || null,
-              sma20: displayVcp?.sma20 || null,
-              sma50: displayVcp?.sma50 || null,
-              contractions: displayVcp?.contractions || 0,
-              volumeDryUp: displayVcp?.volumeDryUp || false,
-              pattern: 'VCP',
-              patternConfidence: null,
-              relativeStrength: opus45History?.lastBuySignal?.confidence || null,
-              industryName: fundamentals?.industry || null,
-              industryRank: null,
-              opus45Confidence: opus45History?.lastBuySignal?.confidence || null,
-              opus45Grade: null,
-              vcpScore: displayVcp?.score || null,
-              enhancedScore: displayVcp ? (displayVcp.enhancedScore ?? displayVcp.score ?? null) : null
-            }}
-          />
-        </div>
       </div>
 
       {/* Opus4.5 Signal Status Panel (from server API) */}
@@ -2082,12 +2534,77 @@ export default function StockDetail() {
       <div className="mt-8">
         <h2 className="text-lg font-medium text-slate-200 mb-2">TradingView Interactive Chart</h2>
         <p className="text-slate-500 text-sm mb-3">
-          Professional charting tools with 10, 20, 50, 150 MA and RSI (14). Interactive features include drawing tools, more indicators, and multiple timeframes.
+          Professional charting tools with 10, 20, 50, 150 MA, plus custom RSI, VCP contraction, and strict Minervini panes from this app&apos;s indicator engine.
         </p>
         <div className="rounded-xl border border-slate-800 overflow-hidden bg-slate-900/50">
-          <TradingViewWidget ticker={ticker} height={1100} theme="dark" />
+          <TradingViewWidget
+            ticker={ticker}
+            height={900}
+            theme="dark"
+            customIndicators={{
+              rsiData,
+              vcpContractionData,
+              vcpStage2Data,
+              gammaData: optionsGamma,
+              closePriceData: candleData.map((bar) => ({ time: bar.time as unknown as number, value: Number(bar.close) })).filter((d) => Number.isFinite(d.value)),
+            }}
+          />
         </div>
       </div>
+      </div>
+
+      {/* Trade journal: full form in a modal so the price chart uses full width */}
+      {tradeJournalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setTradeJournalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="stock-trade-journal-title"
+        >
+          <div
+            className="w-full max-w-md max-h-[90vh] flex flex-col rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-700 px-4 py-3">
+              <h2 id="stock-trade-journal-title" className="text-base font-semibold text-slate-100">
+                Trade journal
+              </h2>
+              <button
+                type="button"
+                onClick={() => setTradeJournalOpen(false)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                aria-label="Close trade journal"
+              >
+                ×
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-3">
+              <TradePanel
+                ticker={ticker || ''}
+                companyName={companyName}
+                currentPrice={displayVcp?.lastClose || null}
+                metrics={{
+                  sma10: displayVcp?.sma10 || null,
+                  sma20: displayVcp?.sma20 || null,
+                  sma50: displayVcp?.sma50 || null,
+                  contractions: displayVcp?.contractions || 0,
+                  volumeDryUp: displayVcp?.volumeDryUp || false,
+                  pattern: 'VCP',
+                  patternConfidence: null,
+                  relativeStrength: opus45History?.lastBuySignal?.confidence || null,
+                  industryName: fundamentals?.industry || null,
+                  industryRank: null,
+                  opus45Confidence: opus45History?.lastBuySignal?.confidence || null,
+                  opus45Grade: null,
+                  vcpScore: displayVcp?.score || null,
+                  enhancedScore: displayVcp ? (displayVcp.enhancedScore ?? displayVcp.score ?? null) : null
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

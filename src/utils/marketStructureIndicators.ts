@@ -11,6 +11,12 @@ export interface MinimalBar {
   c: number
 }
 
+export interface PriceBar extends MinimalBar {
+  o?: number
+  h?: number
+  l?: number
+}
+
 /** Intersect three daily series (e.g. ^GSPC, QQQ, SPY) on common session timestamps. */
 export function alignThreeBarCloses(
   gspc: MinimalBar[],
@@ -109,6 +115,14 @@ export interface StructureRowComputed {
   weakeningVsWeek: boolean
 }
 
+export interface PowerTrendSignal {
+  triggered: boolean
+  daysLowAboveEma21: number
+  daysEma21AboveSma50: number
+  sma50TrendingUp: boolean
+  closeGreen: boolean
+}
+
 function stanceRank(s: MarketStance): number {
   if (s === 'protect') return 0
   if (s === 'neutral') return 1
@@ -121,8 +135,86 @@ function subtitleToneForStance(stance: MarketStance): 'danger' | 'muted' | 'posi
   return 'positive'
 }
 
+function countTrailingMatches(length: number, predicate: (index: number) => boolean): number {
+  let count = 0
+  for (let i = length - 1; i >= 0; i--) {
+    if (!predicate(i)) break
+    count += 1
+  }
+  return count
+}
+
+export function computePowerTrendSignal(bars: PriceBar[]): PowerTrendSignal {
+  const closes = bars.map((bar) => bar.c)
+  const ema21 = ema(closes, 21)
+  const sma50Series = sma(closes, 50)
+  const lastIdx = bars.length - 1
+
+  if (lastIdx < 0) {
+    return {
+      triggered: false,
+      daysLowAboveEma21: 0,
+      daysEma21AboveSma50: 0,
+      sma50TrendingUp: false,
+      closeGreen: false,
+    }
+  }
+
+  const daysLowAboveEma21 = countTrailingMatches(bars.length, (i) => {
+    const low = bars[i]?.l
+    const emaValue = ema21[i]
+    return (
+      typeof low === 'number' &&
+      Number.isFinite(low) &&
+      typeof emaValue === 'number' &&
+      Number.isFinite(emaValue) &&
+      low > emaValue
+    )
+  })
+
+  const daysEma21AboveSma50 = countTrailingMatches(bars.length, (i) => {
+    const emaValue = ema21[i]
+    const smaValue = sma50Series[i]
+    return (
+      typeof emaValue === 'number' &&
+      Number.isFinite(emaValue) &&
+      typeof smaValue === 'number' &&
+      Number.isFinite(smaValue) &&
+      emaValue > smaValue
+    )
+  })
+
+  const sma50Now = sma50Series[lastIdx]
+  const sma50Lag = lastIdx >= 5 ? sma50Series[lastIdx - 5] : null
+  const sma50TrendingUp = (
+    typeof sma50Now === 'number' &&
+    Number.isFinite(sma50Now) &&
+    typeof sma50Lag === 'number' &&
+    Number.isFinite(sma50Lag) &&
+    sma50Now > sma50Lag
+  )
+
+  const lastBar = bars[lastIdx]
+  const prevClose = lastIdx > 0 ? bars[lastIdx - 1]?.c : null
+  const closeGreen = (
+    typeof lastBar?.c === 'number' &&
+    Number.isFinite(lastBar.c) &&
+    typeof prevClose === 'number' &&
+    Number.isFinite(prevClose) &&
+    lastBar.c > prevClose
+  )
+
+  return {
+    triggered: daysLowAboveEma21 >= 10 && daysEma21AboveSma50 >= 5 && sma50TrendingUp,
+    daysLowAboveEma21,
+    daysEma21AboveSma50,
+    sma50TrendingUp,
+    closeGreen,
+  }
+}
+
 /**
- * Build the four dashboard rows from aligned SPY/QQQ/GSPC closes (each series same length, sorted by t).
+ * Build the dashboard rows from aligned SPY/QQQ/GSPC closes (each series same length, sorted by t).
  */
 export function computeMarketStructureRows(series: {
   times: number[]

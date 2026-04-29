@@ -57,3 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_options_backtest_setups_run_id
 
 CREATE INDEX IF NOT EXISTS idx_options_backtest_trades_setup_id
   ON public.options_backtest_trades (setup_id, entry_date);
+
+ALTER TABLE public.options_backtest_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.options_backtest_setups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.options_backtest_trades ENABLE ROW LEVEL SECURITY;

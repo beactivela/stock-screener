@@ -5,6 +5,7 @@ import { API_BASE } from '../utils/api'
 import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
 import { BREADTH_TREND_SEGMENTS, getBreadthTrendRatingFromRecentMa50 } from '../utils/breadthTrendRating.js'
+import { computePowerTrendSignal } from '../utils/marketStructureIndicators.ts'
 import { getVixSentimentBand, vixSentimentTone } from '../utils/vixSentiment'
 import MarketStructureIndicatorsStrip from './MarketStructureIndicatorsStrip'
 
@@ -19,12 +20,13 @@ interface Bar {
 interface IndexConfig {
   label: string
   ticker: string
+  chartTicker?: string
   /** Equity index cards show MA regime + breadth; VIX shows fear badge only (no breadth strip). */
   variant?: 'equity' | 'vix'
 }
 
 const INDEXES: IndexConfig[] = [
-  { label: 'S&P 500', ticker: '^GSPC' },
+  { label: 'S&P 500', ticker: '^GSPC', chartTicker: 'ES=F' },
   { label: 'NASDAQ', ticker: '^IXIC' },
   { label: 'RUSSEL 2000', ticker: '^RUT' },
   { label: 'VIX', ticker: '^VIX', variant: 'vix' },
@@ -44,9 +46,8 @@ const DASHBOARD_INDEX_RIGHT_OFFSET_BARS = 5
 const DASHBOARD_INDEX_CHART_HEIGHT = 132
 
 function getRegimeTone(regime: MarketRegimeLabel): string {
-  if (regime === 'Bullish' || regime === 'Mild Bullish') return 'text-emerald-300 bg-emerald-500/15 border-emerald-700/50'
-  if (regime === 'Neutral') return 'text-yellow-300 bg-yellow-500/15 border-yellow-700/50'
-  return 'text-red-100 bg-red-500/30 border-red-400/70' // Mild Bearish / Bearish: brighter for dark cards
+  if (regime === 'Risk ON') return 'text-emerald-950 bg-emerald-300 border-emerald-100'
+  return 'text-red-100 bg-red-500/30 border-red-400/70'
 }
 
 function formatChange(value: number): string {
@@ -68,7 +69,8 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     setError(null)
     ;(async () => {
       try {
-        const r = await fetch(`${API_BASE}/api/bars/${encodeURIComponent(config.ticker)}?days=365&interval=1d`, { cache: 'no-store' })
+        const chartTicker = config.chartTicker ?? config.ticker
+        const r = await fetch(`${API_BASE}/api/bars/${encodeURIComponent(chartTicker)}?days=365&interval=1d`, { cache: 'no-store' })
         const text = await r.text()
         let payload: { error?: string; results?: Bar[] } | null = null
         if (text.trim()) {
@@ -114,6 +116,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     ma50Last,
     regime,
     breadthRating,
+    powerTrendTriggered,
   } = useMemo(() => {
     if (bars.length === 0) {
       return {
@@ -129,6 +132,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
         ma50Last: null as number | null,
         regime: 'Risk OFF' as MarketRegimeLabel,
         breadthRating: getBreadthTrendRatingFromRecentMa50([]),
+        powerTrendTriggered: false,
       }
     }
 
@@ -144,6 +148,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     const prevBar = bars[bars.length - 2]
 
     const regime = classifyMovingAverageRegime({
+      close: lastBar?.c ?? null,
       ma10: ma10Last,
       ma20: ma20Last,
       ma50: ma50Last,
@@ -151,6 +156,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       recentMa50: sma50.slice(-12),
     })
     const breadthRating = getBreadthTrendRatingFromRecentMa50(sma50.slice(-10))
+    const powerTrendTriggered = config.ticker === '^GSPC' && computePowerTrendSignal(bars).triggered
 
     return {
       candleData: bars.map((b) => ({ time: toTime(b.t), open: b.o, high: b.h, low: b.l, close: b.c })),
@@ -165,8 +171,22 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       ma50Last,
       regime,
       breadthRating,
+      powerTrendTriggered,
     }
-  }, [bars])
+  }, [bars, config.ticker])
+
+  const displayedBreadthRating = useMemo(() => {
+    if (regime !== 'Risk ON' || breadthRating.score >= 6) return breadthRating
+    const bullishSegment = BREADTH_TREND_SEGMENTS.find((segment) => segment.score === 6)
+    if (!bullishSegment) return breadthRating
+    return {
+      ...breadthRating,
+      score: bullishSegment.score,
+      label: bullishSegment.label,
+      exposureLabel: bullishSegment.exposureLabel,
+      exposurePercentage: bullishSegment.exposurePercentage,
+    }
+  }, [breadthRating, regime])
 
   useEffect(() => {
     if (!containerRef.current || candleData.length === 0 || loading) return
@@ -230,17 +250,17 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       to={`/market-index/${encodeURIComponent(config.ticker)}`}
       className="block min-w-0 rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden hover:border-slate-600 hover:bg-slate-900/70 transition-colors cursor-pointer"
     >
-      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-800 flex-nowrap text-sm">
-        <div className="flex items-center gap-2 flex-nowrap min-w-0">
+      <div className="flex items-start justify-between gap-2 px-3 py-2 border-b border-slate-800 text-sm">
+        <div className="flex items-start gap-2 min-w-0">
           <span className="text-slate-400 uppercase tracking-wide shrink-0">{config.label}</span>
           <span className="text-slate-500 shrink-0">{latestDate ?? ''}</span>
           {isVix ? (
             vixSentiment ? (
               <span
                 className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${vixSentimentTone(vixSentiment.band)}`}
-                title="Based on latest VIX close vs 20 / 30 thresholds"
+                title="Risk ON when VIX is below 20; Risk OFF when VIX is 20 or higher"
               >
-                {vixSentiment.label}
+                {latestClose != null ? latestClose.toFixed(2) : '—'}
               </span>
             ) : (
               <span className="inline-flex shrink-0 px-2 py-0.5 rounded border border-slate-700 text-slate-500 font-medium">
@@ -248,9 +268,16 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
               </span>
             )
           ) : (
-            <span className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${getRegimeTone(regime)}`}>
-              {regime}
-            </span>
+            <div className="flex min-w-0 flex-col items-start gap-1">
+              <span className={`inline-flex shrink-0 px-2 py-0.5 rounded border font-medium ${getRegimeTone(regime)}`}>
+                {regime}
+              </span>
+              {powerTrendTriggered && (
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-300">
+                  Power Trend
+                </span>
+              )}
+            </div>
           )}
         </div>
         {change != null && changePct != null && (
@@ -283,20 +310,20 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
           <div className="mb-1 flex items-center justify-between gap-2 text-xs">
             <span className="text-slate-400">Portfolio allocation in market</span>
             <div className="text-right leading-tight">
-              <div className="font-medium text-slate-200">
-                {breadthRating.label} ({breadthRating.score}/7)
+                <div className="font-medium text-slate-200">
+                  {displayedBreadthRating.label} ({displayedBreadthRating.score}/7)
+                </div>
+                <div className="text-slate-400">
+                  Market exposure: {displayedBreadthRating.exposureLabel} {displayedBreadthRating.exposurePercentage}%
+                </div>
               </div>
-              <div className="text-slate-400">
-                Market exposure: {breadthRating.exposureLabel} {breadthRating.exposurePercentage}%
-              </div>
-            </div>
           </div>
           <div
             className="grid grid-cols-7 overflow-hidden rounded-sm border-2 border-slate-500"
-            aria-label={`Portfolio allocation in market ${breadthRating.score} of 7 (${breadthRating.label}), market exposure ${breadthRating.exposurePercentage}%`}
+            aria-label={`Portfolio allocation in market ${displayedBreadthRating.score} of 7 (${displayedBreadthRating.label}), market exposure ${displayedBreadthRating.exposurePercentage}%`}
           >
             {BREADTH_TREND_SEGMENTS.map((segment) => {
-              const isActive = segment.score === breadthRating.score
+              const isActive = segment.score === displayedBreadthRating.score
               return (
                 <div
                   key={segment.score}

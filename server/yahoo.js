@@ -77,6 +77,39 @@ function addUtcDays(dateOnly, days) {
   return base.parsed.toISOString().slice(0, 10);
 }
 
+function toDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeChartQuotes(quotes, from, to) {
+  const byDate = new Map();
+  for (const quote of quotes ?? []) {
+    if (quote?.open == null || quote?.close == null) continue;
+    const dateKey = toDateKey(quote.date);
+    if (!dateKey) continue;
+    if (from && dateKey < from) continue;
+    if (to && dateKey > to) continue;
+
+    const prior = byDate.get(dateKey);
+    if (!prior || new Date(quote.date).getTime() >= new Date(prior.date).getTime()) {
+      byDate.set(dateKey, quote);
+    }
+  }
+
+  return [...byDate.values()]
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .map((quote) => ({
+      t: new Date(quote.date).getTime(),
+      o: quote.open,
+      h: quote.high ?? quote.close,
+      l: quote.low ?? quote.close,
+      c: quote.close,
+      v: quote.volume ?? 0,
+    }));
+}
+
 /**
  * Yahoo rejects chart requests where period1 and period2 are equal.
  * Ensure an ascending window and expand degenerate windows to one day.
@@ -157,18 +190,9 @@ function buildFundamentalsEntry(ticker, fund, quoteInfo = null, fetchedAt = new 
  * interval: '1d' | '1wk' | '1mo'. Returns array of { t, o, h, l, c, v } (t = ms).
  */
 async function getBars(ticker, from, to, interval = '1d') {
-  const { result } = await fetchChart(ticker, from, to, interval);
-  const quotes = result?.quotes ?? [];
-  return quotes
-    .filter((q) => q.open != null && q.close != null)
-    .map((q) => ({
-      t: new Date(q.date).getTime(),
-      o: q.open,
-      h: q.high ?? q.close,
-      l: q.low ?? q.close,
-      c: q.close,
-      v: q.volume ?? 0,
-    }));
+  const inclusiveTo = addUtcDays(to, 1);
+  const { result } = await fetchChart(ticker, from, inclusiveTo, interval);
+  return normalizeChartQuotes(result?.quotes ?? [], from, to);
 }
 
 const getDailyBars = (ticker, from, to) => getBars(ticker, from, to, '1d');
@@ -403,6 +427,7 @@ const __testing = {
   yahooFinance,
   normalizeChartInterval,
   normalizeHistoryMetadata,
+  normalizeChartQuotes,
   toMilliseconds,
   buildFundamentalsEntry,
   runWithConcurrency,

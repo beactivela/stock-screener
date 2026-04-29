@@ -405,7 +405,8 @@ function applyPositionExit(managerState, pos, markUsd) {
   managerState.realizedPnlUsd = roundUsd((managerState.realizedPnlUsd || 0) + realizedDelta)
   const idx = managerState.positions.indexOf(pos)
   if (idx >= 0) managerState.positions.splice(idx, 1)
-  managerState.recentTrades.unshift({
+
+  const closedRow = {
     at: exitAt,
     entryAt: pos.openedAt || null,
     exitAt,
@@ -419,7 +420,17 @@ function applyPositionExit(managerState, pos, markUsd) {
     notionalUsd: computeExitNotionalUsd(pos, mark),
     realizedPnlUsd: realizedDelta,
     status: 'closed',
-  })
+  }
+  // Replace the original "open" ledger row for this position so we do not show the same
+  // symbol as both OPEN and CLOSED (stale open row with exitAt still null).
+  const openIdx = managerState.recentTrades.findIndex(
+    (t) => t && t.positionId === pos.id && !t.exitAt && String(t.status || '').toLowerCase() !== 'closed',
+  )
+  if (openIdx >= 0) {
+    managerState.recentTrades[openIdx] = closedRow
+  } else {
+    managerState.recentTrades.unshift(closedRow)
+  }
   managerState.recentTrades = managerState.recentTrades.slice(0, 100)
   return { ok: true }
 }

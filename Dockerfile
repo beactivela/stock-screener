@@ -30,24 +30,6 @@ COPY --from=builder /app/dist ./dist
 COPY server ./server
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
-# TradingAgents (Python): same layout as local `npm run install:tradingagents` — venv at /app/.venv-tradingagents
-# Build context must include submodule: `git submodule update --init --recursive` before `docker compose build`.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-venv \
-    python3-pip \
-    build-essential \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY vendor/TradingAgents ./vendor/TradingAgents
-COPY scripts/tradingagents ./scripts/tradingagents
-COPY requirements-tradingagents.txt ./requirements-tradingagents.txt
-
-RUN test -f vendor/TradingAgents/pyproject.toml || (echo "ERROR: vendor/TradingAgents missing. Run: git submodule update --init --recursive" >&2; exit 1) \
-  && python3 -m venv .venv-tradingagents \
-  && .venv-tradingagents/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
-  && .venv-tradingagents/bin/pip install --no-cache-dir -r requirements-tradingagents.txt
-
 RUN mkdir -p data/bars eval_results \
   && groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 999 --gid nodejs nodejs \

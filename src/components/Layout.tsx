@@ -105,12 +105,6 @@ export default function Layout({ children }: LayoutProps) {
               Industry
             </Link>
             <Link
-              to="/tradingagents"
-              className={`text-sm ${location.pathname === '/tradingagents' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              TradingAgents
-            </Link>
-            <Link
               to="/backtesting"
               className={`text-sm ${location.pathname === '/backtesting' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >
@@ -121,14 +115,6 @@ export default function Layout({ children }: LayoutProps) {
               className={`text-sm ${location.pathname === '/ai-portfolio' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
             >
               AI Portfolio
-            </Link>
-            <Link
-              to="/ai-hedge-fund"
-              className={`text-sm ${
-                location.pathname === '/ai-hedge-fund' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              AI Hedge Fund
             </Link>
             <Link
               to="/experts"

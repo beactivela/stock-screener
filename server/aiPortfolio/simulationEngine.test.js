@@ -108,16 +108,24 @@ describe('aiPortfolio simulation engine', () => {
 
     const claude = afterExit.state.managers.claude
     assert.equal(claude.positions.length, 0)
-    assert.equal(claude.recentTrades[0]?.status, 'closed')
-    assert.ok(typeof claude.recentTrades[0]?.entryAt === 'string')
-    assert.ok(typeof claude.recentTrades[0]?.exitAt === 'string')
-    assert.ok(typeof claude.recentTrades[0]?.realizedPnlUsd === 'number')
-    assert.ok(typeof claude.recentTrades[0]?.notionalUsd === 'number')
-    assert.ok(typeof claude.recentTrades[0]?.positionId === 'string')
-    assert.ok(typeof claude.recentTrades[1]?.entryAt === 'string')
-    assert.equal(claude.recentTrades[1]?.exitAt, null)
-    assert.ok(typeof claude.recentTrades[1]?.notionalUsd === 'number')
-    assert.ok(typeof claude.recentTrades[1]?.positionId === 'string')
+    const openOrphans = claude.recentTrades.filter(
+      (t) => String(t?.ticker || '').toUpperCase() === 'AAPL' && !t.exitAt,
+    )
+    assert.equal(
+      openOrphans.length,
+      0,
+      'closing a position should not leave a stale OPEN row for the same book line',
+    )
+    const closedAapl = claude.recentTrades.filter(
+      (t) => String(t?.ticker || '').toUpperCase() === 'AAPL' && t.exitAt,
+    )
+    assert.equal(closedAapl.length, 1)
+    assert.equal(closedAapl[0]?.status, 'closed')
+    assert.ok(typeof closedAapl[0]?.entryAt === 'string')
+    assert.ok(typeof closedAapl[0]?.exitAt === 'string')
+    assert.ok(typeof closedAapl[0]?.realizedPnlUsd === 'number')
+    assert.ok(typeof closedAapl[0]?.notionalUsd === 'number')
+    assert.ok(typeof closedAapl[0]?.positionId === 'string')
     assert.ok(Number(claude.realizedPnlUsd) !== 0 || Number(claude.cashUsd) > 0)
   })
 

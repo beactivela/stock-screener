@@ -3,6 +3,11 @@ import { AiPortfolioOpenRouterCostChart } from '../components/AiPortfolioOpenRou
 import { displaySlugForManager } from '../data/aiPortfolioDefaultModels'
 import { API_BASE } from '../utils/api'
 import { consumeSseFromResponse } from '../utils/aiPortfolioDailyStream'
+import {
+  filterStaleOpenLedgerRows,
+  netSymbolPnlUsd,
+  sumRealizedUsdClosedForSymbol,
+} from '../utils/aiPortfolioLedger'
 
 type ConfigResponse = {
   llm?: { provider: string; openRouterKeySet?: boolean }
@@ -511,9 +516,7 @@ export default function AiPortfolio() {
 
           <section className="space-y-4">
             {managerRows.map((row) => {
-              const unrealizedTotalUsd = row.data.positions.reduce((s, p) => s + p.unrealizedPnlUsd, 0)
-              const realizedPnlUsd = row.data.runningPnlUsd - unrealizedTotalUsd
-              const managerLedger = ledger?.managers?.[row.id] || []
+              const managerLedger = filterStaleOpenLedgerRows(ledger?.managers?.[row.id] || [])
               return (
               <div key={row.id} className="rounded-xl border border-slate-700 bg-slate-800/40 p-5 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -592,6 +595,12 @@ export default function AiPortfolio() {
                   </div>
                 </div>
 
+                <p className="text-[11px] text-slate-500">
+                  Open lines: <span className="text-slate-400">Closed P/L</span> sums prior closed trades for that
+                  symbol from the log (this line is still open, so often $0).{' '}
+                  <span className="text-slate-400">Net (symbol)</span> = unrealized on this line + that symbol’s closed
+                  realized. Manager total P/L is above in the comparison table.
+                </p>
                 <div className="overflow-x-auto rounded-lg border border-slate-700/80">
                   <table className="w-full text-sm text-left">
                     <thead>
@@ -603,8 +612,8 @@ export default function AiPortfolio() {
                         <th className="px-3 py-2 font-medium">Avg cost</th>
                         <th className="px-3 py-2 font-medium">Mark</th>
                         <th className="px-3 py-2 font-medium">Unrealized P/L</th>
-                        <th className="px-3 py-2 font-medium">Realized P/L</th>
-                        <th className="px-3 py-2 font-medium">Running total P/L</th>
+                        <th className="px-3 py-2 font-medium">Closed P/L (symbol)</th>
+                        <th className="px-3 py-2 font-medium">Net (symbol)</th>
                         <th className="px-3 py-2 font-medium">Freshness</th>
                       </tr>
                     </thead>
@@ -616,7 +625,13 @@ export default function AiPortfolio() {
                           </td>
                         </tr>
                       ) : (
-                        row.data.positions.map((position) => (
+                        row.data.positions.map((position) => {
+                          const closedSymUsd = sumRealizedUsdClosedForSymbol(
+                            managerLedger,
+                            String(position.ticker || ''),
+                          )
+                          const netSym = netSymbolPnlUsd(position.unrealizedPnlUsd, managerLedger, position.ticker)
+                          return (
                           <tr key={position.id} className="border-b border-slate-700/50 last:border-b-0">
                             <td className="px-3 py-2 text-slate-100 font-medium">{position.ticker}</td>
                             <td className="px-3 py-2 text-slate-300">Long · {position.strategy}</td>
@@ -627,11 +642,11 @@ export default function AiPortfolio() {
                             <td className={`px-3 py-2 ${position.unrealizedPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
                               {usd(position.unrealizedPnlUsd)}
                             </td>
-                            <td className={`px-3 py-2 ${realizedPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                              {usd(realizedPnlUsd)}
+                            <td className={`px-3 py-2 ${closedSymUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                              {usd(closedSymUsd)}
                             </td>
-                            <td className={`px-3 py-2 ${row.data.runningPnlUsd >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                              {usd(row.data.runningPnlUsd)}
+                            <td className={`px-3 py-2 ${netSym >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                              {usd(netSym)}
                             </td>
                             <td className="px-3 py-2">
                               <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs ${freshnessBadgeClass(position.dataFreshness)}`}>
@@ -639,7 +654,8 @@ export default function AiPortfolio() {
                               </span>
                             </td>
                           </tr>
-                        ))
+                          )
+                        })
                       )}
                     </tbody>
                   </table>
