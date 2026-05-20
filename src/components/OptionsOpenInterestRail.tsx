@@ -9,7 +9,13 @@ import {
   type OptionsOpenInterestExpiration,
   type OptionsOpenInterestStrike,
 } from '../utils/optionsOpenInterest'
-import type { VisualizerStrategyId } from '../utils/optionsStrategy'
+import {
+  isBearCallSpreadPairValid,
+  isBearPutSpreadPairValid,
+  isPutCreditSpreadPairValid,
+  type OptionQuoteInput,
+  type VisualizerStrategyId,
+} from '../utils/optionsStrategy'
 
 interface OptionsOpenInterestRailProps {
   expirations: OptionsOpenInterestExpiration[]
@@ -40,6 +46,28 @@ function formatStrike(value: number | null | undefined): string {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
+}
+
+function toPutQuoteInput(row: OptionsOpenInterestStrike | undefined): OptionQuoteInput | null {
+  if (!row?.putQuote) return null
+  return {
+    strike: row.strike,
+    bid: row.putQuote.bid,
+    ask: row.putQuote.ask,
+    lastPrice: row.putQuote.lastPrice,
+    impliedVolatility: row.putQuote.impliedVolatility,
+  }
+}
+
+function toCallQuoteInput(row: OptionsOpenInterestStrike | undefined): OptionQuoteInput | null {
+  if (!row?.callQuote) return null
+  return {
+    strike: row.strike,
+    bid: row.callQuote.bid,
+    ask: row.callQuote.ask,
+    lastPrice: row.callQuote.lastPrice,
+    impliedVolatility: row.callQuote.impliedVolatility,
+  }
 }
 
 export default function OptionsOpenInterestRail({
@@ -73,6 +101,24 @@ export default function OptionsOpenInterestRail({
     .filter((row) => row.callQuote?.mid != null && row.callQuote.mid > 0)
     .sort((a, b) => a.strike - b.strike)
   const laneHeight = Math.max(1, pricePaneHeight - OPTIONS_STRIKE_OVERLAY_TOP_PX)
+  const putRowsByStrike = new Map(pricedPutRows.map((row) => [row.strike, row] as const))
+  const callRowsByStrike = new Map(pricedCallRows.map((row) => [row.strike, row] as const))
+
+  const isValidPutSpreadPair = (nextShortStrike: number, nextLongStrike: number, pcs: boolean): boolean => {
+    const shortPut = toPutQuoteInput(putRowsByStrike.get(nextShortStrike))
+    const longPut = toPutQuoteInput(putRowsByStrike.get(nextLongStrike))
+    if (!shortPut || !longPut) return false
+    return pcs
+      ? isPutCreditSpreadPairValid({ shortPut, longPut })
+      : isBearPutSpreadPairValid({ shortPut, longPut })
+  }
+
+  const isValidCallSpreadPair = (nextShortStrike: number, nextLongStrike: number): boolean => {
+    const shortCall = toCallQuoteInput(callRowsByStrike.get(nextShortStrike))
+    const longCall = toCallQuoteInput(callRowsByStrike.get(nextLongStrike))
+    if (!shortCall || !longCall) return false
+    return isBearCallSpreadPairValid({ shortCall, longCall })
+  }
 
   /** Chart-space Y [0, pricePaneHeight] for nearest-strike math (same space as `strikeCoordinates`). */
   const chartYFromClientY = (clientY: number): number | null => {
@@ -109,14 +155,19 @@ export default function OptionsOpenInterestRail({
           ? row.strike < strategyLongStrike!
           : row.strike > strategyShortStrike!,
     )
-    if (candidates.length === 0) return null
-    return candidates.reduce((closest, row) => {
+    const validCandidates = candidates.filter((row) =>
+      leg === 'short'
+        ? isValidPutSpreadPair(row.strike, strategyLongStrike!, pcs)
+        : isValidPutSpreadPair(strategyShortStrike!, row.strike, pcs),
+    )
+    if (validCandidates.length === 0) return null
+    return validCandidates.reduce((closest, row) => {
       const rowY = yPxForStrike(row.strike)
       const closestY = yPxForStrike(closest.strike)
       if (rowY == null) return closest
       if (closestY == null) return row
       return Math.abs(rowY - y) < Math.abs(closestY - y) ? row : closest
-    }, candidates[0]).strike
+    }, validCandidates[0]).strike
   }
 
   const nearestCallSpreadStrikeFromY = (clientY: number, leg: DragLeg): number | null => {
@@ -126,14 +177,19 @@ export default function OptionsOpenInterestRail({
     const candidates = pricedCallRows.filter((row) =>
       leg === 'short' ? row.strike < strategyLongStrike! : row.strike > strategyShortStrike!,
     )
-    if (candidates.length === 0) return null
-    return candidates.reduce((closest, row) => {
+    const validCandidates = candidates.filter((row) =>
+      leg === 'short'
+        ? isValidCallSpreadPair(row.strike, strategyLongStrike!)
+        : isValidCallSpreadPair(strategyShortStrike!, row.strike),
+    )
+    if (validCandidates.length === 0) return null
+    return validCandidates.reduce((closest, row) => {
       const rowY = yPxForStrike(row.strike)
       const closestY = yPxForStrike(closest.strike)
       if (rowY == null) return closest
       if (closestY == null) return row
       return Math.abs(rowY - y) < Math.abs(closestY - y) ? row : closest
-    }, candidates[0]).strike
+    }, validCandidates[0]).strike
   }
 
   const nearestCspPutStrikeFromY = (clientY: number): number | null => {
@@ -215,6 +271,11 @@ export default function OptionsOpenInterestRail({
             ? row.strike < strategyLongStrike!
             : row.strike > strategyShortStrike!,
       )
+      .filter((row) =>
+        leg === 'short'
+          ? isValidPutSpreadPair(row.strike, strategyLongStrike!, pcs)
+          : isValidPutSpreadPair(strategyShortStrike!, row.strike, pcs),
+      )
       .map((row) => row.strike)
     const index = candidates.indexOf(current)
     const next = candidates[clamp(index + direction, 0, candidates.length - 1)]
@@ -231,6 +292,11 @@ export default function OptionsOpenInterestRail({
     const current = leg === 'short' ? strategyShortStrike : strategyLongStrike
     const candidates = pricedCallRows
       .filter((row) => (leg === 'short' ? row.strike < strategyLongStrike! : row.strike > strategyShortStrike!))
+      .filter((row) =>
+        leg === 'short'
+          ? isValidCallSpreadPair(row.strike, strategyLongStrike!)
+          : isValidCallSpreadPair(strategyShortStrike!, row.strike),
+      )
       .map((row) => row.strike)
     const index = candidates.indexOf(current)
     const next = candidates[clamp(index + direction, 0, candidates.length - 1)]
