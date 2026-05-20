@@ -10,6 +10,9 @@ import {
   calculateBearCallSpreadMetrics,
   calculateCashSecuredPutMetrics,
   calculateLongCallMetrics,
+  isBearCallSpreadPairValid,
+  isBearPutSpreadPairValid,
+  isPutCreditSpreadPairValid,
   buildLongCallPayoffKnots,
   buildBearPutSpreadSlopedSegmentKnots,
   buildBearCallSpreadSlopedSegmentKnots,
@@ -71,6 +74,30 @@ describe('options strategy helpers', () => {
       breakEven: 245,
       width: 20,
     })
+  })
+
+  it('rejects invalid spread pairings before the UI tries to render them', () => {
+    assert.equal(
+      isPutCreditSpreadPairValid({
+        shortPut: { strike: 410, bid: 0.8, ask: 1, lastPrice: null },
+        longPut: { strike: 400, bid: 1.4, ask: 1.6, lastPrice: null },
+      }),
+      false,
+    )
+    assert.equal(
+      isBearPutSpreadPairValid({
+        shortPut: { strike: 400, bid: 1.4, ask: 1.6, lastPrice: null },
+        longPut: { strike: 410, bid: 0.8, ask: 1, lastPrice: null },
+      }),
+      false,
+    )
+    assert.equal(
+      isBearCallSpreadPairValid({
+        shortCall: { strike: 420, bid: 0.7, ask: 0.9, lastPrice: null },
+        longCall: { strike: 430, bid: 1.2, ask: 1.4, lastPrice: null },
+      }),
+      false,
+    )
   })
 
   it('builds an expiration payoff curve with capped loss and capped profit', () => {
