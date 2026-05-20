@@ -11,8 +11,6 @@ const StockDetail = lazy(() => import('./pages/StockDetail'))
 const Industry = lazy(() => import('./pages/Industry'))
 const IndustryTickers = lazy(() => import('./pages/IndustryTickers'))
 const Agents = lazy(() => import('./pages/Agents'))
-const AiPortfolio = lazy(() => import('./pages/AiPortfolio'))
-const Backtesting = lazy(() => import('./pages/Backtesting'))
 const Style = lazy(() => import('./pages/Style'))
 const MarketIndexDetail = lazy(() => import('./pages/MarketIndexDetail'))
 const StockcircleExperts = lazy(() => import('./pages/StockcircleExperts'))
@@ -39,8 +37,6 @@ export default function App() {
                 <Route path="/industry" element={<Industry />} />
                 <Route path="/industry-tickers/:industryName" element={<IndustryTickers />} />
                 <Route path="/agents" element={<Agents />} />
-                <Route path="/ai-portfolio" element={<AiPortfolio />} />
-                <Route path="/backtesting" element={<Backtesting />} />
                 <Route path="/stock/:ticker" element={<StockDetail />} />
                 <Route path="/market-index/:ticker" element={<MarketIndexDetail />} />
                 <Route path="/style" element={<Style />} />

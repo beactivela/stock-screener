@@ -105,18 +105,6 @@ export default function Layout({ children }: LayoutProps) {
               Industry
             </Link>
             <Link
-              to="/backtesting"
-              className={`text-sm ${location.pathname === '/backtesting' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              Backtesting
-            </Link>
-            <Link
-              to="/ai-portfolio"
-              className={`text-sm ${location.pathname === '/ai-portfolio' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              AI Portfolio
-            </Link>
-            <Link
               to="/experts"
               className={`text-sm ${
                 location.pathname === '/experts' || location.pathname.startsWith('/experts/')
