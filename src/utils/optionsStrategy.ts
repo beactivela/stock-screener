@@ -183,6 +183,16 @@ export function calculatePutCreditSpreadMetrics({
 /** @deprecated use calculatePutCreditSpreadMetrics */
 export const calculateBullPutSpreadMetrics = calculatePutCreditSpreadMetrics
 
+export function isPutCreditSpreadPairValid({
+  shortPut,
+  longPut,
+}: {
+  shortPut: OptionQuoteInput
+  longPut: OptionQuoteInput
+}): boolean {
+  return calculatePutCreditSpreadMetrics({ shortPut, longPut }) != null
+}
+
 function longCallProfitLossContract(S: number, strike: number, premiumPerShare: number): number {
   const intrinsic = Math.max(S - strike, 0)
   return roundCurrency((intrinsic - premiumPerShare) * CONTRACT_MULTIPLIER)
@@ -303,6 +313,26 @@ export function calculateBearCallSpreadMetrics({
     breakEven: roundCurrency(shortStrike + netCredit),
     width,
   }
+}
+
+export function isBearPutSpreadPairValid({
+  shortPut,
+  longPut,
+}: {
+  shortPut: OptionQuoteInput
+  longPut: OptionQuoteInput
+}): boolean {
+  return calculateBearPutSpreadMetrics({ shortPut, longPut }) != null
+}
+
+export function isBearCallSpreadPairValid({
+  shortCall,
+  longCall,
+}: {
+  shortCall: OptionQuoteInput
+  longCall: OptionQuoteInput
+}): boolean {
+  return calculateBearCallSpreadMetrics({ shortCall, longCall }) != null
 }
 
 function shortPutProfitLossContract(S: number, strike: number, premiumPerShare: number): number {
@@ -529,9 +559,8 @@ export function buildBullPutSpreadSlopedSegmentKnots({
 }
 
 /**
- * Map P&L dollars to an x coordinate where loss uses the left half of `width`
- * and profit uses the right half, so loss/profit zones are always equal width
- * (center vertical at width/2 = $0 P&L / breakeven on the payoff line).
+ * Map P&L dollars to an x coordinate on a proportional scale spanning `[-maxLoss, maxProfit]`.
+ * This keeps the $0 line in the correct place instead of forcing it to the visual center.
  */
 export function xForSymmetricPayoffPnL(
   profitLoss: number,
@@ -545,15 +574,12 @@ export function xForSymmetricPayoffPnL(
     width: number
   },
 ): number {
-  const half = width / 2
   const safeMaxLoss = Math.max(maxLoss, 1e-9)
   const safeMaxProfit = Math.max(maxProfit, 1e-9)
-  if (profitLoss <= 0) {
-    const t = clampNumber(profitLoss / -safeMaxLoss, 0, 1)
-    return half * (1 - t)
-  }
-  const t = clampNumber(profitLoss / safeMaxProfit, 0, 1)
-  return half + half * t
+  const minPnL = -safeMaxLoss
+  const maxPnL = safeMaxProfit
+  const clampedPnL = clampNumber(profitLoss, minPnL, maxPnL)
+  return ((clampedPnL - minPnL) / (maxPnL - minPnL)) * width
 }
 
 /** Risk-neutral-ish prob. spot finishes above `threshold` at expiry (lognormal). */

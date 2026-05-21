@@ -38,6 +38,14 @@ interface OptionsStrategyVisualizerProps {
   onStrategyKindChange: (next: VisualizerStrategyId) => void
   selectedExpiration: OptionsOpenInterestExpiration | null
   strikes: OptionsOpenInterestStrike[]
+  strikeBand?: {
+    lower: number
+    upper: number
+    volatility?: number | null
+    sigmaMultiplier?: number | null
+    dte?: number | null
+    source?: string | null
+  } | null
   spot: number | null
   pricePaneHeight: number
   fullHeight: number
@@ -119,7 +127,7 @@ function buildLossFillPathBelowStrip(
   for (let i = coords.length - 2; i >= 0; i -= 1) {
     parts.push(`L ${svgFmt(coords[i].x)} ${svgFmt(coords[i].y)}`)
   }
-  parts.push(`L ${svgFmt(xLeft)} ${svgFmt(first.y)}`, 'Z')
+  parts.push(`L ${svgFmt(xLeft)} ${svgFmt(first.y)}`, `L ${svgFmt(xLeft)} ${svgFmt(paneH)}`, 'Z')
   return parts.join(' ')
 }
 
@@ -132,6 +140,7 @@ function buildProfitFillPathAboveStrip(
   points: PayoffPoint[],
   _xLeft: number,
   _xRight: number,
+  yTop: number,
   xForPnL: (pl: number) => number,
   yAt: (price: number) => number | null,
 ): string | null {
@@ -148,7 +157,7 @@ function buildProfitFillPathAboveStrip(
   for (let i = 1; i < coords.length; i += 1) {
     parts.push(`L ${svgFmt(coords[i].x)} ${svgFmt(coords[i].y)}`)
   }
-  parts.push(`L ${svgFmt(last.x)} 0`, `L ${svgFmt(first.x)} 0`, 'Z')
+  parts.push(`L ${svgFmt(last.x)} ${svgFmt(yTop)}`, `L ${svgFmt(first.x)} ${svgFmt(yTop)}`, 'Z')
   return parts.join(' ')
 }
 
@@ -194,6 +203,7 @@ export default function OptionsStrategyVisualizer({
   onStrategyKindChange,
   selectedExpiration,
   strikes,
+  strikeBand = null,
   spot,
   pricePaneHeight,
   fullHeight,
@@ -383,7 +393,9 @@ export default function OptionsStrategyVisualizer({
   }, [active, strikeCoordinates, priceMin, priceMax, pricePaneHeight, hasScale])
 
   const graphWidth = 152
-  const xCenter = graphWidth / 2
+  const graphHeight = pricePaneHeight - OPTIONS_STRIKE_OVERLAY_TOP_PX
+  const graphLaneTop = OPTIONS_STRIKE_OVERLAY_TOP_PX
+  const graphLaneBottom = pricePaneHeight
 
   const maxLossVal =
     active == null
@@ -396,7 +408,7 @@ export default function OptionsStrategyVisualizer({
 
   const xForPnL = (profitLoss: number) =>
     active == null
-      ? xCenter
+      ? graphWidth / 2
       : clamp(
           xForSymmetricPayoffPnL(profitLoss, {
             maxLoss: maxLossVal,
@@ -406,6 +418,7 @@ export default function OptionsStrategyVisualizer({
           0,
           graphWidth,
         )
+  const xZero = xForPnL(0)
 
   const slopedKnots: PayoffPoint[] = useMemo(() => {
     if (active?.kind === 'put_credit_spread') {
@@ -474,7 +487,7 @@ export default function OptionsStrategyVisualizer({
       ? buildLossFillPathBelowStrip(
           curveSegments.loss,
           0,
-          xCenter,
+          xZero,
           pricePaneHeight,
           xForPnL,
           yForPathPoint,
@@ -484,30 +497,13 @@ export default function OptionsStrategyVisualizer({
     curveSegments.profit.length >= 2
       ? buildProfitFillPathAboveStrip(
           curveSegments.profit,
-          xCenter,
+          xZero,
           graphWidth,
+          graphLaneTop,
           xForPnL,
           yForPathPoint,
         )
       : null
-
-  const shortLegY =
-    strategyKind === 'bear_call_spread' && shortStrike != null
-      ? yForPrice(shortStrike)
-      : (strategyKind === 'put_credit_spread' ||
-            strategyKind === 'bear_put_spread' ||
-            strategyKind === 'cash_secured_put') &&
-          shortStrike != null
-        ? yForPrice(shortStrike)
-        : null
-  const longLegY =
-    strategyKind === 'bear_call_spread' && longStrike != null
-      ? yForPrice(longStrike)
-      : (strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread') && longStrike != null
-        ? yForPrice(longStrike)
-        : null
-  const callStrikeY = strategyKind === 'long_call' && longStrike != null ? yForPrice(longStrike) : null
-  const cspStrikeY = strategyKind === 'cash_secured_put' && shortStrike != null ? yForPrice(shortStrike) : null
 
   const breakEvenY =
     active?.kind === 'put_credit_spread'
@@ -520,6 +516,50 @@ export default function OptionsStrategyVisualizer({
           : active?.kind === 'cash_secured_put' && cspScreenKnots
             ? yAlongPriceKnotPolyline(active.m.breakEven, cspScreenKnots) ?? yForPrice(active.m.breakEven)
             : null
+
+  const expectedMoveUpperY = strikeBand?.upper != null ? yForPrice(strikeBand.upper) : null
+  const expectedMoveLowerY = strikeBand?.lower != null ? yForPrice(strikeBand.lower) : null
+
+  const pcsTradeVisionShape = useMemo(() => {
+    if (active?.kind !== 'put_credit_spread') return null
+    const shortY = yForPrice(active.m.shortStrike)
+    const longY = yForPrice(active.m.longStrike)
+    const beY = yLinePutSpread(active.m.breakEven, active.m) ?? yForPrice(active.m.breakEven)
+    if (shortY == null || longY == null || beY == null) return null
+    const maxProfitX = xForPnL(active.m.maxProfit)
+    const maxLossX = xForPnL(-active.m.maxLoss)
+    return {
+      shortY,
+      longY,
+      beY,
+      maxProfitX,
+      maxLossX,
+      redPath: [
+        `M ${svgFmt(maxLossX)} ${svgFmt(graphLaneBottom)}`,
+        `L ${svgFmt(maxLossX)} ${svgFmt(longY)}`,
+        `L ${svgFmt(xZero)} ${svgFmt(beY)}`,
+      ].join(' '),
+      greenPath: [
+        `M ${svgFmt(xZero)} ${svgFmt(beY)}`,
+        `L ${svgFmt(maxProfitX)} ${svgFmt(shortY)}`,
+        `L ${svgFmt(maxProfitX)} ${svgFmt(graphLaneTop)}`,
+      ].join(' '),
+      redFill: [
+        `M ${svgFmt(maxLossX)} ${svgFmt(graphLaneBottom)}`,
+        `L ${svgFmt(maxLossX)} ${svgFmt(longY)}`,
+        `L ${svgFmt(xZero)} ${svgFmt(beY)}`,
+        `L ${svgFmt(xZero)} ${svgFmt(graphLaneBottom)}`,
+        'Z',
+      ].join(' '),
+      greenFill: [
+        `M ${svgFmt(xZero)} ${svgFmt(graphLaneTop)}`,
+        `L ${svgFmt(maxProfitX)} ${svgFmt(graphLaneTop)}`,
+        `L ${svgFmt(maxProfitX)} ${svgFmt(shortY)}`,
+        `L ${svgFmt(xZero)} ${svgFmt(beY)}`,
+        'Z',
+      ].join(' '),
+    }
+  }, [active, graphLaneBottom, graphLaneTop, xForPnL, xZero, yForPrice, yLinePutSpread])
 
   const subtitleLabel =
     strategyKind === 'put_credit_spread'
@@ -661,7 +701,77 @@ export default function OptionsStrategyVisualizer({
           </div>
         </div>
 
-        {active &&
+        {active?.kind === 'put_credit_spread' && pcsTradeVisionShape ? (
+          <>
+            <svg
+              className="absolute left-3 top-0"
+              width={graphWidth}
+              height={pricePaneHeight}
+              viewBox={`0 0 ${graphWidth} ${pricePaneHeight}`}
+              role="img"
+              aria-label="Put credit spread risk profile"
+            >
+              <rect x="0" y={graphLaneTop} width={graphWidth} height={graphHeight} rx="10" ry="10" fill="#0d1b2d" />
+              {expectedMoveUpperY != null && expectedMoveLowerY != null && expectedMoveLowerY > expectedMoveUpperY && (
+                <>
+                  <rect
+                    x="0"
+                    y={expectedMoveUpperY}
+                    width={graphWidth}
+                    height={expectedMoveLowerY - expectedMoveUpperY}
+                    fill="rgba(37, 99, 235, 0.12)"
+                  />
+                  <text x="10" y={expectedMoveLowerY - 12} fill="#3b82f6" fontSize="10">Expected move</text>
+                  <text x={graphWidth - 12} y={expectedMoveLowerY - 12} fill="#3b82f6" fontSize="10" textAnchor="end">
+                    {formatPercent(chanceOfProfit)}
+                  </text>
+                </>
+              )}
+              {breakEvenY != null && (
+                <line x1="0" x2={graphWidth} y1={breakEvenY} y2={breakEvenY} stroke="rgba(226, 232, 240, 0.8)" strokeWidth="1.1" />
+              )}
+              <line x1={xZero} x2={xZero} y1={graphLaneTop} y2={graphLaneBottom} stroke="rgba(255,255,255,0.14)" strokeWidth="1" />
+              <path d={pcsTradeVisionShape.greenFill} fill="rgba(16, 185, 129, 0.18)" />
+              <path d={pcsTradeVisionShape.redFill} fill="rgba(244, 63, 94, 0.18)" />
+              <path d={pcsTradeVisionShape.redPath} fill="none" stroke="rgb(255, 61, 113)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+              <path d={pcsTradeVisionShape.greenPath} fill="none" stroke="rgb(16, 214, 128)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+
+            {breakEvenY != null && (
+              <>
+                <div
+                  className="absolute left-4 z-10 -translate-y-1/2 font-mono text-[10px] text-slate-300"
+                  style={{ top: breakEvenY - 10 }}
+                >
+                  ${formatStrike(active.m.breakEven)}
+                </div>
+                <div
+                  className="absolute left-14 z-10 -translate-y-1/2 rounded-full border border-sky-400/50 bg-[#061120] px-2.5 py-1 font-mono text-[10px] text-sky-100 shadow"
+                  style={{ top: breakEvenY }}
+                >
+                  BE {formatStrike(active.m.breakEven)}
+                </div>
+              </>
+            )}
+
+            <div className="absolute right-3 top-20 z-10 w-[118px] space-y-5">
+              {[
+                ['Net Credit', formatMoney(active.m.netCredit * active.m.contractMultiplier), 'text-slate-100'],
+                ['Est. Margin', formatMoney(active.m.estimatedMargin), 'text-slate-100'],
+                ['Max Profit', formatMoney(active.m.maxProfit), 'text-emerald-400'],
+                ['Max Loss', `-${formatMoney(active.m.maxLoss).replace(/^-/, '')}`, 'text-rose-400'],
+                ['Break Even', `Above\n$${formatStrike(active.m.breakEven)}`, 'text-slate-100'],
+                ['Chance of Profit', formatPercent(chanceOfProfit), 'text-slate-100'],
+                ['Total Commission', '$0', 'text-slate-100'],
+              ].map(([label, value, colorClass]) => (
+                <div key={label}>
+                  <div className="text-[9px] uppercase tracking-wide text-slate-400">{label}</div>
+                  <div className={`whitespace-pre-line font-mono text-[12px] font-semibold ${colorClass}`}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : active &&
         (active.kind === 'put_credit_spread' ||
           active.kind === 'bear_put_spread' ||
           active.kind === 'bear_call_spread' ||
@@ -676,6 +786,14 @@ export default function OptionsStrategyVisualizer({
               role="img"
               aria-label={`${strategyTitle} risk profile`}
             >
+              <defs>
+                <clipPath id="pcs-risk-lane">
+                  <rect x="0" y={graphLaneTop} width={graphWidth} height={graphHeight} rx="10" ry="10" />
+                </clipPath>
+              </defs>
+              <rect x="0" y={graphLaneTop} width={graphWidth} height={graphHeight} rx="10" ry="10" fill="rgba(15, 23, 42, 0.82)" stroke="rgba(51, 65, 85, 0.9)" />
+              <line x1={xZero} x2={xZero} y1={graphLaneTop} y2={graphLaneBottom} stroke="rgba(51, 65, 85, 0.9)" strokeDasharray="4 4" />
+              <g clipPath="url(#pcs-risk-lane)">
               {lossFillPath && <path d={lossFillPath} fill="rgba(244, 63, 94, 0.2)" stroke="none" />}
               {profitFillPath && <path d={profitFillPath} fill="rgba(16, 185, 129, 0.18)" stroke="none" />}
               {breakEvenY != null && (
@@ -683,7 +801,7 @@ export default function OptionsStrategyVisualizer({
               )}
               {breakEvenY != null && (
                 <circle
-                  cx={xCenter}
+                  cx={xZero}
                   cy={breakEvenY}
                   r={4}
                   fill="rgba(15, 23, 42, 0.9)"
@@ -693,60 +811,8 @@ export default function OptionsStrategyVisualizer({
               )}
               {lossPath && <path d={lossPath} fill="none" stroke="rgb(244, 63, 94)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
               {profitPath && <path d={profitPath} fill="none" stroke="rgb(34, 197, 94)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
+              </g>
             </svg>
-
-            {(strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread') &&
-              shortLegY != null &&
-              shortStrike != null && (
-                <div
-                  className="absolute left-2 z-10 -translate-y-1/2 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200"
-                  style={{ top: shortLegY }}
-                >
-                  short {formatStrike(shortStrike)}P
-                </div>
-              )}
-            {(strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread') &&
-              longLegY != null &&
-              longStrike != null && (
-                <div
-                  className="absolute right-2 z-10 -translate-y-1/2 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[10px] text-rose-200"
-                  style={{ top: longLegY }}
-                >
-                  long {formatStrike(longStrike)}P
-                </div>
-              )}
-            {strategyKind === 'bear_call_spread' && shortLegY != null && shortStrike != null && (
-              <div
-                className="absolute left-2 z-10 -translate-y-1/2 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-100"
-                style={{ top: shortLegY }}
-              >
-                short {formatStrike(shortStrike)}C
-              </div>
-            )}
-            {strategyKind === 'bear_call_spread' && longLegY != null && longStrike != null && (
-              <div
-                className="absolute left-2 z-10 -translate-y-1/2 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 font-mono text-[10px] text-violet-100"
-                style={{ top: longLegY }}
-              >
-                long {formatStrike(longStrike)}C
-              </div>
-            )}
-            {strategyKind === 'cash_secured_put' && cspStrikeY != null && shortStrike != null && (
-              <div
-                className="absolute right-2 z-10 -translate-y-1/2 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[10px] text-rose-200"
-                style={{ top: cspStrikeY }}
-              >
-                short {formatStrike(shortStrike)}P
-              </div>
-            )}
-            {strategyKind === 'long_call' && callStrikeY != null && (
-              <div
-                className="absolute left-2 z-10 -translate-y-1/2 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200"
-                style={{ top: callStrikeY }}
-              >
-                long {formatStrike(longStrike)}C
-              </div>
-            )}
 
             <div className="absolute right-3 top-20 z-10 w-[118px] space-y-1.5">
               {metricsCards.map((row) => {
@@ -760,6 +826,14 @@ export default function OptionsStrategyVisualizer({
                 )
               })}
             </div>
+            {breakEvenY != null && active?.kind === 'put_credit_spread' && (
+              <div
+                className="absolute left-[78px] z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-400/50 bg-slate-950/95 px-2 py-0.5 font-mono text-[10px] text-sky-200 shadow"
+                style={{ top: breakEvenY }}
+              >
+                BE {formatStrike(active.m.breakEven)}
+              </div>
+            )}
           </>
         ) : (
           <div className="absolute inset-x-0 top-20 px-3 text-slate-500">

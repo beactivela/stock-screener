@@ -12,8 +12,18 @@ import ChartContextMenu from '../components/ChartContextMenu'
 import { buildNewsPrompt } from '../utils/newsPrompt.js'
 import { getIbdGroupRelStrBadge, getIbdRsRatingBadge, getIndustryRankBadge, getScanRsRatingBadge } from '../utils/rsRatingDisplay.js'
 import { getWatchlistItem, removeWatchlistItem, upsertWatchlistItem, type WatchlistItem } from '../utils/watchlistStorage.js'
-import { chooseDefaultExpiration, type OptionsOpenInterestExpiration, type OptionsOpenInterestStrike } from '../utils/optionsOpenInterest'
-import { calculateBearCallSpreadMetrics, type VisualizerStrategyId } from '../utils/optionsStrategy'
+import {
+  chooseDefaultExpiration,
+  type OptionsOpenInterestExpiration,
+  type OptionsOpenInterestStrike,
+} from '../utils/optionsOpenInterest'
+import {
+  calculateBearCallSpreadMetrics,
+  isBearPutSpreadPairValid,
+  isPutCreditSpreadPairValid,
+  type OptionQuoteInput,
+  type VisualizerStrategyId,
+} from '../utils/optionsStrategy'
 // Trade Journal panel for logging entries and exits
 import TradePanel from '../components/TradePanel'
 
@@ -132,8 +142,27 @@ interface OptionsOpenInterestResponse {
   source: string
   selectedExpiration: string | null
   expirations: OptionsOpenInterestExpiration[]
+  strikeBand?: {
+    lower: number
+    upper: number
+    volatility?: number | null
+    sigmaMultiplier?: number | null
+    dte?: number | null
+    source?: string | null
+  } | null
   strikes: OptionsOpenInterestStrike[]
   message?: string | null
+}
+
+function toPutQuoteInput(row: OptionsOpenInterestStrike | undefined): OptionQuoteInput | null {
+  if (!row?.putQuote) return null
+  return {
+    strike: row.strike,
+    bid: row.putQuote.bid,
+    ask: row.putQuote.ask,
+    lastPrice: row.putQuote.lastPrice,
+    impliedVolatility: row.putQuote.impliedVolatility,
+  }
 }
 
 const TIMEFRAMES = [
@@ -596,11 +625,65 @@ export default function StockDetail() {
     }
 
     const spot = optionsOpenInterest.spot ?? optionsGamma?.spot ?? null
+    const pricedPuts = [...optionsOpenInterest.strikes]
+      .filter((row) => row.putOpenInterest > 0 && row.putQuote?.mid != null && row.putQuote.mid > 0)
+      .sort((a, b) => a.strike - b.strike)
+    const pricedCalls = [...optionsOpenInterest.strikes]
+      .filter((row) => row.callOpenInterest > 0 && row.callQuote?.mid != null && row.callQuote.mid > 0)
+      .sort((a, b) => a.strike - b.strike)
+
+    const findValidPutSpread = (strategy: 'put_credit_spread' | 'bear_put_spread') => {
+      if (pricedPuts.length < 2) return null
+      const preferredRows =
+        strategy === 'put_credit_spread'
+          ? [...pricedPuts].sort((a, b) => {
+              const aBelow = spot == null ? 0 : a.strike < spot ? 0 : 1
+              const bBelow = spot == null ? 0 : b.strike < spot ? 0 : 1
+              if (aBelow !== bBelow) return aBelow - bBelow
+              if (spot == null) return b.strike - a.strike
+              return Math.abs(a.strike - spot) - Math.abs(b.strike - spot)
+            })
+          : [...pricedPuts].sort((a, b) => {
+              const aAtOrAbove = spot == null ? 0 : a.strike >= spot ? 0 : 1
+              const bAtOrAbove = spot == null ? 0 : b.strike >= spot ? 0 : 1
+              if (aAtOrAbove !== bAtOrAbove) return aAtOrAbove - bAtOrAbove
+              if (spot == null) return a.strike - b.strike
+              return Math.abs(a.strike - spot) - Math.abs(b.strike - spot)
+            })
+
+      for (const anchor of preferredRows) {
+        const counterpartRows =
+          strategy === 'put_credit_spread'
+            ? [...pricedPuts]
+                .filter((row) => row.strike < anchor.strike)
+                .sort((a, b) => Math.abs(a.strike - anchor.strike) - Math.abs(b.strike - anchor.strike))
+            : [...pricedPuts]
+                .filter((row) => row.strike < anchor.strike)
+                .sort((a, b) => Math.abs(a.strike - anchor.strike) - Math.abs(b.strike - anchor.strike))
+
+        for (const counterpart of counterpartRows) {
+          const shortRow = strategy === 'put_credit_spread' ? anchor : counterpart
+          const longRow = strategy === 'put_credit_spread' ? counterpart : anchor
+          const shortPut = toPutQuoteInput(shortRow)
+          const longPut = toPutQuoteInput(longRow)
+          if (!shortPut || !longPut) continue
+          const valid =
+            strategy === 'put_credit_spread'
+              ? isPutCreditSpreadPairValid({ shortPut, longPut })
+              : isBearPutSpreadPairValid({ shortPut, longPut })
+          if (valid) {
+            return {
+              shortStrike: shortRow.strike,
+              longStrike: longRow.strike,
+            }
+          }
+        }
+      }
+
+      return null
+    }
 
     if (optionsStrategyKind === 'put_credit_spread') {
-      const pricedPuts = [...optionsOpenInterest.strikes]
-        .filter((row) => row.putOpenInterest > 0 && row.putQuote?.mid != null && row.putQuote.mid > 0)
-        .sort((a, b) => a.strike - b.strike)
       if (pricedPuts.length < 2) {
         setSelectedOptionsSpread((prev) =>
           prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
@@ -617,27 +700,17 @@ export default function StockDetail() {
         selectedOptionsSpread.longStrike != null &&
         selectedOptionsSpread.shortStrike > selectedOptionsSpread.longStrike
       ) {
-        return
+        const shortPut = toPutQuoteInput(pricedPuts.find((row) => row.strike === selectedOptionsSpread.shortStrike))
+        const longPut = toPutQuoteInput(pricedPuts.find((row) => row.strike === selectedOptionsSpread.longStrike))
+        if (shortPut && longPut && isPutCreditSpreadPairValid({ shortPut, longPut })) return
       }
 
-      const shortCandidate =
-        [...pricedPuts].reverse().find((row) => spot == null || row.strike < spot) || pricedPuts[pricedPuts.length - 1]
-      const shortIndex = pricedPuts.findIndex((row) => row.strike === shortCandidate.strike)
-      const longCandidate = pricedPuts[Math.max(0, shortIndex - 1)]
-
-      if (longCandidate && shortCandidate.strike > longCandidate.strike) {
-        setSelectedOptionsSpread({
-          shortStrike: shortCandidate.strike,
-          longStrike: longCandidate.strike,
-        })
-      }
+      const next = findValidPutSpread('put_credit_spread')
+      setSelectedOptionsSpread(next ?? { shortStrike: null, longStrike: null })
       return
     }
 
     if (optionsStrategyKind === 'bear_put_spread') {
-      const pricedPuts = [...optionsOpenInterest.strikes]
-        .filter((row) => row.putOpenInterest > 0 && row.putQuote?.mid != null && row.putQuote.mid > 0)
-        .sort((a, b) => a.strike - b.strike)
       if (pricedPuts.length < 2) {
         setSelectedOptionsSpread((prev) =>
           prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
@@ -654,26 +727,17 @@ export default function StockDetail() {
         selectedOptionsSpread.longStrike != null &&
         selectedOptionsSpread.longStrike > selectedOptionsSpread.shortStrike
       ) {
-        return
+        const shortPut = toPutQuoteInput(pricedPuts.find((row) => row.strike === selectedOptionsSpread.shortStrike))
+        const longPut = toPutQuoteInput(pricedPuts.find((row) => row.strike === selectedOptionsSpread.longStrike))
+        if (shortPut && longPut && isBearPutSpreadPairValid({ shortPut, longPut })) return
       }
 
-      const longCandidate =
-        pricedPuts.find((row) => spot == null || row.strike >= spot) || pricedPuts[pricedPuts.length - 1]
-      const longIndex = pricedPuts.findIndex((row) => row.strike === longCandidate.strike)
-      const shortCandidate = pricedPuts[Math.max(0, longIndex - 1)]
-      if (shortCandidate && longCandidate.strike > shortCandidate.strike) {
-        setSelectedOptionsSpread({
-          shortStrike: shortCandidate.strike,
-          longStrike: longCandidate.strike,
-        })
-      }
+      const next = findValidPutSpread('bear_put_spread')
+      setSelectedOptionsSpread(next ?? { shortStrike: null, longStrike: null })
       return
     }
 
     if (optionsStrategyKind === 'bear_call_spread') {
-      const pricedCalls = [...optionsOpenInterest.strikes]
-        .filter((row) => row.callOpenInterest > 0 && row.callQuote?.mid != null && row.callQuote.mid > 0)
-        .sort((a, b) => a.strike - b.strike)
       if (pricedCalls.length < 2) {
         setSelectedOptionsSpread((prev) =>
           prev.shortStrike == null && prev.longStrike == null ? prev : { shortStrike: null, longStrike: null },
@@ -762,23 +826,24 @@ export default function StockDetail() {
       return
     }
 
-    const pricedCalls = [...optionsOpenInterest.strikes]
+    const pricedCallsForLongCall = [...optionsOpenInterest.strikes]
       .filter((row) => row.callOpenInterest > 0 && row.callQuote?.mid != null && row.callQuote.mid > 0)
       .sort((a, b) => a.strike - b.strike)
-    if (pricedCalls.length === 0) {
+    if (pricedCallsForLongCall.length === 0) {
       setSelectedOptionsSpread((prev) =>
         prev.longStrike == null && prev.shortStrike == null ? prev : { shortStrike: null, longStrike: null },
       )
       return
     }
 
-    const validCall = pricedCalls.some((row) => row.strike === selectedOptionsSpread.longStrike)
+    const validCall = pricedCallsForLongCall.some((row) => row.strike === selectedOptionsSpread.longStrike)
     if (validCall && selectedOptionsSpread.longStrike != null && selectedOptionsSpread.shortStrike == null) {
       return
     }
 
     const callPick =
-      pricedCalls.find((row) => spot == null || row.strike >= spot) || pricedCalls[pricedCalls.length - 1]
+      pricedCallsForLongCall.find((row) => spot == null || row.strike >= spot) ||
+      pricedCallsForLongCall[pricedCallsForLongCall.length - 1]
     setSelectedOptionsSpread({ shortStrike: null, longStrike: callPick.strike })
   }, [
     optionsGamma?.spot,
@@ -2163,6 +2228,7 @@ export default function StockDetail() {
             }}
             selectedExpiration={selectedOptionsExpirationMeta}
             strikes={optionsOpenInterest?.ok ? optionsOpenInterest.strikes : []}
+            strikeBand={optionsOpenInterest?.strikeBand ?? null}
             spot={optionsOpenInterest?.spot ?? optionsGamma?.spot ?? null}
             pricePaneHeight={PRICE_CHART_HEIGHT}
             fullHeight={CHART_STACK_HEIGHT}

@@ -6,10 +6,17 @@ import {
   formatExpirationDropdownLabel,
   formatOpenInterest,
   OPTIONS_STRIKE_OVERLAY_TOP_PX,
+  strikeOverlayPxToChartSpaceY,
   type OptionsOpenInterestExpiration,
   type OptionsOpenInterestStrike,
 } from '../utils/optionsOpenInterest'
-import type { VisualizerStrategyId } from '../utils/optionsStrategy'
+import {
+  isBearCallSpreadPairValid,
+  isBearPutSpreadPairValid,
+  isPutCreditSpreadPairValid,
+  type OptionQuoteInput,
+  type VisualizerStrategyId,
+} from '../utils/optionsStrategy'
 
 interface OptionsOpenInterestRailProps {
   expirations: OptionsOpenInterestExpiration[]
@@ -42,6 +49,28 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
+function toPutQuoteInput(row: OptionsOpenInterestStrike | undefined): OptionQuoteInput | null {
+  if (!row?.putQuote) return null
+  return {
+    strike: row.strike,
+    bid: row.putQuote.bid,
+    ask: row.putQuote.ask,
+    lastPrice: row.putQuote.lastPrice,
+    impliedVolatility: row.putQuote.impliedVolatility,
+  }
+}
+
+function toCallQuoteInput(row: OptionsOpenInterestStrike | undefined): OptionQuoteInput | null {
+  if (!row?.callQuote) return null
+  return {
+    strike: row.strike,
+    bid: row.callQuote.bid,
+    ask: row.callQuote.ask,
+    lastPrice: row.callQuote.lastPrice,
+    impliedVolatility: row.callQuote.impliedVolatility,
+  }
+}
+
 export default function OptionsOpenInterestRail({
   expirations,
   selectedExpiration,
@@ -60,6 +89,7 @@ export default function OptionsOpenInterestRail({
   strategyLongStrike = null,
   onStrategyStrikeChange,
 }: OptionsOpenInterestRailProps) {
+  const RAIL_ROW_MIN_GAP_PX = 14
   const [dragLeg, setDragLeg] = useState<DragLeg | null>(null)
   const dragLegRef = useRef<DragLeg | null>(null)
   /** Strike rows + chips live here; pointer Y is mapped in this box so it matches chart `strikeCoordinates`. */
@@ -73,6 +103,24 @@ export default function OptionsOpenInterestRail({
     .filter((row) => row.callQuote?.mid != null && row.callQuote.mid > 0)
     .sort((a, b) => a.strike - b.strike)
   const laneHeight = Math.max(1, pricePaneHeight - OPTIONS_STRIKE_OVERLAY_TOP_PX)
+  const putRowsByStrike = new Map(pricedPutRows.map((row) => [row.strike, row] as const))
+  const callRowsByStrike = new Map(pricedCallRows.map((row) => [row.strike, row] as const))
+
+  const isValidPutSpreadPair = (nextShortStrike: number, nextLongStrike: number, pcs: boolean): boolean => {
+    const shortPut = toPutQuoteInput(putRowsByStrike.get(nextShortStrike))
+    const longPut = toPutQuoteInput(putRowsByStrike.get(nextLongStrike))
+    if (!shortPut || !longPut) return false
+    return pcs
+      ? isPutCreditSpreadPairValid({ shortPut, longPut })
+      : isBearPutSpreadPairValid({ shortPut, longPut })
+  }
+
+  const isValidCallSpreadPair = (nextShortStrike: number, nextLongStrike: number): boolean => {
+    const shortCall = toCallQuoteInput(callRowsByStrike.get(nextShortStrike))
+    const longCall = toCallQuoteInput(callRowsByStrike.get(nextLongStrike))
+    if (!shortCall || !longCall) return false
+    return isBearCallSpreadPairValid({ shortCall, longCall })
+  }
 
   /** Chart-space Y [0, pricePaneHeight] for nearest-strike math (same space as `strikeCoordinates`). */
   const chartYFromClientY = (clientY: number): number | null => {
@@ -81,7 +129,11 @@ export default function OptionsOpenInterestRail({
     const rect = lane.getBoundingClientRect()
     if (rect.height <= 1) return null
     const yInLane = clamp(clientY - rect.top, 0, rect.height)
-    return (yInLane / rect.height) * pricePaneHeight
+    return clamp(
+      strikeOverlayPxToChartSpaceY(OPTIONS_STRIKE_OVERLAY_TOP_PX + yInLane, pricePaneHeight),
+      0,
+      pricePaneHeight,
+    )
   }
 
   /** Position inside the strike lane (px from lane top) so rows line up with chart coordinates. */
@@ -109,14 +161,19 @@ export default function OptionsOpenInterestRail({
           ? row.strike < strategyLongStrike!
           : row.strike > strategyShortStrike!,
     )
-    if (candidates.length === 0) return null
-    return candidates.reduce((closest, row) => {
+    const validCandidates = candidates.filter((row) =>
+      leg === 'short'
+        ? isValidPutSpreadPair(row.strike, strategyLongStrike!, pcs)
+        : isValidPutSpreadPair(strategyShortStrike!, row.strike, pcs),
+    )
+    if (validCandidates.length === 0) return null
+    return validCandidates.reduce((closest, row) => {
       const rowY = yPxForStrike(row.strike)
       const closestY = yPxForStrike(closest.strike)
       if (rowY == null) return closest
       if (closestY == null) return row
       return Math.abs(rowY - y) < Math.abs(closestY - y) ? row : closest
-    }, candidates[0]).strike
+    }, validCandidates[0]).strike
   }
 
   const nearestCallSpreadStrikeFromY = (clientY: number, leg: DragLeg): number | null => {
@@ -126,14 +183,19 @@ export default function OptionsOpenInterestRail({
     const candidates = pricedCallRows.filter((row) =>
       leg === 'short' ? row.strike < strategyLongStrike! : row.strike > strategyShortStrike!,
     )
-    if (candidates.length === 0) return null
-    return candidates.reduce((closest, row) => {
+    const validCandidates = candidates.filter((row) =>
+      leg === 'short'
+        ? isValidCallSpreadPair(row.strike, strategyLongStrike!)
+        : isValidCallSpreadPair(strategyShortStrike!, row.strike),
+    )
+    if (validCandidates.length === 0) return null
+    return validCandidates.reduce((closest, row) => {
       const rowY = yPxForStrike(row.strike)
       const closestY = yPxForStrike(closest.strike)
       if (rowY == null) return closest
       if (closestY == null) return row
       return Math.abs(rowY - y) < Math.abs(closestY - y) ? row : closest
-    }, candidates[0]).strike
+    }, validCandidates[0]).strike
   }
 
   const nearestCspPutStrikeFromY = (clientY: number): number | null => {
@@ -215,6 +277,11 @@ export default function OptionsOpenInterestRail({
             ? row.strike < strategyLongStrike!
             : row.strike > strategyShortStrike!,
       )
+      .filter((row) =>
+        leg === 'short'
+          ? isValidPutSpreadPair(row.strike, strategyLongStrike!, pcs)
+          : isValidPutSpreadPair(strategyShortStrike!, row.strike, pcs),
+      )
       .map((row) => row.strike)
     const index = candidates.indexOf(current)
     const next = candidates[clamp(index + direction, 0, candidates.length - 1)]
@@ -231,6 +298,11 @@ export default function OptionsOpenInterestRail({
     const current = leg === 'short' ? strategyShortStrike : strategyLongStrike
     const candidates = pricedCallRows
       .filter((row) => (leg === 'short' ? row.strike < strategyLongStrike! : row.strike > strategyShortStrike!))
+      .filter((row) =>
+        leg === 'short'
+          ? isValidCallSpreadPair(row.strike, strategyLongStrike!)
+          : isValidCallSpreadPair(strategyShortStrike!, row.strike),
+      )
       .map((row) => row.strike)
     const index = candidates.indexOf(current)
     const next = candidates[clamp(index + direction, 0, candidates.length - 1)]
@@ -275,6 +347,23 @@ export default function OptionsOpenInterestRail({
     })
     .filter((row) => row.laneTopPx == null || (row.laneTopPx >= 0 && row.laneTopPx <= laneHeight))
 
+  const pinnedStrikes = new Set(
+    [strategyShortStrike, strategyLongStrike, spot]
+      .filter((value): value is number => Number.isFinite(value))
+      .map((value) => String(value)),
+  )
+  const visibleRailRows = railRows.reduce<Array<(typeof railRows)[number]>>((rows, row) => {
+    if (row.laneTopPx == null) {
+      rows.push(row)
+      return rows
+    }
+    const isPinned = pinnedStrikes.has(String(row.strike))
+    const laneTopPx = row.laneTopPx
+    const hasNeighbor = rows.some((existing) => existing.laneTopPx != null && Math.abs(existing.laneTopPx - laneTopPx) < RAIL_ROW_MIN_GAP_PX)
+    if (!hasNeighbor || isPinned) rows.push(row)
+    return rows
+  }, [])
+
   return (
     <aside
       className="hidden w-[250px] self-stretch border-l border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:flex xl:flex-col"
@@ -306,23 +395,23 @@ export default function OptionsOpenInterestRail({
             ))}
           </select>
         </div>
-        <div className="absolute inset-x-0 top-[74px] z-10 grid grid-cols-[1fr_42px_1fr] border-y border-slate-800 bg-slate-950/90 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500">
+        <div className="absolute inset-x-0 top-[74px] z-10 grid grid-cols-[1fr_54px_1fr] border-y border-slate-800 bg-slate-950/90 px-2 py-1 text-[10px] uppercase tracking-wide text-slate-500">
           <span>Call</span>
           <span className="text-center">Strike</span>
           <span className="text-right">Put</span>
         </div>
         {loading ? (
           <div className="p-3 text-slate-500">Loading OI...</div>
-        ) : railRows.length > 0 ? (
+        ) : visibleRailRows.length > 0 ? (
           <>
             <div ref={strikeLaneRef} className="absolute inset-x-0 bottom-0 z-[5]" style={{ top: OPTIONS_STRIKE_OVERLAY_TOP_PX }}>
-            {railRows.map((row) => {
+            {visibleRailRows.map((row) => {
               const topStyle =
                 row.laneTopPx == null ? undefined : { top: `${row.laneTopPx}px` }
               const rowClassName =
                 row.laneTopPx == null
-                  ? 'relative grid grid-cols-[1fr_42px_1fr] items-center gap-1 px-2 py-1'
-                  : 'absolute left-0 right-0 grid -translate-y-1/2 grid-cols-[1fr_42px_1fr] items-center gap-1 px-2'
+                  ? 'relative grid grid-cols-[1fr_54px_1fr] items-center gap-1.5 px-2 py-1'
+                  : 'absolute left-0 right-0 grid -translate-y-1/2 grid-cols-[1fr_54px_1fr] items-center gap-1.5 px-2'
               return (
                 <div
                   key={row.strike}
@@ -331,18 +420,18 @@ export default function OptionsOpenInterestRail({
                   title={`Strike ${formatStrike(row.strike)}, calls ${formatOpenInterest(row.callOpenInterest)} open interest, puts ${formatOpenInterest(row.putOpenInterest)} open interest`}
                   aria-label={`Strike ${formatStrike(row.strike)}, calls ${formatOpenInterest(row.callOpenInterest)} open interest, puts ${formatOpenInterest(row.putOpenInterest)} open interest`}
                 >
-                  <div className="flex h-3 items-center justify-end rounded-sm bg-slate-900">
+                  <div className="flex h-3.5 items-center justify-end rounded-sm bg-slate-900/90">
                     <div
-                      className="h-2 rounded-sm bg-emerald-500/80"
+                      className="h-2.5 rounded-sm bg-emerald-500/80"
                       style={{ width: `${row.callWidthPct}%` }}
                     />
                   </div>
-                  <div className="rounded bg-slate-900/95 px-1 text-center font-mono text-slate-300 ring-1 ring-slate-800">
+                  <div className="rounded bg-slate-900/95 px-1.5 py-[1px] text-center font-mono text-[11px] font-semibold text-slate-100 ring-1 ring-slate-700/90">
                     {formatStrike(row.strike)}
                   </div>
-                  <div className="flex h-3 items-center rounded-sm bg-slate-900">
+                  <div className="flex h-3.5 items-center rounded-sm bg-slate-900/90">
                     <div
-                      className="h-2 rounded-sm bg-rose-500/80"
+                      className="h-2.5 rounded-sm bg-rose-500/80"
                       style={{ width: `${row.putWidthPct}%` }}
                     />
                   </div>

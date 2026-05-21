@@ -1,0 +1,43 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - link "VCP Screener" [ref=e7] [cursor=pointer]:
+          - /url: /
+        - paragraph [ref=e8]: "Last fetch from Yahoo: …"
+      - generic [ref=e9]:
+        - generic [ref=e10]:
+          - textbox "Ticker symbol" [ref=e11]:
+            - /placeholder: e.g. AAPL
+          - button "Evaluate" [disabled] [ref=e12]
+        - navigation [ref=e13]:
+          - link "Industry" [ref=e14] [cursor=pointer]:
+            - /url: /industry
+          - link "Experts" [ref=e15] [cursor=pointer]:
+            - /url: /experts
+  - main [ref=e16]:
+    - generic [ref=e17]: Loading…
+  - dialog [ref=e18]:
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - img [ref=e22]
+        - generic [ref=e24]:
+          - paragraph [ref=e25]: Minervini Coach
+          - paragraph [ref=e26]: SEPA · CANSLIM · VCP
+      - generic [ref=e27]:
+        - button [ref=e28] [cursor=pointer]: Coach
+        - button [ref=e29] [cursor=pointer]: Agents
+      - button [ref=e30] [cursor=pointer]:
+        - img [ref=e31]
+    - generic [ref=e34]:
+      - img [ref=e36]
+      - paragraph [ref=e40]: I'm Mark Minervini — SEPA and CANSLIM, period. Ask me about any stock or setup and I'll run through the checklist. Tell me what passes, what fails, and whether to wait for a better entry.
+    - generic [ref=e41]:
+      - generic [ref=e42]:
+        - textbox [ref=e43]:
+          - /placeholder: Ask about a stock, SEPA, or CANSLIM…
+        - button [disabled] [ref=e44]:
+          - img [ref=e45]
+      - paragraph [ref=e47]: Enter to send · Shift+Enter for newline
+  - button "Open Minervini coach" [ref=e48] [cursor=pointer]:
+    - img [ref=e49]

@@ -31,7 +31,6 @@ import {
   registerAgentsRoutesAfterHeartbeat,
 } from './http/registerAgentsRoutes.js';
 import { registerMarcusNewsRoutes } from './http/registerMarcusNewsRoutes.js';
-import { registerAiPortfolioRoutes } from './http/registerAiPortfolioRoutes.js';
 import { registerOptionsBacktestRoutes } from './http/registerOptionsBacktestRoutes.js';
 import { registerOptionsGammaRoutes } from './http/registerOptionsGammaRoutes.js';
 import { registerOptionsOpenInterestRoutes } from './http/registerOptionsOpenInterestRoutes.js';
@@ -85,7 +84,6 @@ if (process.env.SCHEDULE_SCAN === '1') {
 registerOpus45Routes(app);
 registerTradesRoutes(app);
 registerExitLearningRoutes(app);
-const aiPortfolioService = registerAiPortfolioRoutes(app);
 registerOptionsBacktestRoutes(app);
 registerOptionsGammaRoutes(app);
 registerOptionsOpenInterestRoutes(app);
@@ -188,26 +186,6 @@ app.post('/api/heartbeat/stop', (req, res) => {
     res.json({ ok: true, enabled: false, message: 'Heartbeat cron stopped.' });
   } catch (e) {
     console.error('[Heartbeat] stop error:', e);
-    res.status(500).json({ ok: false, error: String(e.message) });
-  }
-});
-
-app.post('/api/ai-portfolio/scheduler/start', (req, res) => {
-  try {
-    aiPortfolioService.startScheduler();
-    res.json({ ok: true, enabled: true, message: 'AI Portfolio scheduler started.' });
-  } catch (e) {
-    console.error('[AI Portfolio] start scheduler error:', e);
-    res.status(500).json({ ok: false, error: String(e.message) });
-  }
-});
-
-app.post('/api/ai-portfolio/scheduler/stop', (req, res) => {
-  try {
-    aiPortfolioService.stopScheduler();
-    res.json({ ok: true, enabled: false, message: 'AI Portfolio scheduler stopped.' });
-  } catch (e) {
-    console.error('[AI Portfolio] stop scheduler error:', e);
     res.status(500).json({ ok: false, error: String(e.message) });
   }
 });

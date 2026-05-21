@@ -1,0 +1,19 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - link "VCP Screener" [ref=e7] [cursor=pointer]:
+          - /url: /
+        - paragraph [ref=e8]: "Last fetch from Yahoo: …"
+      - generic [ref=e9]:
+        - generic [ref=e10]:
+          - textbox "Ticker symbol" [ref=e11]:
+            - /placeholder: e.g. AAPL
+          - button "Evaluate" [disabled] [ref=e12]
+        - navigation [ref=e13]:
+          - link "Industry" [ref=e14] [cursor=pointer]:
+            - /url: /industry
+          - link "Experts" [ref=e15] [cursor=pointer]:
+            - /url: /experts
+  - main [ref=e16]:
+    - generic [ref=e18]: Loading…

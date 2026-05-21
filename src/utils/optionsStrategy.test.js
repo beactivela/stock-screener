@@ -10,6 +10,9 @@ import {
   calculateBearCallSpreadMetrics,
   calculateCashSecuredPutMetrics,
   calculateLongCallMetrics,
+  isBearCallSpreadPairValid,
+  isBearPutSpreadPairValid,
+  isPutCreditSpreadPairValid,
   buildLongCallPayoffKnots,
   buildBearPutSpreadSlopedSegmentKnots,
   buildBearCallSpreadSlopedSegmentKnots,
@@ -71,6 +74,30 @@ describe('options strategy helpers', () => {
       breakEven: 245,
       width: 20,
     })
+  })
+
+  it('rejects invalid spread pairings before the UI tries to render them', () => {
+    assert.equal(
+      isPutCreditSpreadPairValid({
+        shortPut: { strike: 410, bid: 0.8, ask: 1, lastPrice: null },
+        longPut: { strike: 400, bid: 1.4, ask: 1.6, lastPrice: null },
+      }),
+      false,
+    )
+    assert.equal(
+      isBearPutSpreadPairValid({
+        shortPut: { strike: 400, bid: 1.4, ask: 1.6, lastPrice: null },
+        longPut: { strike: 410, bid: 0.8, ask: 1, lastPrice: null },
+      }),
+      false,
+    )
+    assert.equal(
+      isBearCallSpreadPairValid({
+        shortCall: { strike: 420, bid: 0.7, ask: 0.9, lastPrice: null },
+        longCall: { strike: 430, bid: 1.2, ask: 1.4, lastPrice: null },
+      }),
+      false,
+    )
   })
 
   it('builds an expiration payoff curve with capped loss and capped profit', () => {
@@ -204,18 +231,17 @@ describe('options strategy helpers', () => {
     assert.equal(knots.find((p) => p.price === m.breakEven)?.profitLoss, 0)
   })
 
-  it('maps payoff P&L to equal-width loss (left) and profit (right) halves', () => {
+  it('maps payoff P&L proportionally across the full graph width', () => {
     const width = 200
-    const half = width / 2
-    const maxLoss = 1998
-    const maxProfit = 2
+    const maxLoss = 1500
+    const maxProfit = 500
     const map = (pl) => xForSymmetricPayoffPnL(pl, { maxLoss, maxProfit, width })
 
-    assert.equal(map(0), half)
+    assert.equal(map(0), 150)
     assert.equal(map(-maxLoss), 0)
     assert.equal(map(maxProfit), width)
-    assert.ok(map(-maxLoss / 2) > 0 && map(-maxLoss / 2) < half)
-    assert.ok(map(maxProfit / 2) > half && map(maxProfit / 2) < width)
+    assert.equal(map(-750), 75)
+    assert.equal(map(250), 175)
   })
 
   it('calculates bear put spread metrics (debit, long > short, breakeven = long − debit)', () => {
