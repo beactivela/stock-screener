@@ -131,7 +131,18 @@ export const OPTIONS_STRIKE_OVERLAY_TOP_PX = 102
  */
 export function chartSpaceYToStrikeOverlayPx(chartY: number, pricePaneHeight: number): number {
   const h = Math.max(1, pricePaneHeight)
-  const clamped = Math.max(0, Math.min(h, chartY))
-  const laneH = Math.max(1, h - OPTIONS_STRIKE_OVERLAY_TOP_PX)
-  return OPTIONS_STRIKE_OVERLAY_TOP_PX + (clamped / h) * laneH
+  const clampedChartY = Math.max(0, Math.min(h, chartY))
+  const laneHeight = Math.max(1, h - OPTIONS_STRIKE_OVERLAY_TOP_PX)
+  return OPTIONS_STRIKE_OVERLAY_TOP_PX + (clampedChartY / h) * laneHeight
+}
+
+/**
+ * Inverse of `chartSpaceYToStrikeOverlayPx` so drag interactions can translate pointer position inside
+ * the overlay lane back into the chart-space coordinates used by `priceToCoordinate()`.
+ */
+export function strikeOverlayPxToChartSpaceY(overlayY: number, pricePaneHeight: number): number {
+  const h = Math.max(1, pricePaneHeight)
+  const laneHeight = Math.max(1, h - OPTIONS_STRIKE_OVERLAY_TOP_PX)
+  const clampedOverlayY = Math.max(OPTIONS_STRIKE_OVERLAY_TOP_PX, Math.min(h, overlayY))
+  return ((clampedOverlayY - OPTIONS_STRIKE_OVERLAY_TOP_PX) / laneHeight) * h
 }

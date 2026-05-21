@@ -231,18 +231,17 @@ describe('options strategy helpers', () => {
     assert.equal(knots.find((p) => p.price === m.breakEven)?.profitLoss, 0)
   })
 
-  it('maps payoff P&L to equal-width loss (left) and profit (right) halves', () => {
+  it('maps payoff P&L proportionally across the full graph width', () => {
     const width = 200
-    const half = width / 2
-    const maxLoss = 1998
-    const maxProfit = 2
+    const maxLoss = 1500
+    const maxProfit = 500
     const map = (pl) => xForSymmetricPayoffPnL(pl, { maxLoss, maxProfit, width })
 
-    assert.equal(map(0), half)
+    assert.equal(map(0), 150)
     assert.equal(map(-maxLoss), 0)
     assert.equal(map(maxProfit), width)
-    assert.ok(map(-maxLoss / 2) > 0 && map(-maxLoss / 2) < half)
-    assert.ok(map(maxProfit / 2) > half && map(maxProfit / 2) < width)
+    assert.equal(map(-750), 75)
+    assert.equal(map(250), 175)
   })
 
   it('calculates bear put spread metrics (debit, long > short, breakeven = long − debit)', () => {

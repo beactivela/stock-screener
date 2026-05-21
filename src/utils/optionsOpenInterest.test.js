@@ -9,6 +9,7 @@ import {
   formatOpenInterest,
   getMaxOpenInterest,
   OPTIONS_STRIKE_OVERLAY_TOP_PX,
+  strikeOverlayPxToChartSpaceY,
 } from './optionsOpenInterest.ts'
 
 const rows = [
@@ -26,6 +27,13 @@ describe('options open interest helpers', () => {
     assert.equal(chartSpaceYToStrikeOverlayPx(0, h), 102)
     assert.equal(chartSpaceYToStrikeOverlayPx(h, h), h)
     assert.equal(chartSpaceYToStrikeOverlayPx(300, h), 102 + (300 / h) * (h - 102))
+  })
+
+  it('inverts overlay Y back into chart-space Y for drag/nearest-strike math', () => {
+    const h = 600
+    assert.equal(strikeOverlayPxToChartSpaceY(102, h), 0)
+    assert.equal(strikeOverlayPxToChartSpaceY(h, h), h)
+    assert.equal(strikeOverlayPxToChartSpaceY(351, h), 300)
   })
 
   it('keeps the most relevant strikes around spot and preserves price order descending', () => {

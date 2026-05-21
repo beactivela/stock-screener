@@ -12,7 +12,11 @@ import ChartContextMenu from '../components/ChartContextMenu'
 import { buildNewsPrompt } from '../utils/newsPrompt.js'
 import { getIbdGroupRelStrBadge, getIbdRsRatingBadge, getIndustryRankBadge, getScanRsRatingBadge } from '../utils/rsRatingDisplay.js'
 import { getWatchlistItem, removeWatchlistItem, upsertWatchlistItem, type WatchlistItem } from '../utils/watchlistStorage.js'
-import { chooseDefaultExpiration, type OptionsOpenInterestExpiration, type OptionsOpenInterestStrike } from '../utils/optionsOpenInterest'
+import {
+  chooseDefaultExpiration,
+  type OptionsOpenInterestExpiration,
+  type OptionsOpenInterestStrike,
+} from '../utils/optionsOpenInterest'
 import {
   calculateBearCallSpreadMetrics,
   isBearPutSpreadPairValid,
@@ -138,6 +142,14 @@ interface OptionsOpenInterestResponse {
   source: string
   selectedExpiration: string | null
   expirations: OptionsOpenInterestExpiration[]
+  strikeBand?: {
+    lower: number
+    upper: number
+    volatility?: number | null
+    sigmaMultiplier?: number | null
+    dte?: number | null
+    source?: string | null
+  } | null
   strikes: OptionsOpenInterestStrike[]
   message?: string | null
 }
@@ -814,23 +826,24 @@ export default function StockDetail() {
       return
     }
 
-    const pricedCalls = [...optionsOpenInterest.strikes]
+    const pricedCallsForLongCall = [...optionsOpenInterest.strikes]
       .filter((row) => row.callOpenInterest > 0 && row.callQuote?.mid != null && row.callQuote.mid > 0)
       .sort((a, b) => a.strike - b.strike)
-    if (pricedCalls.length === 0) {
+    if (pricedCallsForLongCall.length === 0) {
       setSelectedOptionsSpread((prev) =>
         prev.longStrike == null && prev.shortStrike == null ? prev : { shortStrike: null, longStrike: null },
       )
       return
     }
 
-    const validCall = pricedCalls.some((row) => row.strike === selectedOptionsSpread.longStrike)
+    const validCall = pricedCallsForLongCall.some((row) => row.strike === selectedOptionsSpread.longStrike)
     if (validCall && selectedOptionsSpread.longStrike != null && selectedOptionsSpread.shortStrike == null) {
       return
     }
 
     const callPick =
-      pricedCalls.find((row) => spot == null || row.strike >= spot) || pricedCalls[pricedCalls.length - 1]
+      pricedCallsForLongCall.find((row) => spot == null || row.strike >= spot) ||
+      pricedCallsForLongCall[pricedCallsForLongCall.length - 1]
     setSelectedOptionsSpread({ shortStrike: null, longStrike: callPick.strike })
   }, [
     optionsGamma?.spot,
@@ -2215,6 +2228,7 @@ export default function StockDetail() {
             }}
             selectedExpiration={selectedOptionsExpirationMeta}
             strikes={optionsOpenInterest?.ok ? optionsOpenInterest.strikes : []}
+            strikeBand={optionsOpenInterest?.strikeBand ?? null}
             spot={optionsOpenInterest?.spot ?? optionsGamma?.spot ?? null}
             pricePaneHeight={PRICE_CHART_HEIGHT}
             fullHeight={CHART_STACK_HEIGHT}
