@@ -16,7 +16,11 @@ import {
   estimateBullPutChanceOfProfit,
   estimateLongCallChanceOfProfit,
   splitPayoffCurveByProfit,
+  mapSlopedSpreadScreenX,
   xForSymmetricPayoffPnL,
+  buildLossFillPathBelowPolyline,
+  pickOptionBid,
+  pickOptionAsk,
   type PayoffPoint,
   type OptionQuoteInput,
   type BearCallSpreadMetrics,
@@ -28,12 +32,14 @@ import {
 } from '../utils/optionsStrategy'
 import {
   chartSpaceYToStrikeOverlayPx,
-  OPTIONS_STRIKE_OVERLAY_TOP_PX,
   type OptionsOpenInterestExpiration,
   type OptionsOpenInterestStrike,
 } from '../utils/optionsOpenInterest'
+import { resolveStrikeChartY, type StrikePriceBounds } from '../utils/optionStrikeChartSync'
 
 interface OptionsStrategyVisualizerProps {
+  layout?: 'inline' | 'stacked'
+  putCreditSpreadLabel?: string
   strategyKind: VisualizerStrategyId
   onStrategyKindChange: (next: VisualizerStrategyId) => void
   selectedExpiration: OptionsOpenInterestExpiration | null
@@ -41,7 +47,9 @@ interface OptionsStrategyVisualizerProps {
   spot: number | null
   pricePaneHeight: number
   fullHeight: number
+  belowPaneHeight?: number
   strikeCoordinates: Record<string, number>
+  visiblePriceRange?: StrikePriceBounds | null
   priceMin: number | null
   priceMax: number | null
   shortStrike: number | null
@@ -92,35 +100,28 @@ function svgFmt(n: number): string {
   return n.toFixed(2)
 }
 
-/** Closed path: loss strip [xLeft,xRight], fill from bottom (y=paneH) up to the loss polyline (no gap vs rect). */
+/** Resolve loss-segment screen coords, then delegate to shared fill helper. */
 function buildLossFillPathBelowStrip(
   points: PayoffPoint[],
-  xLeft: number,
-  xRight: number,
+  _xLeft: number,
+  _xRight: number,
   paneH: number,
-  xForPnL: (pl: number) => number,
+  _xForPnL: (pl: number) => number,
   yAt: (price: number) => number | null,
+  screenAt?: (p: PayoffPoint) => { x: number; y: number } | null,
 ): string | null {
   const coords: Array<{ x: number; y: number }> = []
   for (const p of points) {
+    const screen = screenAt?.(p)
+    if (screen) {
+      coords.push(screen)
+      continue
+    }
     const y = yAt(p.price)
     if (y == null) return null
-    coords.push({ x: xForPnL(p.profitLoss), y })
+    coords.push({ x: _xForPnL(p.profitLoss), y })
   }
-  if (coords.length < 2) return null
-  const first = coords[0]
-  const last = coords[coords.length - 1]
-  const parts = [
-    `M ${svgFmt(xLeft)} ${svgFmt(paneH)}`,
-    `L ${svgFmt(xRight)} ${svgFmt(paneH)}`,
-    `L ${svgFmt(xRight)} ${svgFmt(last.y)}`,
-    `L ${svgFmt(last.x)} ${svgFmt(last.y)}`,
-  ]
-  for (let i = coords.length - 2; i >= 0; i -= 1) {
-    parts.push(`L ${svgFmt(coords[i].x)} ${svgFmt(coords[i].y)}`)
-  }
-  parts.push(`L ${svgFmt(xLeft)} ${svgFmt(first.y)}`, 'Z')
-  return parts.join(' ')
+  return buildLossFillPathBelowPolyline(coords, paneH)
 }
 
 /**
@@ -134,9 +135,15 @@ function buildProfitFillPathAboveStrip(
   _xRight: number,
   xForPnL: (pl: number) => number,
   yAt: (price: number) => number | null,
+  screenAt?: (p: PayoffPoint) => { x: number; y: number } | null,
 ): string | null {
   const coords: Array<{ x: number; y: number }> = []
   for (const p of points) {
+    const screen = screenAt?.(p)
+    if (screen) {
+      coords.push(screen)
+      continue
+    }
     const y = yAt(p.price)
     if (y == null) return null
     coords.push({ x: xForPnL(p.profitLoss), y })
@@ -182,6 +189,46 @@ function getCallMid(row: OptionsOpenInterestStrike | undefined): number | null {
   return row?.callQuote?.mid ?? null
 }
 
+function getPutNaturalSell(row: OptionsOpenInterestStrike | undefined): number | null {
+  if (!row?.putQuote) return null
+  return pickOptionBid({
+    strike: row.strike,
+    bid: row.putQuote.bid,
+    ask: row.putQuote.ask,
+    lastPrice: row.putQuote.lastPrice,
+  })
+}
+
+function getPutNaturalBuy(row: OptionsOpenInterestStrike | undefined): number | null {
+  if (!row?.putQuote) return null
+  return pickOptionAsk({
+    strike: row.strike,
+    bid: row.putQuote.bid,
+    ask: row.putQuote.ask,
+    lastPrice: row.putQuote.lastPrice,
+  })
+}
+
+function getCallNaturalSell(row: OptionsOpenInterestStrike | undefined): number | null {
+  if (!row?.callQuote) return null
+  return pickOptionBid({
+    strike: row.strike,
+    bid: row.callQuote.bid,
+    ask: row.callQuote.ask,
+    lastPrice: row.callQuote.lastPrice,
+  })
+}
+
+function getCallNaturalBuy(row: OptionsOpenInterestStrike | undefined): number | null {
+  if (!row?.callQuote) return null
+  return pickOptionAsk({
+    strike: row.strike,
+    bid: row.callQuote.bid,
+    ask: row.callQuote.ask,
+    lastPrice: row.callQuote.lastPrice,
+  })
+}
+
 type ActiveMetrics =
   | { kind: 'put_credit_spread'; m: PutCreditSpreadMetrics }
   | { kind: 'bear_put_spread'; m: BearPutSpreadMetrics }
@@ -190,6 +237,8 @@ type ActiveMetrics =
   | { kind: 'cash_secured_put'; m: CashSecuredPutMetrics }
 
 export default function OptionsStrategyVisualizer({
+  layout = 'inline',
+  putCreditSpreadLabel = 'Put credit spread (PCS)',
   strategyKind,
   onStrategyKindChange,
   selectedExpiration,
@@ -197,13 +246,16 @@ export default function OptionsStrategyVisualizer({
   spot,
   pricePaneHeight,
   fullHeight,
+  belowPaneHeight,
   strikeCoordinates,
+  visiblePriceRange = null,
   priceMin,
   priceMax,
   shortStrike,
   longStrike,
 }: OptionsStrategyVisualizerProps) {
-  const hasScale = priceMin != null && priceMax != null && priceMax > priceMin
+  const fallbackPriceRange =
+    priceMin != null && priceMax != null && priceMax > priceMin ? { min: priceMin, max: priceMax } : null
 
   const putRows = useMemo(
     () =>
@@ -334,10 +386,13 @@ export default function OptionsStrategyVisualizer({
 
   /** Same vertical scale as Options OI strike rows: compress chart Y into the lane below the header band. */
   const yForPrice = (price: number): number | null => {
-    const coordinate = strikeCoordinates[String(price)]
-    let chartY: number | null = null
-    if (Number.isFinite(coordinate)) chartY = clamp(coordinate as number, 0, pricePaneHeight)
-    else if (hasScale) chartY = clamp(((priceMax! - price) / (priceMax! - priceMin!)) * pricePaneHeight, 0, pricePaneHeight)
+    const chartY = resolveStrikeChartY({
+      strike: price,
+      pricePaneHeight,
+      strikeCoordinates,
+      visiblePriceRange,
+      fallbackPriceRange,
+    })
     if (chartY == null) return null
     return chartSpaceYToStrikeOverlayPx(chartY, pricePaneHeight)
   }
@@ -348,10 +403,14 @@ export default function OptionsStrategyVisualizer({
     const yHi = yForPrice(highK)
     if (yLo != null && yHi != null && lowK !== highK) {
       const t = (price - lowK) / (highK - lowK)
-      return clamp(yLo + t * (yHi - yLo), OPTIONS_STRIKE_OVERLAY_TOP_PX, pricePaneHeight)
+      return clamp(yLo + t * (yHi - yLo), 0, pricePaneHeight)
     }
-    if (!hasScale || priceMin == null || priceMax == null) return null
-    const chartY = clamp(((priceMax - price) / (priceMax - priceMin)) * pricePaneHeight, 0, pricePaneHeight)
+    if (!fallbackPriceRange) return null
+    const chartY = clamp(
+      ((fallbackPriceRange.max - price) / (fallbackPriceRange.max - fallbackPriceRange.min)) * pricePaneHeight,
+      0,
+      pricePaneHeight,
+    )
     return chartSpaceYToStrikeOverlayPx(chartY, pricePaneHeight)
   }
 
@@ -368,7 +427,7 @@ export default function OptionsStrategyVisualizer({
       knots.push({ price, y })
     }
     return knots
-  }, [active, strikeCoordinates, priceMin, priceMax, pricePaneHeight, hasScale])
+  }, [active, strikeCoordinates, visiblePriceRange, fallbackPriceRange, pricePaneHeight])
 
   const cspScreenKnots = useMemo(() => {
     if (active?.kind !== 'cash_secured_put') return null
@@ -380,9 +439,10 @@ export default function OptionsStrategyVisualizer({
       knots.push({ price, y })
     }
     return knots
-  }, [active, strikeCoordinates, priceMin, priceMax, pricePaneHeight, hasScale])
+  }, [active, strikeCoordinates, visiblePriceRange, fallbackPriceRange, pricePaneHeight])
 
-  const graphWidth = 152
+  // Graph spans left inset → metrics rail (300px column − 12px sides − 118px cards).
+  const graphWidth = 300 - 12 - 118 - 12
   const xCenter = graphWidth / 2
 
   const maxLossVal =
@@ -406,6 +466,19 @@ export default function OptionsStrategyVisualizer({
           0,
           graphWidth,
         )
+
+  /** Sloped leg: X linear in strike (straight 320P→390P line), Y aligned to chart price scale. */
+  const verticalSpreadScreenAt = (
+    price: number,
+    lowStrike: number,
+    highStrike: number,
+  ): { x: number; y: number } | null => {
+    const y = yLineBetweenStrikesAsc(price, lowStrike, highStrike)
+    if (y == null) return null
+    const x = mapSlopedSpreadScreenX(price, lowStrike, highStrike, 0, graphWidth)
+    return { x, y }
+  }
+
 
   const slopedKnots: PayoffPoint[] = useMemo(() => {
     if (active?.kind === 'put_credit_spread') {
@@ -456,12 +529,30 @@ export default function OptionsStrategyVisualizer({
     return null
   }
 
+  const payoffScreenAt = (point: PayoffPoint): { x: number; y: number } | null => {
+    if (active?.kind === 'put_credit_spread') {
+      const m = active.m
+      return verticalSpreadScreenAt(point.price, m.longStrike, m.shortStrike)
+    }
+    if (active?.kind === 'bear_put_spread') {
+      const m = active.m
+      return verticalSpreadScreenAt(point.price, m.shortStrike, m.longStrike)
+    }
+    if (active?.kind === 'bear_call_spread') {
+      const m = active.m
+      return verticalSpreadScreenAt(point.price, m.shortStrike, m.longStrike)
+    }
+    const y = yForPathPoint(point.price)
+    if (y == null) return null
+    return { x: xForPnL(point.profitLoss), y }
+  }
+
   const pathForSegment = (points: PayoffPoint[]) =>
     points
       .map((point, index) => {
-        const y = yForPathPoint(point.price)
-        if (y == null) return null
-        return `${index === 0 ? 'M' : 'L'} ${xForPnL(point.profitLoss).toFixed(2)} ${y.toFixed(2)}`
+        const screen = payoffScreenAt(point)
+        if (screen == null) return null
+        return `${index === 0 ? 'M' : 'L'} ${screen.x.toFixed(2)} ${screen.y.toFixed(2)}`
       })
       .filter(Boolean)
       .join(' ')
@@ -478,6 +569,7 @@ export default function OptionsStrategyVisualizer({
           pricePaneHeight,
           xForPnL,
           yForPathPoint,
+          payoffScreenAt,
         )
       : null
   const profitFillPath =
@@ -488,26 +580,9 @@ export default function OptionsStrategyVisualizer({
           graphWidth,
           xForPnL,
           yForPathPoint,
+          payoffScreenAt,
         )
       : null
-
-  const shortLegY =
-    strategyKind === 'bear_call_spread' && shortStrike != null
-      ? yForPrice(shortStrike)
-      : (strategyKind === 'put_credit_spread' ||
-            strategyKind === 'bear_put_spread' ||
-            strategyKind === 'cash_secured_put') &&
-          shortStrike != null
-        ? yForPrice(shortStrike)
-        : null
-  const longLegY =
-    strategyKind === 'bear_call_spread' && longStrike != null
-      ? yForPrice(longStrike)
-      : (strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread') && longStrike != null
-        ? yForPrice(longStrike)
-        : null
-  const callStrikeY = strategyKind === 'long_call' && longStrike != null ? yForPrice(longStrike) : null
-  const cspStrikeY = strategyKind === 'cash_secured_put' && shortStrike != null ? yForPrice(shortStrike) : null
 
   const breakEvenY =
     active?.kind === 'put_credit_spread'
@@ -520,6 +595,11 @@ export default function OptionsStrategyVisualizer({
           : active?.kind === 'cash_secured_put' && cspScreenKnots
             ? yAlongPriceKnotPolyline(active.m.breakEven, cspScreenKnots) ?? yForPrice(active.m.breakEven)
             : null
+
+  const breakEvenScreen =
+    active != null && breakEvenY != null && 'breakEven' in active.m
+      ? payoffScreenAt({ price: active.m.breakEven, profitLoss: 0 })
+      : null
 
   const subtitleLabel =
     strategyKind === 'put_credit_spread'
@@ -544,7 +624,7 @@ export default function OptionsStrategyVisualizer({
 
   const strategyTitle =
     strategyKind === 'put_credit_spread'
-      ? 'Put credit spread (PCS)'
+      ? putCreditSpreadLabel
       : strategyKind === 'bear_put_spread'
         ? 'Bear put spread'
         : strategyKind === 'bear_call_spread'
@@ -614,12 +694,12 @@ export default function OptionsStrategyVisualizer({
 
   const footerLine =
     strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread'
-      ? `Short leg: ${formatMoney(shortPutRow?.putQuote?.mid)} · Long leg: ${formatMoney(longPutRow?.putQuote?.mid)}`
+      ? `Short leg: ${formatMoney(getPutNaturalSell(shortPutRow))} · Long leg: ${formatMoney(getPutNaturalBuy(longPutRow))}`
       : strategyKind === 'bear_call_spread'
-        ? `Short call: ${formatMoney(shortCallRow?.callQuote?.mid)} · Long call: ${formatMoney(longCallRow?.callQuote?.mid)}`
+        ? `Short call: ${formatMoney(getCallNaturalSell(shortCallRow))} · Long call: ${formatMoney(getCallNaturalBuy(longCallRow))}`
         : strategyKind === 'cash_secured_put'
-          ? `Put premium: ${formatMoney(shortPutRow?.putQuote?.mid)}`
-          : `Call premium: ${formatMoney(longCallRow?.callQuote?.mid)}`
+          ? `Put premium: ${formatMoney(getPutNaturalSell(shortPutRow))}`
+          : `Call premium: ${formatMoney(getCallNaturalBuy(longCallRow))}`
 
   const emptyMessage =
     strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread'
@@ -630,10 +710,17 @@ export default function OptionsStrategyVisualizer({
           ? 'Need a put strike with live bid/ask (drag chip in OI rail).'
           : 'Need a call strike with live bid/ask and open interest (drag chip in OI rail).'
 
+  const visualizerClassName =
+    layout === 'stacked'
+      ? 'flex h-full max-h-full w-full flex-col overflow-hidden border-t border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:border-l-0'
+      : 'hidden w-[300px] self-stretch border-l border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:flex xl:h-full xl:max-h-full xl:flex-col xl:overflow-hidden'
+
+  const belowLaneHeight = belowPaneHeight ?? Math.max(0, fullHeight - pricePaneHeight)
+
   return (
     <aside
-      className="hidden w-[300px] self-stretch border-l border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:flex xl:flex-col"
-      style={{ minHeight: fullHeight }}
+      className={visualizerClassName}
+      style={{ height: fullHeight, maxHeight: fullHeight }}
       aria-label="Options strategy visualizer"
     >
       <div className="relative shrink-0 overflow-hidden border-b border-slate-800" style={{ height: pricePaneHeight }}>
@@ -648,7 +735,7 @@ export default function OptionsStrategyVisualizer({
               value={strategyKind}
               onChange={(e) => onStrategyKindChange(e.target.value as VisualizerStrategyId)}
             >
-              <option value="put_credit_spread">Put credit spread (PCS)</option>
+              <option value="put_credit_spread">{putCreditSpreadLabel}</option>
               <option value="bear_put_spread">Bear put spread</option>
               <option value="bear_call_spread">Bear call spread</option>
               <option value="long_call">Long call</option>
@@ -683,7 +770,7 @@ export default function OptionsStrategyVisualizer({
               )}
               {breakEvenY != null && (
                 <circle
-                  cx={xCenter}
+                  cx={breakEvenScreen?.x ?? xCenter}
                   cy={breakEvenY}
                   r={4}
                   fill="rgba(15, 23, 42, 0.9)"
@@ -694,59 +781,6 @@ export default function OptionsStrategyVisualizer({
               {lossPath && <path d={lossPath} fill="none" stroke="rgb(244, 63, 94)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
               {profitPath && <path d={profitPath} fill="none" stroke="rgb(34, 197, 94)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
             </svg>
-
-            {(strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread') &&
-              shortLegY != null &&
-              shortStrike != null && (
-                <div
-                  className="absolute left-2 z-10 -translate-y-1/2 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200"
-                  style={{ top: shortLegY }}
-                >
-                  short {formatStrike(shortStrike)}P
-                </div>
-              )}
-            {(strategyKind === 'put_credit_spread' || strategyKind === 'bear_put_spread') &&
-              longLegY != null &&
-              longStrike != null && (
-                <div
-                  className="absolute right-2 z-10 -translate-y-1/2 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[10px] text-rose-200"
-                  style={{ top: longLegY }}
-                >
-                  long {formatStrike(longStrike)}P
-                </div>
-              )}
-            {strategyKind === 'bear_call_spread' && shortLegY != null && shortStrike != null && (
-              <div
-                className="absolute left-2 z-10 -translate-y-1/2 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-100"
-                style={{ top: shortLegY }}
-              >
-                short {formatStrike(shortStrike)}C
-              </div>
-            )}
-            {strategyKind === 'bear_call_spread' && longLegY != null && longStrike != null && (
-              <div
-                className="absolute left-2 z-10 -translate-y-1/2 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 font-mono text-[10px] text-violet-100"
-                style={{ top: longLegY }}
-              >
-                long {formatStrike(longStrike)}C
-              </div>
-            )}
-            {strategyKind === 'cash_secured_put' && cspStrikeY != null && shortStrike != null && (
-              <div
-                className="absolute right-2 z-10 -translate-y-1/2 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-0.5 font-mono text-[10px] text-rose-200"
-                style={{ top: cspStrikeY }}
-              >
-                short {formatStrike(shortStrike)}P
-              </div>
-            )}
-            {strategyKind === 'long_call' && callStrikeY != null && (
-              <div
-                className="absolute left-2 z-10 -translate-y-1/2 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-200"
-                style={{ top: callStrikeY }}
-              >
-                long {formatStrike(longStrike)}C
-              </div>
-            )}
 
             <div className="absolute right-3 top-20 z-10 w-[118px] space-y-1.5">
               {metricsCards.map((row) => {
@@ -760,6 +794,10 @@ export default function OptionsStrategyVisualizer({
                 )
               })}
             </div>
+
+            <div className="absolute inset-x-0 bottom-0 z-20 border-t border-slate-800/80 bg-slate-950/90 px-3 py-2 text-[11px] text-slate-500">
+              {footerLine}
+            </div>
           </>
         ) : (
           <div className="absolute inset-x-0 top-20 px-3 text-slate-500">
@@ -771,7 +809,13 @@ export default function OptionsStrategyVisualizer({
           </div>
         )}
       </div>
-      <div className="min-h-0 flex-1 border-t border-slate-800 bg-slate-950/80 px-3 py-3 text-[11px] text-slate-500">{footerLine}</div>
+      {belowLaneHeight > 0 ? (
+        <div
+          className="shrink-0 border-t border-slate-800 bg-slate-950/80"
+          style={{ height: belowLaneHeight }}
+          aria-hidden="true"
+        />
+      ) : null}
     </aside>
   )
 }

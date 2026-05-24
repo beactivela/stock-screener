@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import Layout from './components/Layout'
 import ErrorBoundary from './components/ErrorBoundary'
 import { ScanProvider } from './contexts/ScanContext'
@@ -25,14 +25,22 @@ function PageFallback() {
   )
 }
 
+/** Preserve query string when redirecting legacy /stock2 links to /stock. */
+function Stock2Redirect() {
+  const { ticker } = useParams<{ ticker: string }>()
+  const [searchParams] = useSearchParams()
+  const qs = searchParams.toString()
+  return <Navigate to={`/stock/${ticker}${qs ? `?${qs}` : ''}`} replace />
+}
+
 export default function App() {
   return (
     <ScanProvider>
       <BrowserRouter>
-        <Layout>
-          <ErrorBoundary>
-            <Suspense fallback={<PageFallback />}>
-              <Routes>
+        <ErrorBoundary>
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
+              <Route element={<Layout />}>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/industry" element={<Industry />} />
                 <Route path="/industry-tickers/:industryName" element={<IndustryTickers />} />
@@ -43,10 +51,11 @@ export default function App() {
                 <Route path="/experts" element={<StockcircleExperts />} />
                 <Route path="/experts/:slug" element={<StockcircleExpertDetail />} />
                 <Route path="/whalewisdom-filers/:slug" element={<WhalewisdomFilerDetail />} />
-              </Routes>
-            </Suspense>
-          </ErrorBoundary>
-        </Layout>
+              </Route>
+              <Route path="/stock2/:ticker" element={<Stock2Redirect />} />
+            </Routes>
+          </Suspense>
+        </ErrorBoundary>
       </BrowserRouter>
     </ScanProvider>
   )

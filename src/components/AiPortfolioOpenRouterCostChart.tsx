@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { ColorType, createChart, type HistogramData, type Time } from 'lightweight-charts'
+import { ColorType, createChart, HistogramSeries, type HistogramData, type Time } from 'lightweight-charts'
 
 export type OpenRouterDailyCostRow = {
   date: string
@@ -36,7 +36,7 @@ export function AiPortfolioOpenRouterCostChart({ rows }: Props) {
     })
     chartRef.current = chart
 
-    const series = chart.addHistogramSeries({
+    const series = chart.addSeries(HistogramSeries, {
       color: '#38bdf8',
       priceFormat: {
         type: 'custom',

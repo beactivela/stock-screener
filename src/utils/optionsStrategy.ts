@@ -143,6 +143,20 @@ export function pickOptionMid(quote: OptionQuoteInput): number | null {
   return last != null && last > 0 ? roundCurrency(last) : null
 }
 
+/** Natural sell fill: bid when available (TradeVision-style credit on short legs). */
+export function pickOptionBid(quote: OptionQuoteInput): number | null {
+  const bid = toFiniteNumber(quote.bid)
+  if (bid != null && bid > 0) return roundCurrency(bid)
+  return pickOptionMid(quote)
+}
+
+/** Natural buy fill: ask when available (TradeVision-style debit on long legs). */
+export function pickOptionAsk(quote: OptionQuoteInput): number | null {
+  const ask = toFiniteNumber(quote.ask)
+  if (ask != null && ask > 0) return roundCurrency(ask)
+  return pickOptionMid(quote)
+}
+
 export function calculatePutCreditSpreadMetrics({
   shortPut,
   longPut,
@@ -152,8 +166,8 @@ export function calculatePutCreditSpreadMetrics({
 }): PutCreditSpreadMetrics | null {
   const shortStrike = toFiniteNumber(shortPut.strike)
   const longStrike = toFiniteNumber(longPut.strike)
-  const shortPremium = pickOptionMid(shortPut)
-  const longPremium = pickOptionMid(longPut)
+  const shortPremium = pickOptionBid(shortPut)
+  const longPremium = pickOptionAsk(longPut)
   if (shortStrike == null || longStrike == null || shortPremium == null || longPremium == null) return null
   if (shortStrike <= longStrike) return null
 
@@ -198,7 +212,7 @@ export function calculateLongCallMetrics({
   priceMax: number | null
 }): LongCallMetrics | null {
   const strike = toFiniteNumber(call.strike)
-  const premium = pickOptionMid(call)
+  const premium = pickOptionAsk(call)
   if (strike == null || premium == null || premium <= 0) return null
 
   const maxLoss = roundCurrency(premium * CONTRACT_MULTIPLIER)
@@ -239,8 +253,8 @@ export function calculateBearPutSpreadMetrics({
 }): BearPutSpreadMetrics | null {
   const shortStrike = toFiniteNumber(shortPut.strike)
   const longStrike = toFiniteNumber(longPut.strike)
-  const shortPremium = pickOptionMid(shortPut)
-  const longPremium = pickOptionMid(longPut)
+  const shortPremium = pickOptionBid(shortPut)
+  const longPremium = pickOptionAsk(longPut)
   if (shortStrike == null || longStrike == null || shortPremium == null || longPremium == null) return null
   if (longStrike <= shortStrike) return null
 
@@ -277,8 +291,8 @@ export function calculateBearCallSpreadMetrics({
 }): BearCallSpreadMetrics | null {
   const shortStrike = toFiniteNumber(shortCall.strike)
   const longStrike = toFiniteNumber(longCall.strike)
-  const shortPremium = pickOptionMid(shortCall)
-  const longPremium = pickOptionMid(longCall)
+  const shortPremium = pickOptionBid(shortCall)
+  const longPremium = pickOptionAsk(longCall)
   if (shortStrike == null || longStrike == null || shortPremium == null || longPremium == null) return null
   if (longStrike <= shortStrike) return null
 
@@ -321,7 +335,7 @@ export function calculateCashSecuredPutMetrics({
   priceMax: number | null
 }): CashSecuredPutMetrics | null {
   const strike = toFiniteNumber(shortPut.strike)
-  const premium = pickOptionMid(shortPut)
+  const premium = pickOptionBid(shortPut)
   if (strike == null || premium == null || premium <= 0) return null
 
   const maxProfit = roundCurrency(premium * CONTRACT_MULTIPLIER)
@@ -507,6 +521,58 @@ export function filterBullPutSpreadSlopeCurve(
     .sort((a, b) => a.price - b.price)
 }
 
+/**
+ * Map payoff-graph X linearly in strike price between endpoint strikes.
+ * TradeVision draws the sloped bull-put leg as one straight screen segment; using xForSymmetricPayoffPnL(P&L(price))
+ * at each knot kinks the line at breakeven when maxLoss ≠ maxProfit.
+ */
+export function mapSlopedSpreadScreenX(
+  price: number,
+  lowStrike: number,
+  highStrike: number,
+  xAtLowStrike: number,
+  xAtHighStrike: number,
+): number {
+  const span = highStrike - lowStrike
+  if (!Number.isFinite(span) || span <= 0) return xAtLowStrike
+  const t = clampNumber((price - lowStrike) / span, 0, 1)
+  return xAtLowStrike + t * (xAtHighStrike - xAtLowStrike)
+}
+
+/**
+ * Map strike → X with equal-width loss/profit halves: low → 0, breakeven → width/2, high → width.
+ * Keeps Y aligned to chart strikes while red/green fill bands share the same horizontal span.
+ */
+export function mapSlopedSpreadScreenXWithCenterBreakeven(
+  price: number,
+  lowStrike: number,
+  breakEvenStrike: number,
+  highStrike: number,
+  width: number,
+): number {
+  const half = width / 2
+  if (!Number.isFinite(width) || width <= 0) return half
+  if (lowStrike >= highStrike) return half
+  if (price <= breakEvenStrike) {
+    const span = breakEvenStrike - lowStrike
+    if (!Number.isFinite(span) || span <= 0) return 0
+    return half * clampNumber((price - lowStrike) / span, 0, 1)
+  }
+  const span = highStrike - breakEvenStrike
+  if (!Number.isFinite(span) || span <= 0) return width
+  return half + half * clampNumber((price - breakEvenStrike) / span, 0, 1)
+}
+
+/** True when three screen points share one line (cross-product ≈ 0). */
+export function slopedSpreadScreenPointsCollinear(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+): boolean {
+  const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+  return Math.abs(cross) < 1e-6
+}
+
 /** Expiry payoff on the sloped leg is linear in S between long and short strikes — three knots are exact. */
 export function buildBullPutSpreadSlopedSegmentKnots({
   longStrike,
@@ -648,3 +714,31 @@ export function estimateBearCallChanceOfProfit({
 export const estimateCashSecuredPutChanceOfProfit = estimateBullPutChanceOfProfit
 
 export const estimateLongCallChanceOfProfit = estimateChancePriceAboveAtExpiry
+
+function svgPathFmt(n: number): string {
+  return n.toFixed(2)
+}
+
+/**
+ * Closed SVG path for the loss zone: trace the loss polyline, then close along the pane bottom
+ * between endpoints. Avoids a full-width bottom rectangle up to breakeven X (which over-fills
+ * above the sloped red leg).
+ */
+export function buildLossFillPathBelowPolyline(
+  screenPoints: Array<{ x: number; y: number }>,
+  paneHeight: number,
+): string | null {
+  if (screenPoints.length < 2) return null
+  const first = screenPoints[0]
+  const last = screenPoints[screenPoints.length - 1]
+  const parts = [`M ${svgPathFmt(first.x)} ${svgPathFmt(first.y)}`]
+  for (let i = 1; i < screenPoints.length; i += 1) {
+    parts.push(`L ${svgPathFmt(screenPoints[i].x)} ${svgPathFmt(screenPoints[i].y)}`)
+  }
+  parts.push(
+    `L ${svgPathFmt(last.x)} ${svgPathFmt(paneHeight)}`,
+    `L ${svgPathFmt(first.x)} ${svgPathFmt(paneHeight)}`,
+    'Z',
+  )
+  return parts.join(' ')
+}

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildLineSeriesWithTimeline, vcpStage2Indicator } from './chartIndicators.ts'
+import { buildLineSeriesWithTimeline, buildPaddedIndicatorSeries, rsi, vcpStage2Indicator } from './chartIndicators.ts'
 
 function buildBarsFromCloses(closes) {
   const startTime = new Date('2024-01-01T00:00:00Z').getTime()
@@ -84,4 +84,53 @@ test('buildLineSeriesWithTimeline can replace null warmup values with a numeric 
   assert.deepEqual(series[1], { time: Math.floor(bars[1].t / 1000), value: 0 })
   assert.deepEqual(series[2], { time: Math.floor(bars[2].t / 1000), value: 1 })
   assert.deepEqual(series[3], { time: Math.floor(bars[3].t / 1000), value: 0 })
+})
+
+test('buildPaddedIndicatorSeries keeps one point per bar for stacked chart alignment', () => {
+  const bars = buildBarsFromCloses(Array.from({ length: 20 }, (_, index) => 100 + index))
+  const toTime = (t) => Math.floor(t / 1000)
+  const values = Array.from({ length: bars.length }, (_, index) => (index < 14 ? null : 50 + index))
+  const series = buildPaddedIndicatorSeries(bars, values, toTime)
+
+  assert.equal(series.length, bars.length)
+  assert.equal(series[0].time, toTime(bars[0].t))
+  assert.equal(series[13].time, toTime(bars[13].t))
+  assert.equal(series[13].value, series[14].value)
+  assert.equal(series.at(-1).value, 50 + bars.length - 1)
+})
+
+test('rsi matches Wilder smoothing reference values', () => {
+  const closes = [
+    44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.1,
+    45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28,
+    46.28, 46, 46.03, 46.41, 46.22, 45.64, 46.21,
+  ]
+  const actual = rsi(closes, 14)
+  const expected = [
+    null, null, null, null, null, null, null,
+    null, null, null, null, null, null, null,
+    70.464135, 66.249619, 66.480942, 69.346853, 66.294713, 57.915021, 62.880718,
+  ]
+
+  assert.equal(actual.length, expected.length)
+  expected.forEach((value, index) => {
+    if (value == null) {
+      assert.equal(actual[index], null)
+      return
+    }
+    assert.ok(actual[index] != null, `expected RSI at index ${index}`)
+    assert.ok(Math.abs(actual[index] - value) < 0.0005, `RSI mismatch at index ${index}`)
+  })
+})
+
+test('rsi keeps Wilder smoothing memory after large single-bar move', () => {
+  const closes = [
+    100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+    110, 111, 112, 113, 114, 95, 96, 97, 98, 99, 100,
+  ]
+  const values = rsi(closes, 14)
+  assert.equal(values[14], 100)
+  assert.ok(values[15] < 50, 'single large down bar should reset RSI sharply')
+  assert.ok(values[16] > values[15], 'subsequent gains should recover RSI gradually')
+  assert.ok(values[16] < 50, 'Wilder smoothing should not snap back immediately')
 })

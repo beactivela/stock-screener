@@ -128,10 +128,9 @@ export const OPTIONS_STRIKE_OVERLAY_TOP_PX = 102
 /**
  * Map Lightweight Charts `ISeriesApi.priceToCoordinate` Y (0 = top of pane, `pricePaneHeight` = bottom)
  * to `top` / `cy` inside any column that shares the OI rail’s strike lane (OI rows, PCS graph, leg labels).
+ * Uses the full price-pane height so rows line up with the chart Y axis (headers overlay above).
  */
 export function chartSpaceYToStrikeOverlayPx(chartY: number, pricePaneHeight: number): number {
   const h = Math.max(1, pricePaneHeight)
-  const clamped = Math.max(0, Math.min(h, chartY))
-  const laneH = Math.max(1, h - OPTIONS_STRIKE_OVERLAY_TOP_PX)
-  return OPTIONS_STRIKE_OVERLAY_TOP_PX + (clamped / h) * laneH
+  return Math.max(0, Math.min(h, chartY))
 }

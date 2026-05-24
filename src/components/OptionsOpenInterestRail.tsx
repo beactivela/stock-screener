@@ -5,20 +5,24 @@ import {
   chartSpaceYToStrikeOverlayPx,
   formatExpirationDropdownLabel,
   formatOpenInterest,
-  OPTIONS_STRIKE_OVERLAY_TOP_PX,
   type OptionsOpenInterestExpiration,
   type OptionsOpenInterestStrike,
 } from '../utils/optionsOpenInterest'
+import { resolveStrikeChartY, type StrikePriceBounds } from '../utils/optionStrikeChartSync'
 import type { VisualizerStrategyId } from '../utils/optionsStrategy'
 
 interface OptionsOpenInterestRailProps {
+  layout?: 'inline' | 'stacked'
   expirations: OptionsOpenInterestExpiration[]
   selectedExpiration: string | null
   strikes: OptionsOpenInterestStrike[]
   spot: number | null
   pricePaneHeight: number
   fullHeight: number
+  /** Fixed height under the strike lane (RSI band when indicators are on). Prevents side columns from stretching the grid. */
+  belowPaneHeight?: number
   strikeCoordinates: Record<string, number>
+  visiblePriceRange?: StrikePriceBounds | null
   priceMin: number | null
   priceMax: number | null
   loading?: boolean
@@ -43,13 +47,16 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export default function OptionsOpenInterestRail({
+  layout = 'inline',
   expirations,
   selectedExpiration,
   strikes,
   spot,
   pricePaneHeight,
   fullHeight,
+  belowPaneHeight,
   strikeCoordinates,
+  visiblePriceRange = null,
   priceMin,
   priceMax,
   loading = false,
@@ -65,34 +72,36 @@ export default function OptionsOpenInterestRail({
   /** Strike rows + chips live here; pointer Y is mapped in this box so it matches chart `strikeCoordinates`. */
   const strikeLaneRef = useRef<HTMLDivElement | null>(null)
   const selected = expirations.find((expiration) => expiration.date === selectedExpiration)
-  const hasScale = priceMin != null && priceMax != null && priceMax > priceMin
+  const fallbackPriceRange =
+    priceMin != null && priceMax != null && priceMax > priceMin ? { min: priceMin, max: priceMax } : null
   const pricedPutRows = [...strikes]
     .filter((row) => row.putQuote?.mid != null && row.putQuote.mid > 0)
     .sort((a, b) => a.strike - b.strike)
   const pricedCallRows = [...strikes]
     .filter((row) => row.callQuote?.mid != null && row.callQuote.mid > 0)
     .sort((a, b) => a.strike - b.strike)
-  const laneHeight = Math.max(1, pricePaneHeight - OPTIONS_STRIKE_OVERLAY_TOP_PX)
 
   /** Chart-space Y [0, pricePaneHeight] for nearest-strike math (same space as `strikeCoordinates`). */
   const chartYFromClientY = (clientY: number): number | null => {
-    const lane = strikeLaneRef.current
-    if (!lane) return null
-    const rect = lane.getBoundingClientRect()
+    const pane = strikeLaneRef.current
+    if (!pane) return null
+    const rect = pane.getBoundingClientRect()
     if (rect.height <= 1) return null
-    const yInLane = clamp(clientY - rect.top, 0, rect.height)
-    return (yInLane / rect.height) * pricePaneHeight
+    return clamp(clientY - rect.top, 0, pricePaneHeight)
   }
 
-  /** Position inside the strike lane (px from lane top) so rows line up with chart coordinates. */
+  /** `top` on the shared price pane — same pixel Y as the lightweight chart. */
   const laneTopPxForChartY = (chartY: number): number =>
-    clamp(chartSpaceYToStrikeOverlayPx(chartY, pricePaneHeight) - OPTIONS_STRIKE_OVERLAY_TOP_PX, 0, laneHeight)
+    clamp(chartSpaceYToStrikeOverlayPx(chartY, pricePaneHeight), 0, pricePaneHeight)
 
   const yPxForStrike = (strike: number): number | null => {
-    const coordinate = strikeCoordinates[String(strike)]
-    if (Number.isFinite(coordinate)) return clamp(coordinate, 0, pricePaneHeight)
-    if (!hasScale) return null
-    return clamp(((priceMax - strike) / (priceMax - priceMin)) * pricePaneHeight, 0, pricePaneHeight)
+    return resolveStrikeChartY({
+      strike,
+      pricePaneHeight,
+      strikeCoordinates,
+      visiblePriceRange,
+      fallbackPriceRange,
+    })
   }
 
   /** PCS: short above long; bear put: short (lower K) below long — candidate filters differ. */
@@ -264,24 +273,27 @@ export default function OptionsOpenInterestRail({
   }
   const railRows = buildOpenInterestBarRows({ strikes, spot, maxRows: null })
     .map((row) => {
-      const coordinate = strikeCoordinates[String(row.strike)]
-      if (Number.isFinite(coordinate)) {
-        return { ...row, laneTopPx: laneTopPxForChartY(coordinate as number) }
-      }
-      if (!hasScale) return { ...row, laneTopPx: null as number | null }
-      const chartY = ((priceMax - row.strike) / (priceMax - priceMin)) * pricePaneHeight
-      const laneTopPx = laneTopPxForChartY(chartY)
-      return { ...row, laneTopPx: clamp(laneTopPx, 2, laneHeight - 2) }
+      const chartY = yPxForStrike(row.strike)
+      if (chartY == null) return { ...row, laneTopPx: null as number | null }
+      const paneTopPx = laneTopPxForChartY(chartY)
+      return { ...row, laneTopPx: clamp(paneTopPx, 2, pricePaneHeight - 2) }
     })
-    .filter((row) => row.laneTopPx == null || (row.laneTopPx >= 0 && row.laneTopPx <= laneHeight))
+    .filter((row) => row.laneTopPx == null || (row.laneTopPx >= 0 && row.laneTopPx <= pricePaneHeight))
+
+  const railClassName =
+    layout === 'stacked'
+      ? 'flex h-full max-h-full w-full flex-col overflow-hidden border-t border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:border-l-0'
+      : 'hidden w-[250px] self-stretch border-l border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:flex xl:h-full xl:max-h-full xl:flex-col xl:overflow-hidden'
+
+  const belowLaneHeight = belowPaneHeight ?? Math.max(0, fullHeight - pricePaneHeight)
 
   return (
     <aside
-      className="hidden w-[250px] self-stretch border-l border-slate-800 bg-slate-950/95 text-xs text-slate-300 xl:flex xl:flex-col"
-      style={{ minHeight: fullHeight }}
+      className={railClassName}
+      style={{ height: fullHeight, maxHeight: fullHeight }}
       aria-label="Options open interest by strike"
     >
-      <div className="relative shrink-0 border-b border-slate-800" style={{ height: pricePaneHeight }}>
+      <div ref={strikeLaneRef} className="relative shrink-0 border-b border-slate-800" style={{ height: pricePaneHeight }}>
         <div className="absolute inset-x-0 top-0 z-10 border-b border-slate-800 bg-slate-950/95 px-2 py-2">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="font-semibold text-slate-200">Options OI</span>
@@ -315,14 +327,13 @@ export default function OptionsOpenInterestRail({
           <div className="p-3 text-slate-500">Loading OI...</div>
         ) : railRows.length > 0 ? (
           <>
-            <div ref={strikeLaneRef} className="absolute inset-x-0 bottom-0 z-[5]" style={{ top: OPTIONS_STRIKE_OVERLAY_TOP_PX }}>
             {railRows.map((row) => {
               const topStyle =
                 row.laneTopPx == null ? undefined : { top: `${row.laneTopPx}px` }
               const rowClassName =
                 row.laneTopPx == null
                   ? 'relative grid grid-cols-[1fr_42px_1fr] items-center gap-1 px-2 py-1'
-                  : 'absolute left-0 right-0 grid -translate-y-1/2 grid-cols-[1fr_42px_1fr] items-center gap-1 px-2'
+                  : 'absolute left-0 right-0 z-[5] grid -translate-y-1/2 grid-cols-[1fr_42px_1fr] items-center gap-1 px-2'
               return (
                 <div
                   key={row.strike}
@@ -580,13 +591,16 @@ export default function OptionsOpenInterestRail({
                   </button>
                 )
               })()}
-            </div>
           </>
         ) : (
           <div className="p-3 text-slate-500">{message || 'No useful open interest data'}</div>
         )}
       </div>
-      <div className="min-h-0 flex-1 border-t border-slate-800 bg-slate-950/80" aria-hidden="true" />
+      <div
+        className="shrink-0 border-t border-slate-800 bg-slate-950/80"
+        style={{ height: belowLaneHeight }}
+        aria-hidden="true"
+      />
     </aside>
   )
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ColorType, createChart } from 'lightweight-charts'
+import { CandlestickSeries, ColorType, createChart, LineSeries } from 'lightweight-charts'
 import { API_BASE } from '../utils/api'
 import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
@@ -203,7 +203,7 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
       rightPriceScale: { borderColor: '#334155', scaleMargins: { top: 0.1, bottom: 0.15 } },
     })
 
-    const candles = chart.addCandlestickSeries({
+    const candles = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e',
       downColor: '#ef4444',
       wickUpColor: '#22c55e',
@@ -212,9 +212,9 @@ function MarketIndexCard({ config }: { config: IndexConfig }) {
     })
     candles.setData(candleData as any)
 
-    const ma10Series = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma20Series = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma50Series = chart.addLineSeries({ color: '#a78bfa', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma10Series = chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma20Series = chart.addSeries(LineSeries, { color: '#38bdf8', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma50Series = chart.addSeries(LineSeries, { color: '#a78bfa', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
     ma10Series.setData(ma10Data as any)
     ma20Series.setData(ma20Data as any)
     ma50Series.setData(ma50Data as any)

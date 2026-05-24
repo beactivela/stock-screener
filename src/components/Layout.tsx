@@ -1,21 +1,18 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 import TickerSearch from './TickerSearch'
 import DeployUpdateControl from './DeployUpdateControl'
 import { API_BASE } from '../utils/api'
 const LazyMinerviniChat = lazy(() => import('./MinerviniChat'))
-
-interface LayoutProps {
-  children: React.ReactNode
-}
 
 type YahooFetchBanner =
   | { state: 'loading' }
   | { state: 'ok'; at: string; formatted: string }
   | { state: 'error'; message: string }
 
-export default function Layout({ children }: LayoutProps) {
+export default function Layout() {
   const location = useLocation()
+  const isStockChartPage = /^\/stock\/[^/]+/.test(location.pathname)
   const [chatReady, setChatReady] = useState(false)
   const [yahooFetch, setYahooFetch] = useState<YahooFetchBanner>({ state: 'loading' })
 
@@ -118,7 +115,15 @@ export default function Layout({ children }: LayoutProps) {
           </div>
         </div>
       </header>
-      <main className="w-[90%] max-w-full mx-auto px-4 py-8 overflow-x-scroll">{children}</main>
+      <main
+        className={
+          isStockChartPage
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden w-full max-w-none mx-0 px-0 py-0'
+            : 'w-[90%] max-w-full mx-auto px-4 py-8 overflow-x-scroll'
+        }
+      >
+        <Outlet />
+      </main>
       {/* Chat widget lives outside the main content flow so it overlays everything */}
       {chatReady ? (
         <Suspense fallback={null}>

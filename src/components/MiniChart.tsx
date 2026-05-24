@@ -3,7 +3,7 @@
  * Used on the "Tickers by industry" page next to each ticker row.
  */
 import { useEffect, useRef, useState } from 'react'
-import { createChart, ColorType } from 'lightweight-charts'
+import { CandlestickSeries, ColorType, createChart, HistogramSeries, LineSeries } from 'lightweight-charts'
 import { sma } from '../utils/chartIndicators'
 import { API_BASE } from '../utils/api'
 
@@ -131,14 +131,14 @@ export default function MiniChart({ ticker, loadWhenVisible = false }: MiniChart
           rightPriceScale: { borderColor: '#334155', minimumWidth: 40 },
         })
 
-        const candle = chart.addCandlestickSeries({
+        const candle = chart.addSeries(CandlestickSeries, {
           upColor: '#22c55e',
           downColor: '#ef4444',
           borderVisible: false,
         })
         candle.setData(candleData)
 
-        const volumeSeries = chart.addHistogramSeries({
+        const volumeSeries = chart.addSeries(HistogramSeries, {
           priceFormat: { type: 'volume' },
           priceScaleId: '',
         })
@@ -148,25 +148,25 @@ export default function MiniChart({ ticker, loadWhenVisible = false }: MiniChart
         })
         volumeSeries.setData(volumeData as any)
 
-        const ma10Series = chart.addLineSeries({
+        const ma10Series = chart.addSeries(LineSeries, {
           color: '#f59e0b',
           lineWidth: 1,
           lastValueVisible: false,
           priceLineVisible: false,
         })
-        const ma20Series = chart.addLineSeries({
+        const ma20Series = chart.addSeries(LineSeries, {
           color: '#3b82f6',
           lineWidth: 1,
           lastValueVisible: false,
           priceLineVisible: false,
         })
-        const ma50Series = chart.addLineSeries({
+        const ma50Series = chart.addSeries(LineSeries, {
           color: '#8b5cf6',
           lineWidth: 1,
           lastValueVisible: false,
           priceLineVisible: false,
         })
-        const ma150Series = chart.addLineSeries({
+        const ma150Series = chart.addSeries(LineSeries, {
           color: '#ec4899',
           lineWidth: 1,
           lastValueVisible: false,

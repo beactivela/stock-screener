@@ -23,9 +23,9 @@ describe('options open interest helpers', () => {
   it('maps chart price Y into the strike overlay band used by OI rail and strategy visualizer', () => {
     const h = 600
     assert.equal(OPTIONS_STRIKE_OVERLAY_TOP_PX, 102)
-    assert.equal(chartSpaceYToStrikeOverlayPx(0, h), 102)
+    assert.equal(chartSpaceYToStrikeOverlayPx(0, h), 0)
     assert.equal(chartSpaceYToStrikeOverlayPx(h, h), h)
-    assert.equal(chartSpaceYToStrikeOverlayPx(300, h), 102 + (300 / h) * (h - 102))
+    assert.equal(chartSpaceYToStrikeOverlayPx(300, h), 300)
   })
 
   it('keeps the most relevant strikes around spot and preserves price order descending', () => {

@@ -1,47 +1,19 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { API_BASE } from '../utils/api'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 /**
- * Compact ticker search for the header. On Evaluate, navigates to the stock detail page
- * which shows the full VCP evaluation.
+ * Compact ticker search for the header. Navigates to the stock chart workspace.
  */
 export default function TickerSearch() {
   const [tickerInput, setTickerInput] = useState('')
-  const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const evaluateTicker = () => {
     const sym = tickerInput.trim().toUpperCase()
     if (!sym) return
-    setLoading(true)
-    fetch(`${API_BASE}/api/vcp/${encodeURIComponent(sym)}`)
-      .then(async (r) => {
-        const text = await r.text()
-        let body: unknown = null
-        if (text.trim()) {
-          try {
-            body = JSON.parse(text)
-          } catch {
-            /* non-JSON */
-          }
-        }
-        if (!r.ok) {
-          const msg =
-            body && typeof body === 'object' && 'error' in body && typeof (body as { error: unknown }).error === 'string'
-              ? (body as { error: string }).error
-              : text.trim() || r.statusText
-          throw new Error(msg)
-        }
-        return body
-      })
-      .then(() => {
-        navigate(`/stock/${sym}`)
-      })
-      .catch((err) => {
-        alert(err instanceof Error ? err.message : 'Evaluation failed')
-      })
-      .finally(() => setLoading(false))
+    const qs = searchParams.toString()
+    navigate(qs ? `/stock/${sym}?${qs}` : `/stock/${sym}`)
   }
 
   return (
@@ -58,10 +30,10 @@ export default function TickerSearch() {
       <button
         type="button"
         onClick={evaluateTicker}
-        disabled={loading || !tickerInput.trim()}
+        disabled={!tickerInput.trim()}
         className="px-3 py-1.5 rounded-lg bg-sky-500 text-white text-sm font-medium hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 disabled:cursor-not-allowed disabled:bg-sky-500 disabled:hover:bg-sky-500"
       >
-        {loading ? '…' : 'Evaluate'}
+        Go
       </button>
     </div>
   )

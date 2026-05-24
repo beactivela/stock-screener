@@ -164,6 +164,23 @@ export function buildLineSeriesWithTimeline(
   })
 }
 
+/** Pad warmup nulls so indicator panes share the same bar timeline as price candles. */
+export function buildPaddedIndicatorSeries<TTime extends string | number>(
+  bars: Bar[],
+  values: Array<number | null | undefined>,
+  toTime: (t: number) => TTime,
+): Array<{ time: TTime; value: number }> {
+  const filtered = bars
+    .map((bar, index) => ({ time: toTime(bar.t), value: values[index] }))
+    .filter((point): point is { time: TTime; value: number } => point.value != null && !Number.isNaN(point.value))
+  if (filtered.length === 0) return []
+
+  const firstVal = filtered[0].value
+  const padCount = bars.length - filtered.length
+  const pad = bars.slice(0, padCount).map((bar) => ({ time: toTime(bar.t), value: firstVal }))
+  return [...pad, ...filtered]
+}
+
 function hasHigherHighsAndHigherLows(pullbacks: Pullback[]): boolean {
   if (pullbacks.length < 2) return false
   const prev = pullbacks[pullbacks.length - 2]
@@ -435,28 +452,30 @@ export function findVolumePriceBreakouts(bars: Bar[]): number[] {
 
 /** RSI (14-period default) using Wilder smoothing. Returns 0–100 or null for insufficient data. */
 export function rsi(closes: number[], period = 14): (number | null)[] {
-  const out: (number | null)[] = []
-  for (let i = 0; i < closes.length; i++) {
-    if (i < period) {
-      out.push(null)
-      continue
-    }
-    let sumGain = 0
-    let sumLoss = 0
-    for (let j = i - period + 1; j <= i; j++) {
-      const change = closes[j] - closes[j - 1]
-      if (change > 0) sumGain += change
-      else sumLoss += Math.abs(change)
-    }
-    const avgGain = sumGain / period
-    const avgLoss = sumLoss / period
-    if (avgLoss === 0) {
-      out.push(100)
-      continue
-    }
-    const rs = avgGain / avgLoss
-    out.push(100 - 100 / (1 + rs))
+  const out: (number | null)[] = new Array(closes.length).fill(null)
+  if (period < 1 || closes.length <= period) return out
+
+  let sumGain = 0
+  let sumLoss = 0
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1]
+    if (change > 0) sumGain += change
+    else sumLoss += Math.abs(change)
   }
+
+  let avgGain = sumGain / period
+  let avgLoss = sumLoss / period
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1]
+    const gain = change > 0 ? change : 0
+    const loss = change < 0 ? Math.abs(change) : 0
+    avgGain = ((avgGain * (period - 1)) + gain) / period
+    avgLoss = ((avgLoss * (period - 1)) + loss) / period
+    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+  }
+
   return out
 }
 

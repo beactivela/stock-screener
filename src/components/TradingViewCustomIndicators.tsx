@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { ColorType, createChart, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
+import { ColorType, createChart, LineSeries, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts'
 
 export interface CustomIndicatorPoint {
   time: number
@@ -126,16 +126,16 @@ export default function TradingViewCustomIndicators({
     })
     charts.push(rsiChart, vcpChart, stage2Chart)
 
-    const rsiSeries = rsiChart.addLineSeries({ color: '#06b6d4', lineWidth: 2, priceScaleId: 'left' })
+    const rsiSeries = rsiChart.addSeries(LineSeries, { color: '#06b6d4', lineWidth: 2, priceScaleId: 'left' })
     rsiSeries.setData(seriesData.rsi as any)
     rsiSeries.createPriceLine({ price: 70, color: '#5eead4', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Overbought' })
     rsiSeries.createPriceLine({ price: 30, color: '#5eead4', lineWidth: 1, lineStyle: 1, axisLabelVisible: true, title: 'Oversold' })
 
-    const vcpSeries = vcpChart.addLineSeries({ color: '#a855f7', lineWidth: 2, priceScaleId: 'left' })
+    const vcpSeries = vcpChart.addSeries(LineSeries, { color: '#a855f7', lineWidth: 2, priceScaleId: 'left' })
     vcpSeries.setData(seriesData.vcp as any)
     vcpSeries.createPriceLine({ price: 1, color: '#a855f7', lineWidth: 1, lineStyle: 1, axisLabelVisible: true })
 
-    const stage2Series = stage2Chart.addLineSeries({
+    const stage2Series = stage2Chart.addSeries(LineSeries, {
       color: '#22c55e',
       lineWidth: 2,
       lastValueVisible: false,

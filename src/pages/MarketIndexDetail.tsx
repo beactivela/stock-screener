@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ColorType, PriceScaleMode, createChart, type MouseEventParams, type Time } from 'lightweight-charts'
+import { CandlestickSeries, ColorType, createChart, HistogramSeries, LineSeries, PriceScaleMode, type MouseEventParams, type Time } from 'lightweight-charts'
 import { API_BASE } from '../utils/api'
 import { sma } from '../utils/chartIndicators'
 import { classifyMovingAverageRegime, type MarketRegimeLabel } from '../utils/marketRegime.js'
@@ -489,7 +489,7 @@ function MarketIndexChart({
         mode: PriceScaleMode.Normal,
       },
     })
-    const candles = chart.addCandlestickSeries({
+    const candles = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e',
       downColor: '#ef4444',
       wickUpColor: '#22c55e',
@@ -497,13 +497,13 @@ function MarketIndexChart({
       borderVisible: false,
     })
     candles.setData(candleData as any)
-    const ma10Series = chart.addLineSeries({ color: '#f59e0b', lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: '10 MA' })
-    const ma20Series = chart.addLineSeries({ color: '#38bdf8', lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: '20 MA' })
-    const ma50Series = chart.addLineSeries({ color: '#a78bfa', lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: '50 MA' })
+    const ma10Series = chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: '10 MA' })
+    const ma20Series = chart.addSeries(LineSeries, { color: '#38bdf8', lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: '20 MA' })
+    const ma50Series = chart.addSeries(LineSeries, { color: '#a78bfa', lineWidth: 2, lastValueVisible: false, priceLineVisible: false, title: '50 MA' })
     ma10Series.setData(ma10Data as any)
     ma20Series.setData(ma20Data as any)
     ma50Series.setData(ma50Data as any)
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       priceScaleId: 'volume',
       priceFormat: { type: 'volume' },
       lastValueVisible: false,
@@ -511,7 +511,7 @@ function MarketIndexChart({
       title: 'Volume',
     })
     volumeSeries.setData(volumeData as any)
-    const volumeMaSeries = chart.addLineSeries({
+    const volumeMaSeries = chart.addSeries(LineSeries, {
       priceScaleId: 'volume',
       color: '#a5b4fc',
       lineWidth: 2,

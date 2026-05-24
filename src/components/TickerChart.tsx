@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useMemo, useState, memo } from 'react'
 import { Link } from 'react-router-dom'
-import { createChart, ColorType } from 'lightweight-charts'
+import { CandlestickSeries, ColorType, createChart, HistogramSeries, LineSeries } from 'lightweight-charts'
 import { sma } from '../utils/chartIndicators'
 import { API_BASE } from '../utils/api'
 
@@ -102,11 +102,11 @@ function TickerChart({ ticker, score, recommendation }: TickerChartProps) {
       }, [])
     }
 
-    const candle = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false })
+    const candle = chart.addSeries(CandlestickSeries, { upColor: '#22c55e', downColor: '#ef4444', borderVisible: false })
     candle.setData(dedupeByTime(candleData) as any)
 
     // Volume histogram at bottom (green/red by candle direction)
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: '',
     })
@@ -116,10 +116,10 @@ function TickerChart({ ticker, score, recommendation }: TickerChartProps) {
     })
     volumeSeries.setData(dedupeByTime(volumeData) as any)
 
-    const ma10Series = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma20Series = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma50Series = chart.addLineSeries({ color: '#8b5cf6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
-    const ma150Series = chart.addLineSeries({ color: '#ec4899', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma10Series = chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma20Series = chart.addSeries(LineSeries, { color: '#3b82f6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma50Series = chart.addSeries(LineSeries, { color: '#8b5cf6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
+    const ma150Series = chart.addSeries(LineSeries, { color: '#ec4899', lineWidth: 1, lastValueVisible: false, priceLineVisible: false })
     ma10Series.setData(dedupeByTime(ma10Data) as any)
     ma20Series.setData(dedupeByTime(ma20Data) as any)
     ma50Series.setData(dedupeByTime(ma50Data) as any)

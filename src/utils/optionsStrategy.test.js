@@ -21,6 +21,9 @@ import {
   pickOptionMid,
   xForSymmetricPayoffPnL,
   buildBullPutSpreadSlopedSegmentKnots,
+  mapSlopedSpreadScreenX,
+  slopedSpreadScreenPointsCollinear,
+  buildLossFillPathBelowPolyline,
 } from './optionsStrategy.ts'
 
 describe('options strategy helpers', () => {
@@ -31,27 +34,39 @@ describe('options strategy helpers', () => {
     assert.equal(pickOptionMid({ bid: null, ask: null, lastPrice: null }), null)
   })
 
-  it('uses breakeven = short strike minus per-share net credit (matches contract credit / 100)', () => {
+  it('uses breakeven = short strike minus per-share net credit (short bid − long ask)', () => {
     const a = calculateBullPutSpreadMetrics({
       shortPut: { strike: 242.5, bid: 2.42, ask: 2.44, lastPrice: null },
       longPut: { strike: 225, bid: 0.11, ask: 0.13, lastPrice: null },
     })
     assert.ok(a != null)
-    assert.equal(a.netCredit, 2.31)
-    assert.equal(a.breakEven, 240.19)
-    assert.equal(a.netCredit * 100, 231)
+    assert.equal(a.netCredit, 2.29)
+    assert.equal(a.breakEven, 240.21)
+    assert.equal(a.netCredit * 100, 229)
 
     const b = calculateBullPutSpreadMetrics({
       shortPut: { strike: 232.5, bid: 1.12, ask: 1.14, lastPrice: null },
       longPut: { strike: 220, bid: 0.1, ask: 0.12, lastPrice: null },
     })
     assert.ok(b != null)
-    assert.equal(b.netCredit, 1.02)
-    assert.equal(b.breakEven, 231.48)
-    assert.equal(b.netCredit * 100, 102)
+    assert.equal(b.netCredit, 1)
+    assert.equal(b.breakEven, 231.5)
+    assert.equal(b.netCredit * 100, 100)
   })
 
-  it('calculates bull put credit spread risk metrics from live put mids', () => {
+  it('matches TradeVision-style bull put breakeven using short bid and long ask', () => {
+    const m = calculateBullPutSpreadMetrics({
+      shortPut: { strike: 390, bid: 19.35, ask: 20.05, lastPrice: null },
+      longPut: { strike: 340, bid: 6.2, ask: 6.74, lastPrice: null },
+    })
+    assert.ok(m != null)
+    assert.equal(m.netCredit, 12.61)
+    assert.equal(m.breakEven, 377.39)
+    assert.equal(m.maxProfit, 1261)
+    assert.equal(m.maxLoss, 3739)
+  })
+
+  it('calculates bull put credit spread risk metrics from natural bid/ask fills', () => {
     const metrics = calculateBullPutSpreadMetrics({
       shortPut: { strike: 250, bid: 7.8, ask: 8.2, lastPrice: 8.1 },
       longPut: { strike: 230, bid: 2.8, ask: 3.2, lastPrice: 3.1 },
@@ -62,13 +77,13 @@ describe('options strategy helpers', () => {
       contractMultiplier: 100,
       shortStrike: 250,
       longStrike: 230,
-      shortPremium: 8,
-      longPremium: 3,
-      netCredit: 5,
-      maxProfit: 500,
-      maxLoss: 1500,
-      estimatedMargin: 1500,
-      breakEven: 245,
+      shortPremium: 7.8,
+      longPremium: 3.2,
+      netCredit: 4.6,
+      maxProfit: 460,
+      maxLoss: 1540,
+      estimatedMargin: 1540,
+      breakEven: 245.4,
       width: 20,
     })
   })
@@ -185,6 +200,30 @@ describe('options strategy helpers', () => {
     )
   })
 
+  it('maps bull put sloped leg X linearly in strike so 320P–390P stays one straight screen segment', () => {
+    const width = 158
+    const maxLoss = 5433
+    const maxProfit = 1567
+    const longStrike = 320
+    const shortStrike = 390
+    const breakEven = 374.33
+    const xAtLong = 0
+    const xAtShort = width
+    const yAtLong = 400
+    const yAtShort = 200
+    const yAtBreakEven = yAtLong + ((breakEven - longStrike) / (shortStrike - longStrike)) * (yAtShort - yAtLong)
+
+    const low = { x: xAtLong, y: yAtLong }
+    const mid = {
+      x: mapSlopedSpreadScreenX(breakEven, longStrike, shortStrike, xAtLong, xAtShort),
+      y: yAtBreakEven,
+    }
+    const high = { x: xAtShort, y: yAtShort }
+
+    assert.ok(slopedSpreadScreenPointsCollinear(low, mid, high))
+    assert.ok(mid.x > width / 2, 'breakeven X sits past center when BE is above strike midpoint')
+  })
+
   it('calculates long call metrics and payoff knots (diagram-capped max profit)', () => {
     const m = calculateLongCallMetrics({
       call: { strike: 250, bid: 4.9, ask: 5.1, lastPrice: null },
@@ -194,13 +233,13 @@ describe('options strategy helpers', () => {
     assert.ok(m != null)
     assert.equal(m.strategy, 'long_call')
     assert.equal(m.strike, 250)
-    assert.equal(m.premium, 5)
-    assert.equal(m.maxLoss, 500)
-    assert.equal(m.breakEven, 255)
+    assert.equal(m.premium, 5.1)
+    assert.equal(m.maxLoss, 510)
+    assert.equal(m.breakEven, 255.1)
     assert.ok(m.maxProfitAtCap > 0)
     const knots = buildLongCallPayoffKnots(m)
     assert.ok(knots.length >= 3)
-    assert.equal(knots.find((p) => p.price === m.strike)?.profitLoss, -500)
+    assert.equal(knots.find((p) => p.price === m.strike)?.profitLoss, -510)
     assert.equal(knots.find((p) => p.price === m.breakEven)?.profitLoss, 0)
   })
 
@@ -227,11 +266,11 @@ describe('options strategy helpers', () => {
     assert.equal(m.strategy, 'bear_put_spread')
     assert.equal(m.shortStrike, 230)
     assert.equal(m.longStrike, 250)
-    assert.equal(m.netDebit, 3)
+    assert.equal(m.netDebit, 3.2)
     assert.equal(m.width, 20)
-    assert.equal(m.maxLoss, 300)
-    assert.equal(m.maxProfit, 1700)
-    assert.equal(m.breakEven, 247)
+    assert.equal(m.maxLoss, 320)
+    assert.equal(m.maxProfit, 1680)
+    assert.equal(m.breakEven, 246.8)
   })
 
   it('calculates bear call spread metrics (credit, breakeven = short + credit)', () => {
@@ -241,10 +280,10 @@ describe('options strategy helpers', () => {
     })
     assert.ok(m != null)
     assert.equal(m.strategy, 'bear_call_spread')
-    assert.equal(m.netCredit, 2.2)
-    assert.equal(m.maxProfit, 220)
-    assert.equal(m.maxLoss, 1780)
-    assert.equal(m.breakEven, 242.2)
+    assert.equal(m.netCredit, 2)
+    assert.equal(m.maxProfit, 200)
+    assert.equal(m.maxLoss, 1800)
+    assert.equal(m.breakEven, 242)
   })
 
   it('calculates cash secured put metrics and payoff knots', () => {
@@ -255,9 +294,9 @@ describe('options strategy helpers', () => {
     })
     assert.ok(m != null)
     assert.equal(m.strategy, 'cash_secured_put')
-    assert.equal(m.premium, 3.5)
-    assert.equal(m.breakEven, 196.5)
-    assert.equal(m.maxProfit, 350)
+    assert.equal(m.premium, 3.4)
+    assert.equal(m.breakEven, 196.6)
+    assert.equal(m.maxProfit, 340)
     assert.ok(m.maxLossAtLow < 0)
     const knots = buildCashSecuredPutPayoffKnots(m)
     assert.equal(knots.find((p) => p.price === m.breakEven)?.profitLoss, 0)
@@ -308,5 +347,19 @@ describe('options strategy helpers', () => {
       dte: 45,
     })
     assert.equal(bearPut, below)
+  })
+
+  it('buildLossFillPathBelowPolyline fills only below the loss polyline, not a full-width breakeven rectangle', () => {
+    const path = buildLossFillPathBelowPolyline(
+      [
+        { x: 20, y: 100 },
+        { x: 80, y: 200 },
+      ],
+      400,
+    )
+    assert.ok(path)
+    assert.match(path, /^M 20\.00 100\.00/)
+    assert.doesNotMatch(path, /M 0\.00 400\.00/)
+    assert.match(path, /L 80\.00 200\.00 L 80\.00 400\.00 L 20\.00 400\.00 Z$/)
   })
 })
